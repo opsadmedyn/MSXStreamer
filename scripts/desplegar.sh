@@ -60,6 +60,8 @@ json.dump(c, open("config.json", "w"), indent=2)
 print("   clave del panel:", c["clave_panel"])'
 fi
 REMOTO
+  # búfer UDP grande para el reenvío del Recorder (ver udpReadBufferSize en mediamtx.yml)
+  $SSH "echo 'net.core.rmem_max=16777216' | sudo tee /etc/sysctl.d/60-msx-streamer.conf >/dev/null && sudo sysctl -q -p /etc/sysctl.d/60-msx-streamer.conf"
   # el comodín lo expande root: el usuario de SSH no puede leer /home/mediasat
   $SSH "sudo sh -c 'cp $DEST/releases/v$VERSION/systemd/msxs-*.service /etc/systemd/system/' && sudo systemctl daemon-reload \
     && sudo systemctl enable --now msxs-mediamtx msxs-supervisor msxs-web"

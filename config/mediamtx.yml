@@ -9,6 +9,11 @@ logDestinations: [stdout]
 api: yes
 apiAddress: 127.0.0.1:9997
 
+# Búfer de los sockets UDP (reenvío del Recorder, ~8 Mbps a ráfagas). Con el del sistema (208 KB)
+# se pierden paquetes y la salida sale con macrobloques. Necesita net.core.rmem_max >= este valor
+# (lo pone desplegar.sh --instalar en /etc/sysctl.d/60-msx-streamer.conf).
+udpReadBufferSize: 8388608
+
 # SRT: entradas pull (las abre MediaMTX), el reenvío del Recorder y la lectura de las salidas
 srt: yes
 srtAddress: :8890
