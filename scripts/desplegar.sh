@@ -74,7 +74,6 @@ else
   $SSH "sudo systemctl restart msxs-supervisor msxs-web"
   if [ "$MEDIAMTX" = 1 ]; then
     echo "== $HOST: configuración de MediaMTX y unidades de v$VERSION (las salidas se cortan unos segundos)"
-    sleep 3                                 # el panel responde a /api/mtx/auth antes de reiniciar MediaMTX
     $SSH "$COMO bash -c 'cd $DEST && cp -p mediamtx.yml mediamtx.yml.antes-v$VERSION && cp releases/v$VERSION/config/mediamtx.yml mediamtx.yml.tmp && mv mediamtx.yml.tmp mediamtx.yml'"
     $SSH "sudo sh -c 'cp $DEST/releases/v$VERSION/systemd/msxs-*.service /etc/systemd/system/' && sudo systemctl daemon-reload \
       && sudo systemctl restart msxs-mediamtx"

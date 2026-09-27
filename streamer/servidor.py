@@ -13,11 +13,10 @@ import re
 import secrets
 import time
 import unicodedata
-import urllib.parse
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -40,7 +39,7 @@ app = FastAPI(title="Media Syntaxis Streamer")
 # solo es aceptable mientras escuche únicamente en la red local.
 CLAVE = CFG.get("clave_panel", "")
 SECRETO = hashlib.sha256(("msxs:" + CLAVE).encode()).digest()
-PUBLICAS = ("/login", "/static/", "/api/login", "/api/version", "/api/mtx/auth")
+PUBLICAS = ("/login", "/static/", "/api/login", "/api/version")
 
 
 def _firma(valor):
@@ -171,52 +170,13 @@ def _host(request: Request):
 
 
 # ---------------------------------------------------------------- HLS bajo demanda
-# MediaMTX pregunta a /api/mtx/auth antes de cada lectura (authMethod: http). El HLS de un flujo
-# solo se sirve si tiene un destino HLS activo (con el flujo activo), o con un token temporal de
-# vista previa que genera el panel. SRT y el resto de lecturas locales se permiten como antes.
+# El HLS de un flujo solo se sirve con un destino HLS activo o con la vista previa abierta. Las
+# reglas las aplica el supervisor en MediaMTX (ver mtx.asegurar_acceso), no este panel.
 VISTA_SEGUNDOS = 3600
-_SECRETO_VISTA = secrets.token_bytes(32)        # los tokens caducan también al reiniciar el panel
 
 
 def _url_hls(request, path):
     return f"http://{_host(request)}:{HLS_PUERTO}/{path}/"
-
-
-def _token_vista(path):
-    caduca = str(int(time.time()) + VISTA_SEGUNDOS)
-    return caduca + "." + hmac.new(_SECRETO_VISTA, f"{path}|{caduca}".encode(), "sha256").hexdigest()[:32]
-
-
-def _token_vista_valido(path, token):
-    try:
-        caduca, firma = token.split(".")
-        esperada = hmac.new(_SECRETO_VISTA, f"{path}|{caduca}".encode(), "sha256").hexdigest()[:32]
-        return int(caduca) > time.time() and hmac.compare_digest(firma, esperada)
-    except (AttributeError, ValueError):
-        return False
-
-
-def _hls_activo(path):
-    c = db.conectar()
-    for f in db.filas(c, """SELECT DISTINCT f.* FROM flujos f JOIN salidas s ON s.flujo = f.id
-                            WHERE f.activo = 1 AND s.activo = 1 AND s.tipo = 'hls'"""):
-        if path_de_flujo(f) == path:
-            return True
-    return False
-
-
-@app.post("/api/mtx/auth")
-async def mtx_auth(request: Request):
-    if not request.client or request.client.host not in ("127.0.0.1", "::1"):
-        raise HTTPException(403, "solo MediaMTX, desde este equipo")
-    d = await request.json()
-    if d.get("protocol") != "hls" or d.get("action") != "read":
-        return Response(status_code=204)
-    path = d.get("path", "")
-    token = dict(urllib.parse.parse_qsl(d.get("query") or "")).get("t", "")
-    if _hls_activo(path) or _token_vista_valido(path, token):
-        return Response(status_code=204)
-    return Response(status_code=401)
 
 
 def _vista_flujo(f, salidas, estados, paths, request):
@@ -256,7 +216,7 @@ def _vista_flujo(f, salidas, estados, paths, request):
         "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
-        "vista_previa": _url_hls(request, path) + "?t=" + _token_vista(path),
+        "vista_previa": _url_hls(request, path),
     }
 
 
@@ -326,6 +286,27 @@ def crear_salida(fid: str, d: Salida):
                d.passphrase, d.latencia_ms, d.clave.strip()))
     db.evento(c, f"salida creada: {d.nombre}", flujo=fid, salida=sid)
     return {"id": sid}
+
+
+@app.post("/api/flujos/{fid}/vista-previa")
+def vista_previa(fid: str, request: Request):
+    """Abre el HLS del flujo durante una hora para verlo desde el navegador. Espera a que el
+    supervisor lo aplique en MediaMTX para que el enlace funcione a la primera."""
+    c = db.conectar()
+    f = c.execute("SELECT * FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not f:
+        raise HTTPException(404, "Ese flujo no existe")
+    if not f["activo"]:
+        raise HTTPException(409, "Inicia el flujo para ver la vista previa")
+    hasta = time.time() + VISTA_SEGUNDOS
+    c.execute("INSERT INTO vistas_previas(flujo, hasta) VALUES (?,?) "
+              "ON CONFLICT(flujo) DO UPDATE SET hasta=excluded.hasta", (fid, hasta))
+    path = path_de_flujo(dict(f))
+    for _ in range(20):                         # el supervisor da una vuelta cada 2 s
+        if path in (mtx.acceso_red() or set()):
+            break
+        time.sleep(0.3)
+    return {"url": _url_hls(request, path), "hasta": hasta}
 
 
 @app.post("/api/flujos/{fid}/{accion}")

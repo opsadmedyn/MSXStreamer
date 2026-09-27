@@ -19,21 +19,23 @@ srt: yes
 srtAddress: :8890
 
 # HLS bajo demanda: http://<equipo>:8888/<flujo>/ solo responde si el flujo tiene un destino HLS
-# activo en el panel (o con el token de la vista previa). Sin alwaysRemux, el HLS de un flujo
-# solo se genera mientras alguien lo mira.
+# activo en el panel (o la vista previa abierta). Sin alwaysRemux, el HLS de un flujo solo se
+# genera mientras alguien lo mira.
 hls: yes
 hlsAddress: :8888
 hlsAlwaysRemux: no
 
-# Cada lectura se consulta al panel (/api/mtx/auth), que decide el HLS. La API local, métricas
-# y publicaciones no pasan por ahí. Si el panel está parado, no se abren lecturas nuevas.
-authMethod: http
-authHTTPAddress: http://127.0.0.1:8095/api/mtx/auth
-authHTTPExclude:
-  - action: api
-  - action: metrics
-  - action: pprof
-  - action: publish
+# Acceso: desde este equipo, todo (las salidas leen de aquí y el panel usa la API). Desde la red,
+# nada hasta que el supervisor abra la lectura de los flujos con HLS (lo ajusta por la API en
+# caliente, sin cortar a nadie, y lo repite si MediaMTX se reinicia). No depende del panel.
+authMethod: internal
+authInternalUsers:
+  - user: any
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+      - action: read
+      - action: api
 
 # Protocolos que no usa la fase 1
 rtsp: no

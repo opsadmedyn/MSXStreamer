@@ -118,7 +118,15 @@ function pintarEditor() {
   st.innerHTML = `<div><small>Entrada</small><span class="num">${num(f.kbps)}</span></div>
     <div><small>Pistas</small><span>${esc(f.pistas.join(' · ') || '—')}</span></div>
     <div><small>Lectores</small><span class="num">${f.lectores}</span></div>
-    <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" target="_blank" rel="noopener" style="color:var(--acento2)">Abrir</a></span></div>`;
+    <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Publica el HLS de este flujo durante una hora" style="color:var(--acento2)">Abrir</a></span></div>`;
+  $('#b-vista').onclick = async e => {
+    e.preventDefault();
+    const w = window.open('', '_blank');           // abrir ya: tras el await el navegador lo bloquearía
+    try {
+      const r = await api('POST', `/api/flujos/${f.id}/vista-previa`);
+      if (w) { w.opener = null; w.location = r.url; } else window.open(r.url, '_blank', 'noopener');
+    } catch (err) { if (w) w.close(); alertaEditor(err.message); }
+  };
   pintarSalidas(f);
 }
 

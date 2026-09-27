@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS estado_salidas (
     firma       TEXT NOT NULL DEFAULT '',  -- huella del comando: si cambia la salida, se relanza
     visto       REAL                       -- última vez que el supervisor lo revisó
 );
+CREATE TABLE IF NOT EXISTS vistas_previas (   -- vista previa HLS abierta desde el panel
+    flujo       TEXT PRIMARY KEY REFERENCES flujos(id) ON DELETE CASCADE,
+    hasta       REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS paths_mtx (       -- paths de MediaMTX creados por el supervisor
     nombre      TEXT PRIMARY KEY
 );

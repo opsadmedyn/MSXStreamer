@@ -185,6 +185,7 @@ class Supervisor:
                     if nombre in actuales:
                         mtx.borrar_path(nombre)
                     self.c.execute("DELETE FROM paths_mtx WHERE nombre=?", (nombre,))
+            self.sincronizar_acceso(flujos)
             estado = mtx.paths_estado()
             if self.mtx_ok is False:
                 db.evento(self.c, "MediaMTX vuelve a responder")
@@ -195,6 +196,18 @@ class Supervisor:
                 db.evento(self.c, f"MediaMTX no responde: {e}")
             self.mtx_ok = False
             return None
+
+    def sincronizar_acceso(self, flujos):
+        """HLS bajo demanda: solo se lee desde la red un flujo activo con un destino HLS activo o
+        con la vista previa abierta. Las reglas quedan en MediaMTX y no dependen del panel."""
+        activos = {f["id"]: path_de_flujo(f) for f in flujos}
+        con_hls = {r["flujo"] for r in self.c.execute(
+            "SELECT DISTINCT flujo FROM salidas WHERE activo=1 AND tipo='hls'")}
+        self.c.execute("DELETE FROM vistas_previas WHERE hasta < ?", (time.time(),))
+        vista = {r["flujo"] for r in self.c.execute("SELECT flujo FROM vistas_previas")}
+        paths = {activos[f] for f in (con_hls | vista) if f in activos}
+        if mtx.asegurar_acceso(paths):
+            db.evento(self.c, "HLS publicado: " + (", ".join(sorted(paths)) or "ninguno"))
 
     def vuelta(self):
         recoger_hijos()

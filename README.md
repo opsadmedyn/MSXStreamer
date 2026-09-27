@@ -33,12 +33,15 @@ Recorder no se entera y sigue grabando igual.
 
 El HLS no se publica por defecto. Se activa por flujo añadiendo un destino **HLS** en el panel, y
 la tabla muestra entonces la dirección `.m3u8` para copiarla. Mientras ese destino esté activo (y
-el flujo también), `http://<equipo>:8888/<path>/` responde; al detenerlo o borrarlo, deja de
-responder a las lecturas nuevas. MediaMTX consulta cada lectura al panel (`authMethod: http` →
-`/api/mtx/auth`, solo desde el propio equipo), y como `hlsAlwaysRemux` está apagado, el HLS solo se
-genera mientras alguien lo mira. La vista previa del panel usa un token temporal (1 h) y funciona
-aunque no haya destino HLS. Si el panel está parado no se abren lecturas nuevas (las salidas ya
-conectadas siguen); el supervisor reintenta solo.
+el flujo también), `http://<equipo>:8888/<path>/` responde desde la red; al detenerlo o borrarlo,
+deja de responder a las lecturas nuevas. La **vista previa** del panel abre el HLS de ese flujo
+durante una hora.
+
+Las reglas viven en MediaMTX (`authMethod: internal`): desde el propio equipo se permite todo (las
+salidas leen de ahí) y, desde la red, solo la lectura de esos flujos. El supervisor las ajusta por
+la API en cada vuelta, en caliente y sin cortar a nadie, así que **no dependen del panel**: con el
+panel parado, las salidas se siguen conectando. Como `hlsAlwaysRemux` está apagado, el HLS solo se
+genera mientras alguien lo mira.
 
 ## Despliegue
 
