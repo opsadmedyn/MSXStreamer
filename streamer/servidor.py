@@ -13,10 +13,11 @@ import re
 import secrets
 import time
 import unicodedata
+import urllib.parse
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -39,7 +40,7 @@ app = FastAPI(title="Media Syntaxis Streamer")
 # solo es aceptable mientras escuche únicamente en la red local.
 CLAVE = CFG.get("clave_panel", "")
 SECRETO = hashlib.sha256(("msxs:" + CLAVE).encode()).digest()
-PUBLICAS = ("/login", "/static/", "/api/login", "/api/version")
+PUBLICAS = ("/login", "/static/", "/api/login", "/api/version", "/api/mtx/auth")
 
 
 def _firma(valor):
@@ -169,6 +170,55 @@ def _host(request: Request):
     return CFG.get("host_publico") or request.url.hostname
 
 
+# ---------------------------------------------------------------- HLS bajo demanda
+# MediaMTX pregunta a /api/mtx/auth antes de cada lectura (authMethod: http). El HLS de un flujo
+# solo se sirve si tiene un destino HLS activo (con el flujo activo), o con un token temporal de
+# vista previa que genera el panel. SRT y el resto de lecturas locales se permiten como antes.
+VISTA_SEGUNDOS = 3600
+_SECRETO_VISTA = secrets.token_bytes(32)        # los tokens caducan también al reiniciar el panel
+
+
+def _url_hls(request, path):
+    return f"http://{_host(request)}:{HLS_PUERTO}/{path}/"
+
+
+def _token_vista(path):
+    caduca = str(int(time.time()) + VISTA_SEGUNDOS)
+    return caduca + "." + hmac.new(_SECRETO_VISTA, f"{path}|{caduca}".encode(), "sha256").hexdigest()[:32]
+
+
+def _token_vista_valido(path, token):
+    try:
+        caduca, firma = token.split(".")
+        esperada = hmac.new(_SECRETO_VISTA, f"{path}|{caduca}".encode(), "sha256").hexdigest()[:32]
+        return int(caduca) > time.time() and hmac.compare_digest(firma, esperada)
+    except (AttributeError, ValueError):
+        return False
+
+
+def _hls_activo(path):
+    c = db.conectar()
+    for f in db.filas(c, """SELECT DISTINCT f.* FROM flujos f JOIN salidas s ON s.flujo = f.id
+                            WHERE f.activo = 1 AND s.activo = 1 AND s.tipo = 'hls'"""):
+        if path_de_flujo(f) == path:
+            return True
+    return False
+
+
+@app.post("/api/mtx/auth")
+async def mtx_auth(request: Request):
+    if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(403, "solo MediaMTX, desde este equipo")
+    d = await request.json()
+    if d.get("protocol") != "hls" or d.get("action") != "read":
+        return Response(status_code=204)
+    path = d.get("path", "")
+    token = dict(urllib.parse.parse_qsl(d.get("query") or "")).get("t", "")
+    if _hls_activo(path) or _token_vista_valido(path, token):
+        return Response(status_code=204)
+    return Response(status_code=401)
+
+
 def _vista_flujo(f, salidas, estados, paths, request):
     path = path_de_flujo(f)
     info = (paths or {}).get(path)
@@ -197,7 +247,7 @@ def _vista_flujo(f, salidas, estados, paths, request):
                  error=e.get("error", ""), tiene_clave=bool(s["clave"]),
                  tiene_passphrase=bool(s["passphrase"]))
         if s["tipo"] == "hls":
-            v["url"] = f"http://{_host(request)}:{HLS_PUERTO}/{path}/"
+            v["url"] = _url_hls(request, path)
             v["url_m3u8"] = v["url"] + "index.m3u8"
         vs.append(v)
     return {
@@ -206,7 +256,7 @@ def _vista_flujo(f, salidas, estados, paths, request):
         "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
-        "vista_previa": f"http://{_host(request)}:{HLS_PUERTO}/{path}/",
+        "vista_previa": _url_hls(request, path) + "?t=" + _token_vista(path),
     }
 
 

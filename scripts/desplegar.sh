@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Despliega MSX Streamer en una estación.
-#   scripts/desplegar.sh <alias ssh> [--instalar]
+#   scripts/desplegar.sh <alias ssh> [--instalar | --mediamtx]
 # --instalar: primera vez. Comprueba que los puertos estén libres, descarga MediaMTX, crea el
 #   entorno de Python, genera config.json (con una clave aleatoria) e instala los servicios.
 # Sin opciones: copia el código y reinicia el panel y el supervisor. Las salidas siguen al aire.
+# --mediamtx: además sustituye mediamtx.yml y las unidades systemd por las de esta versión (la
+#   anterior queda como mediamtx.yml.antes-<versión>) y reinicia MediaMTX: las salidas se cortan
+#   unos segundos y se reconectan solas.
 # Todo vive en /home/mediasat/streamer; no toca nada del Recorder.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-HOST="${1:?uso: desplegar.sh <alias ssh> [--instalar]}"; shift || true
+HOST="${1:?uso: desplegar.sh <alias ssh> [--instalar | --mediamtx]}"; shift || true
 INSTALAR=0; [ "${1:-}" = "--instalar" ] && INSTALAR=1
+MEDIAMTX=0; [ "${1:-}" = "--mediamtx" ] && MEDIAMTX=1
 VERSION="$(cat VERSION)"
 MTX_VERSION="v1.21.1"
 DEST=/home/mediasat/streamer
@@ -68,6 +72,13 @@ REMOTO
 else
   echo "== $HOST: reiniciando panel y supervisor (las salidas no se cortan)"
   $SSH "sudo systemctl restart msxs-supervisor msxs-web"
+  if [ "$MEDIAMTX" = 1 ]; then
+    echo "== $HOST: configuración de MediaMTX y unidades de v$VERSION (las salidas se cortan unos segundos)"
+    sleep 3                                 # el panel responde a /api/mtx/auth antes de reiniciar MediaMTX
+    $SSH "$COMO bash -c 'cd $DEST && cp -p mediamtx.yml mediamtx.yml.antes-v$VERSION && cp releases/v$VERSION/config/mediamtx.yml mediamtx.yml.tmp && mv mediamtx.yml.tmp mediamtx.yml'"
+    $SSH "sudo sh -c 'cp $DEST/releases/v$VERSION/systemd/msxs-*.service /etc/systemd/system/' && sudo systemctl daemon-reload \
+      && sudo systemctl restart msxs-mediamtx"
+  fi
 fi
 
 sleep 4

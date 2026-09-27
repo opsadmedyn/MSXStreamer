@@ -18,10 +18,22 @@ udpReadBufferSize: 8388608
 srt: yes
 srtAddress: :8890
 
-# HLS: salida HLS de cada flujo en http://<equipo>:8888/<flujo>/
+# HLS bajo demanda: http://<equipo>:8888/<flujo>/ solo responde si el flujo tiene un destino HLS
+# activo en el panel (o con el token de la vista previa). Sin alwaysRemux, el HLS de un flujo
+# solo se genera mientras alguien lo mira.
 hls: yes
 hlsAddress: :8888
-hlsAlwaysRemux: yes
+hlsAlwaysRemux: no
+
+# Cada lectura se consulta al panel (/api/mtx/auth), que decide el HLS. La API local, métricas
+# y publicaciones no pasan por ahí. Si el panel está parado, no se abren lecturas nuevas.
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8095/api/mtx/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: publish
 
 # Protocolos que no usa la fase 1
 rtsp: no
