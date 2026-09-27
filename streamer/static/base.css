@@ -104,6 +104,7 @@ input[readonly]{color:var(--suave)}
 .opc:has(input:focus-visible){outline:2px solid var(--acento)}
 .opc.dis{opacity:.5;cursor:not-allowed}
 .opc p{margin:0;color:var(--suave);font-size:13px}
+[hidden]{display:none!important}   /* .form y otras clases con display no deben anular el atributo hidden */
 .form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;max-width:760px}
 .form .ancho{grid-column:1/-1}
 .campo-f{display:grid;gap:6px}
