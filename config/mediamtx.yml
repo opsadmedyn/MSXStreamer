@@ -1,0 +1,29 @@
+# Media Syntaxis Streamer - configuración de MediaMTX.
+# Solo lo que difiere de los valores por defecto. Los paths los declara el supervisor por la API
+# (no se guardan aquí), así que no hace falta editar este archivo para crear flujos.
+
+logLevel: info
+logDestinations: [stdout]
+
+# API solo en local: la usan el panel y el supervisor
+api: yes
+apiAddress: 127.0.0.1:9997
+
+# SRT: entradas pull (las abre MediaMTX), el reenvío del Recorder y la lectura de las salidas
+srt: yes
+srtAddress: :8890
+
+# HLS: salida HLS de cada flujo en http://<equipo>:8888/<flujo>/
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+
+# Protocolos que no usa la fase 1
+rtsp: no
+rtmp: no
+webrtc: no
+playback: no
+metrics: no
+pprof: no
+
+paths: {}

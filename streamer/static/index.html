@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Syntaxis Streamer</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;500;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css">
+<style>
+  body{margin:0}
+  .sistema{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--suave)}
+  .vacio{padding:40px 16px;text-align:center;color:var(--suave)}
+  .vacio .btn{margin-top:12px}
+  .stats{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:18px}
+  .stats div{display:grid}
+  .stats small{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--tenue)}
+  .stats span{font-size:15px}
+  .acciones-fila{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+  .btn.peligro{color:var(--error)}
+  .btn.peligro.confirmar{background:var(--error);border-color:var(--error);color:#fff}
+  .aviso{font-size:13px;min-height:18px;margin-top:10px}
+  .aviso.error{color:var(--error)}.aviso.ok{color:var(--ok)}
+  .err{font-size:12px;color:var(--error);margin-top:4px;max-width:420px;overflow-wrap:anywhere}
+  .reg{display:grid;gap:0;font-size:13px}
+  .reg div{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--borde)}
+  .reg time{color:var(--tenue)}
+  .fase2{max-width:620px}
+  .fase2 p{color:var(--suave)}
+  .copiar{cursor:pointer;border-bottom:1px dotted var(--tenue)}
+  .mini{display:grid;place-items:center;color:var(--tenue);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  .mini.aire{background:linear-gradient(135deg,#1c2a1f,#14301d);color:var(--ok)}
+  @media (max-width:560px){.reg div{grid-template-columns:1fr;gap:2px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="marca"><span class="br">[</span><span>Media</span><b>Syntaxis</b><span class="br">]</span> <em>Streamer</em></div>
+  <nav aria-label="Secciones"><button data-ir="flujos" aria-current="page">Flujos</button></nav>
+  <div class="sistema"><span id="sis-mtx" class="pill off">MediaMTX</span><span id="sis-sup" class="pill off">Supervisor</span><button class="btn peq" id="b-salir" hidden>Salir</button></div>
+</header>
+
+<main>
+<section id="v-flujos">
+  <div class="cab">
+    <div><h1>Flujos</h1><p class="sub">Cada flujo es una entrada y sus salidas.</p></div>
+    <div class="acc"><button class="btn pri" id="b-nuevo">Nuevo flujo</button></div>
+  </div>
+  <div class="lista" id="lista"></div>
+</section>
+
+<section id="v-editor" hidden>
+  <div class="cab">
+    <div><h1 id="e-titulo">Nuevo flujo</h1><p class="sub" id="e-sub">Elige de dónde llega la señal.</p></div>
+    <div class="acc" id="e-acc"></div>
+  </div>
+  <div class="stats" id="e-stats" hidden></div>
+
+  <div class="pasos" role="tablist">
+    <button role="tab" data-paso="entrada" aria-selected="true"><small>1</small>Entrada</button>
+    <button role="tab" data-paso="comp" aria-selected="false"><small>2</small>Composición</button>
+    <button role="tab" data-paso="salidas" aria-selected="false"><small>3</small>Salidas</button>
+    <button role="tab" data-paso="registro" aria-selected="false">Registro</button>
+  </div>
+
+  <div id="p-entrada">
+    <form id="f-flujo">
+      <label class="campo-f" style="max-width:760px;margin-bottom:18px"><span>Nombre del flujo</span><input id="i-nombre" type="text" required maxlength="80" placeholder="Yankees vs Red Sox · Programa"></label>
+      <div class="opciones" role="radiogroup" aria-label="Tipo de entrada">
+        <label class="opc"><input type="radio" name="entrada" value="recorder" checked><h3>Canal de MSX Recorder</h3><p>Usa el feed que ya graba el Recorder en este equipo, sin abrir otra conexión al origen.</p></label>
+        <label class="opc"><input type="radio" name="entrada" value="pull"><h3>SRT pull</h3><p>El Streamer se conecta a una URL SRT remota y reintenta si se cae.</p></label>
+        <label class="opc dis"><input type="radio" name="entrada" value="push" disabled><h3>SRT push</h3><p>El encoder envía al Streamer. Fase futura.</p></label>
+      </div>
+      <div class="panel" id="f-rec">
+        <h2>Canales del Recorder en este equipo</h2>
+        <div class="canales" id="canales"></div>
+        <p class="nota" style="margin-top:12px">El canal tiene que tener activado el reenvío al Streamer (una vez por canal, en su configuración del Recorder). El reenvío no afecta a la grabación: si el Streamer se detiene, el Recorder sigue grabando igual.</p>
+      </div>
+      <div class="panel" id="f-pull" hidden>
+        <h2>Origen SRT</h2>
+        <div class="form">
+          <label class="campo-f ancho"><span>URL del origen</span><input id="i-url" type="text" placeholder="srt://203.0.113.40:9000"></label>
+          <label class="campo-f"><span>Stream ID (opcional)</span><input id="i-sid" type="text"></label>
+          <label class="campo-f"><span>Passphrase (opcional)</span><input id="i-pass" type="password" autocomplete="new-password"></label>
+          <label class="campo-f"><span>Latencia SRT (ms)</span><input id="i-lat" type="number" min="20" max="8000" value="400"></label>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn pri" id="b-guardar">Guardar entrada</button>
+        <span class="aviso" id="av-flujo"></span>
+      </div>
+    </form>
+  </div>
+
+  <div id="p-comp" hidden>
+    <div class="panel fase2">
+      <h2>Composición</h2>
+      <h3>Llega en la fase 2</h3>
+      <p>Reencuadre del vídeo (tamaño y posición, con zonas seguras) y hasta dos capas HTML5, cada una con su URL de origen. De momento todas las salidas llevan el feed limpio en copia, sin recodificar.</p>
+    </div>
+  </div>
+
+  <div id="p-salidas" hidden>
+    <div class="panel">
+      <div class="cab" style="margin-bottom:8px"><div><h2 style="margin:0">Destinos</h2></div><div class="acc"><button class="btn pri" id="b-add">Añadir destino</button></div></div>
+      <div class="scroll"><table class="tabla"><thead><tr><th>Tipo</th><th>Destino</th><th>Estado</th><th>Tasa</th><th></th></tr></thead><tbody id="t-sal"></tbody></table></div>
+      <p class="nota" style="margin-top:12px">Todas las salidas van en copia: la misma calidad que la entrada, sin recodificar. Si un destino falla, solo ese se reintenta.</p>
+    </div>
+  </div>
+
+  <div id="p-registro" hidden>
+    <div class="panel"><div class="reg" id="reg"></div></div>
+  </div>
+</section>
+</main>
+
+<dialog id="dlg">
+  <h3 id="d-titulo">Añadir destino</h3>
+  <div class="tipos" role="group" aria-label="Tipo de destino">
+    <button type="button" data-tipo="srt" aria-pressed="true">SRT</button><button type="button" data-tipo="rtmp" aria-pressed="false">RTMP</button><button type="button" data-tipo="hls" aria-pressed="false">HLS</button>
+  </div>
+  <form id="f-dest" class="form">
+    <label class="campo-f ancho"><span>Nombre</span><input id="d-nom" type="text" required maxlength="80" placeholder="Master control"></label>
+    <div class="ancho form" data-t="srt" style="padding:0">
+      <label class="campo-f ancho"><span>URL</span><input id="d-srturl" type="text" placeholder="srt://destino.ejemplo.com:9000"></label>
+      <label class="campo-f"><span>Modo</span><select id="d-modo"><option value="caller">Caller (conectamos nosotros)</option><option value="listener">Listener (el destino se conecta)</option></select></label>
+      <label class="campo-f"><span>Latencia (ms)</span><input id="d-lat" type="number" min="20" max="8000" value="300"></label>
+      <label class="campo-f"><span>Passphrase (opcional)</span><input id="d-pass" type="password" autocomplete="new-password"></label>
+      <label class="campo-f"><span>Stream ID (opcional)</span><input id="d-sid" type="text"></label>
+    </div>
+    <div class="ancho form" data-t="rtmp" style="padding:0" hidden>
+      <label class="campo-f ancho"><span>Servidor</span><input id="d-rtmpurl" type="text" placeholder="rtmp://a.rtmp.youtube.com/live2"></label>
+      <label class="campo-f ancho"><span>Clave de emisión</span><input id="d-clave" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="ancho" data-t="hls" hidden><p class="nota">El HLS lo publica este servidor. La dirección aparece en la tabla al guardarlo.</p></div>
+  </form>
+  <p class="nota" id="d-nota" hidden>Deja la passphrase o la clave vacías para conservar las guardadas.</p>
+  <div class="aviso error" id="d-aviso"></div>
+  <div class="pie"><button class="btn" id="d-cancel" type="button">Cancelar</button><button class="btn pri" id="d-ok" type="button">Guardar</button></div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1360 240" role="img" aria-label="MediaSyntaxis">
+  <g fill="#FF5A00">
+    <path d="M0 0h96v34H34v172h62v34H0z"/>
+    <path d="M1360 0h-96v34h62v172h-62v34h96z"/>
+  </g>
+  <text x="680" y="158" text-anchor="middle" font-family="Montserrat, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="150" fill="#FFFFFF" letter-spacing="-2">
+    <tspan font-weight="300">Media</tspan><tspan font-weight="800">Syntaxis</tspan>
+  </text>
+</svg>
