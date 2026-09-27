@@ -25,5 +25,6 @@ webrtc: no
 playback: no
 metrics: no
 pprof: no
+moq: no        # desde la v1.21 abre además :8892 y :8893 si no se apaga
 
 paths: {}
