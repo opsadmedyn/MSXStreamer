@@ -60,7 +60,8 @@ json.dump(c, open("config.json", "w"), indent=2)
 print("   clave del panel:", c["clave_panel"])'
 fi
 REMOTO
-  $SSH "sudo cp $DEST/releases/v$VERSION/systemd/msxs-*.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+  # el comodín lo expande root: el usuario de SSH no puede leer /home/mediasat
+  $SSH "sudo sh -c 'cp $DEST/releases/v$VERSION/systemd/msxs-*.service /etc/systemd/system/' && sudo systemctl daemon-reload \
     && sudo systemctl enable --now msxs-mediamtx msxs-supervisor msxs-web"
 else
   echo "== $HOST: reiniciando panel y supervisor (las salidas no se cortan)"
