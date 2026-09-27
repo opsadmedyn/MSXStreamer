@@ -20,7 +20,7 @@ reencuadre y capas HTML5 llega en la fase 2.
 - **Supervisor** (`msxs-supervisor`) compara cada 2 s la base de datos con lo que corre: declara
   los paths en MediaMTX y mantiene un ffmpeg por salida SRT/RTMP, relanzándolo con espera
   creciente si cae. Los ffmpeg sobreviven a un reinicio del supervisor y este los vuelve a adoptar.
-- **Panel** (`msxs-web`, puerto 8090) solo escribe en la base de datos. Reiniciarlo no corta nada.
+- **Panel** (`msxs-web`, puerto 8095) solo escribe en la base de datos. Reiniciarlo no corta nada.
 
 ### Entrada desde MSX Recorder
 
@@ -36,6 +36,6 @@ scripts/desplegar.sh z8 --instalar   # primera vez: MediaMTX, entorno, config y 
 scripts/desplegar.sh z8              # actualizaciones: las salidas no se cortan
 ```
 
-Todo queda en `/home/mediasat/streamer`. Puertos: panel 8090, HLS 8888, SRT 8890 (UDP), API de
+Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890 (UDP), API de
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`); `clave_panel` protege el panel.

@@ -7,7 +7,7 @@ Type=simple
 User=mediasat
 WorkingDirectory=/home/mediasat/streamer/streamer
 Environment=MSXS_BASE=/home/mediasat/streamer
-ExecStart=/home/mediasat/streamer/venv/bin/uvicorn servidor:app --host 0.0.0.0 --port 8090
+ExecStart=/home/mediasat/streamer/venv/bin/uvicorn servidor:app --host 0.0.0.0 --port 8095
 Restart=always
 RestartSec=5
 

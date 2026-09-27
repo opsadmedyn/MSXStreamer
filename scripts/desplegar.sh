@@ -21,7 +21,7 @@ node --check streamer/static/app.js 2>/dev/null || echo "   (node no disponible:
 
 if [ "$INSTALAR" = 1 ]; then
   echo "== $HOST: puertos"
-  OCUPADOS=$($SSH "ss -Hltnu '( sport = :8090 or sport = :8888 or sport = :8890 or sport = :9997 )' | awk '{print \$1, \$5}'")
+  OCUPADOS=$($SSH "ss -Hltnu '( sport = :8095 or sport = :8888 or sport = :8890 or sport = :9997 )' | awk '{print \$1, \$5}'")
   if [ -n "$OCUPADOS" ]; then echo "!! puertos ocupados en $HOST:"; echo "$OCUPADOS"; exit 1; fi
 
   echo "== $HOST: MediaMTX $MTX_VERSION y entorno de Python"
@@ -69,5 +69,5 @@ fi
 
 sleep 4
 ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '")
-VER=$($SSH "curl -s http://127.0.0.1:8090/api/version")
-echo "== $HOST: servicios [$ESTADO] versión $VER · panel en el puerto 8090"
+VER=$($SSH "curl -s http://127.0.0.1:8095/api/version")
+echo "== $HOST: servicios [$ESTADO] versión $VER · panel en el puerto 8095"
