@@ -36,24 +36,33 @@ def path_de_flujo(f):
 
 
 def url_salida(s):
+    """URL de destino y opciones de ffmpeg que van aparte.
+
+    El streamid y la passphrase van como opciones (-srt_streamid, -passphrase) y no dentro de la
+    URL: así llegan tal cual aunque lleven "#", "," o "=" (el streamid de Castr es "#!::r=…,password=…")
+    y no dependen de que la versión de ffmpeg decodifique la URL."""
     if s["tipo"] == "rtmp":
         base = s["url"].rstrip("/")
-        return f"{base}/{s['clave']}" if s["clave"] else base
-    # srt: los parámetros de ffmpeg van en la URL; la latencia se expresa en microsegundos
-    # sin fragmentos: el streamid de Castr y otros ("#!::r=…") empieza por "#" y se perdería
+        return (f"{base}/{s['clave']}" if s["clave"] else base), []
+    # srt: la latencia se expresa en microsegundos. Sin fragmentos: un "#" pegado en la URL
+    # (el streamid de Castr) es parte del valor, no un ancla.
     partes = urllib.parse.urlsplit(s["url"], allow_fragments=False)
     q = dict(urllib.parse.parse_qsl(partes.query))
+    streamid = s["streamid"] or q.pop("streamid", "")
+    passphrase = s["passphrase"] or q.pop("passphrase", "")
+    q.pop("streamid", None); q.pop("passphrase", None)
     q["mode"] = "listener" if s["modo"] == "listener" else "caller"
     q["latency"] = str(int(s["latencia_ms"]) * 1000)
     q["pkt_size"] = "1316"
-    if s["passphrase"]:
-        q["passphrase"] = s["passphrase"]
-    if s["streamid"]:
-        q["streamid"] = s["streamid"]
     host = partes.netloc
     if s["modo"] == "listener":             # escucha en todas las interfaces, en el puerto indicado
         host = "0.0.0.0:" + (partes.port and str(partes.port) or "9000")
-    return urllib.parse.urlunsplit(("srt", host, "", urllib.parse.urlencode(q), ""))
+    opciones = []
+    if passphrase:
+        opciones += ["-passphrase", passphrase]
+    if streamid:
+        opciones += ["-srt_streamid", streamid]
+    return urllib.parse.urlunsplit(("srt", host, "", urllib.parse.urlencode(q), "")), opciones
 
 
 def comando(s, path):
@@ -65,7 +74,8 @@ def comando(s, path):
         cmd += ["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-f", "flv"]
     else:
         cmd += ["-map", "0", "-c", "copy", "-f", "mpegts"]
-    return cmd + [url_salida(s)]
+    url, opciones = url_salida(s)
+    return cmd + opciones + [url]
 
 
 def firma(cmd):
