@@ -32,7 +32,7 @@ cd /tmp/msxs-mtx
 F=mediamtx_${MTX_VERSION}_linux_amd64.tar.gz
 curl -fsSLO https://github.com/bluenviron/mediamtx/releases/download/${MTX_VERSION}/\$F
 curl -fsSLO https://github.com/bluenviron/mediamtx/releases/download/${MTX_VERSION}/checksums.sha256
-grep " \$F\$" checksums.sha256 | sha256sum -c -
+grep "[ *]\$F\$" checksums.sha256 | sha256sum -c -
 tar xzf \$F mediamtx && install -m 755 mediamtx $DEST/bin/mediamtx
 cd / && rm -rf /tmp/msxs-mtx
 python3 -m venv $DEST/venv && $DEST/venv/bin/pip install -q fastapi uvicorn
