@@ -55,12 +55,14 @@ def paths_estado():
 def conf_de_flujo(f, canales):
     """Configuración del path de MediaMTX que corresponde a un flujo (None: aún no hay entrada)."""
     if f["entrada"] == "pull":
-        q = {}
+        # se respetan los parámetros pegados en la URL; los campos del formulario mandan
+        base, _, consulta = f["url"].partition("?")
+        q = dict(urllib.parse.parse_qsl(consulta))
         if f["streamid"]:
             q["streamid"] = f["streamid"]
         if f["passphrase"]:
             q["passphrase"] = f["passphrase"]
-        url = f["url"].split("?")[0] + ("?" + urllib.parse.urlencode(q) if q else "")
+        url = base + ("?" + urllib.parse.urlencode(q) if q else "")
         return {"source": url, "sourceOnDemand": False}
     # recorder: el grabador del canal reenvía por UDP local lo mismo que graba. Es UDP a
     # propósito: si MediaMTX está parado, el grabador no se entera ni se bloquea.

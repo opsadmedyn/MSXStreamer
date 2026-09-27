@@ -40,7 +40,8 @@ def url_salida(s):
         base = s["url"].rstrip("/")
         return f"{base}/{s['clave']}" if s["clave"] else base
     # srt: los parámetros de ffmpeg van en la URL; la latencia se expresa en microsegundos
-    partes = urllib.parse.urlsplit(s["url"])
+    # sin fragmentos: el streamid de Castr y otros ("#!::r=…") empieza por "#" y se perdería
+    partes = urllib.parse.urlsplit(s["url"], allow_fragments=False)
     q = dict(urllib.parse.parse_qsl(partes.query))
     q["mode"] = "listener" if s["modo"] == "listener" else "caller"
     q["latency"] = str(int(s["latencia_ms"]) * 1000)
