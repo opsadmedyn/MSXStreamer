@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 User=mediasat
 WorkingDirectory=/home/mediasat/streamer
+# MediaMTX no arranca si el sistema limita el búfer UDP por debajo de udpReadBufferSize (8 MB):
+# se asegura el límite antes de cada arranque, como root ("+"), sin bajarlo si ya es mayor.
+ExecStartPre=+/bin/sh -c '[ "$$(sysctl -n net.core.rmem_max)" -ge 16777216 ] || sysctl -q -w net.core.rmem_max=16777216'
 ExecStart=/home/mediasat/streamer/bin/mediamtx /home/mediasat/streamer/mediamtx.yml
 Restart=always
 RestartSec=2
