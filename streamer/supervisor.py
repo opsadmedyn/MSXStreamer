@@ -160,6 +160,7 @@ class Supervisor:
         self.c = db.conectar()
         self.espera = {}                    # salida -> (segundos de espera, cuándo reintentar)
         self.mtx_ok = None
+        self.comps = {}                     # composiciones de esta vuelta: {flujo: fila}
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -178,7 +179,7 @@ class Supervisor:
             conf = mtx.conf_de_flujo(f, canales)
             if conf:
                 deseados[path_de_flujo(f)] = conf
-        for fid in composicion.activas(self.c):     # la composición publica ahí (desde este equipo)
+        for fid in self.comps:                      # la composición publica ahí (desde este equipo)
             deseados[composicion.path_comp(fid)] = {"source": "publisher"}
         try:
             actuales = mtx.paths_config()
@@ -208,7 +209,7 @@ class Supervisor:
         """HLS bajo demanda: solo se lee desde la red un flujo activo con un destino HLS activo o
         con la vista previa abierta. Las reglas quedan en MediaMTX y no dependen del panel."""
         activos = {f["id"]: path_de_flujo(f) for f in flujos}
-        comps = composicion.activas(self.c)
+        comps = self.comps
         paths = set()
         for r in self.c.execute("SELECT DISTINCT flujo, fuente FROM salidas WHERE activo=1 AND tipo='hls'"):
             if r["flujo"] in activos:
@@ -224,11 +225,18 @@ class Supervisor:
 
     def tareas(self, flujos, por_id):
         """Procesos que deben correr: {id: (comando, path que necesita listo, error si no puede)}."""
-        comps = composicion.activas(self.c)
+        comps = self.comps
         tareas = {}
         for fid, comp in comps.items():
-            cmd = composicion.comando(comp, path_de_flujo(por_id[fid]), FFMPEG, RUN, COMPONER)
-            tareas[composicion.id_tarea(fid)] = (cmd, path_de_flujo(por_id[fid]), None)
+            # una composición mal guardada detiene solo esa composición, no la vuelta de las salidas
+            try:
+                cmd = composicion.comando(comp, path_de_flujo(por_id[fid]), FFMPEG, RUN, COMPONER)
+                firma(cmd)                                  # falla si algún valor no es texto
+                if any("\0" in a for a in cmd):             # Popen no lo aceptaría
+                    raise ValueError("carácter nulo")
+                tareas[composicion.id_tarea(fid)] = (cmd, path_de_flujo(por_id[fid]), None)
+            except Exception as err:
+                tareas[composicion.id_tarea(fid)] = (None, None, f"Composición no válida: {err!r}"[:300])
         for s in db.filas(self.c, "SELECT * FROM salidas WHERE activo=1 AND tipo IN ('srt','rtmp')"):
             if s["flujo"] not in por_id:
                 continue
@@ -246,6 +254,9 @@ class Supervisor:
         recoger_hijos()
         flujos = db.filas(self.c, "SELECT * FROM flujos WHERE activo=1")
         por_id = {f["id"]: f for f in flujos}
+        # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
+        # las dos consultas ya no deja la vuelta a medias)
+        self.comps = {fid: k for fid, k in composicion.activas(self.c).items() if fid in por_id}
         estado_paths = self.sincronizar_mediamtx(flujos)
         deseadas = self.tareas(flujos, por_id)
 
