@@ -104,7 +104,10 @@ def _usuario(request: Request):
     if token:
         yo = _sesion_recorder(token)
         if yo:
-            if "streamer" not in (yo.get("modulos") or []):
+            # Recorder antiguo (1.4.1: su respuesta no trae "modulos"): solo pasan los admins
+            mods = yo.get("modulos")
+            permitido = (yo.get("rol") == "admin") if mods is None else ("streamer" in mods)
+            if not permitido:
                 return None, "sin_modulo"
             return {"email": yo["email"], "rol": yo["rol"], "via": "recorder"}, None
     if CLAVE and _sesion_valida(request.cookies.get("msxs")):
