@@ -37,6 +37,8 @@
   .comp{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr);gap:16px;align-items:start}
   .lienzo{position:relative;width:100%;aspect-ratio:16/9;background:#000;border:1px solid var(--borde);border-radius:6px;overflow:hidden;container-type:inline-size}
   .video-m{position:absolute;background:repeating-linear-gradient(135deg,#243049 0 12px,#1d2638 12px 24px);display:grid;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em;outline:1px solid #5b6f99}
+  .video-m.foto{background-size:100% 100%;background-repeat:no-repeat}   /* foto de la entrada, estirada como en la composición */
+  .video-m.foto span{display:none}
   .capas-m{position:absolute;inset:0;pointer-events:none}
   .capas-m iframe{position:absolute;left:0;top:0;width:1920px;height:1080px;border:0;transform-origin:0 0;background:transparent;color-scheme:normal}   /* sin esto Chrome pinta opaco el iframe (esquema claro dentro del panel oscuro) */
   .zona{position:absolute;border:1px dashed rgba(255,255,255,.28);pointer-events:none}

@@ -38,7 +38,7 @@ El HLS no se publica por defecto. Se activa por flujo añadiendo un destino **HL
 la tabla muestra entonces la dirección `.m3u8` para copiarla. Mientras ese destino esté activo (y
 el flujo también), `http://<equipo>:8888/<path>/` responde desde la red; al detenerlo o borrarlo,
 deja de responder a las lecturas nuevas. La **vista previa** del panel abre el HLS de ese flujo
-durante una hora.
+durante una hora; desde la 0.3.3, el panel la enseña a través de sí mismo (ver abajo).
 
 Las reglas viven en MediaMTX (`authMethod: internal`): desde el propio equipo se permite todo (las
 salidas leen de ahí) y, desde la red, solo la lectura de esos flujos. El supervisor las ajusta por
@@ -85,6 +85,32 @@ scripts/desplegar.sh z8 --mediamtx   # además, mediamtx.yml y unidades nuevas (
 Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890 (UDP), API de
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
+
+### 0.3.3
+
+- **Vista previa por el panel.** «Abrir» (vista previa), «Ver el resultado» (composición) y «ver»
+  (destino HLS) ya no llevan a `http://<host_publico>:8888/…`, que por Tailscale no llega: van por
+  el propio panel, `https://<dominio del Recorder>/streamer/hls/<path>/`, con la misma sesión
+  (cualquier rol). El panel lo pide a MediaMTX en 127.0.0.1 y solo deja ver paths de flujos que
+  existen o de su composición. Va en asíncrono, sin ocupar los hilos del resto del panel: como
+  mucho 24 peticiones a la vez (las demás reciben un 503 y el reproductor reintenta), y no se
+  anotan en el registro de accesos. La dirección `.m3u8` que se copia para reproductores externos
+  sigue siendo la del 8888, igual que antes.
+- **Foto de la entrada en el lienzo.** En el paso Composición, el recuadro del vídeo muestra una
+  foto de la entrada limpia, renovada cada 5 s mientras se ve el paso con la pestaña a la vista.
+  La saca el `ffmpeg` de `config.json`: un fotograma a 640 px, desentrelazado si llega entrelazado,
+  con `nice 19`, un hilo y como mucho 8 s (después se mata). Guarda la última 4 s por flujo, saca
+  una sola a la vez por flujo y como mucho 2 en total. Con el flujo parado o sin señal no lanza
+  ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT de 1 a 2 s en MediaMTX.
+
+Se despliega con `scripts/desplegar.sh <estación>`, sin `--mediamtx`: copia `streamer/` y reinicia
+solo `msxs-web` y `msxs-supervisor`. No cambian `supervisor.py`, `composicion.py`, `mtx.py`,
+`componer.sh`, MediaMTX ni las unidades: las salidas y las composiciones siguen al aire y no se
+relanzan, porque sus comandos de ffmpeg son los mismos. Caddy no cambia: `/streamer/hls/…` entra
+por el mismo `handle_path` que el resto del panel.
+
+Vuelta atrás: `git checkout v0.3.2 && scripts/desplegar.sh <estación>` (sin `--mediamtx`). No hay
+cambios en la base ni en `config.json`.
 
 ### 0.3.2
 
@@ -136,5 +162,6 @@ tras `?` o antes de `@`, ni la clave RTMP (salen como `***`); en los errores y e
 aparecen para nadie, tampoco los de un destino o flujo ya borrado o editado: toda URL SRT o RTMP
 sale ahí como la ve un operador.
 
-`host_publico` (config.json) es el nombre con el que se construyen los enlaces HLS y de vista previa
-(`http://<host_publico>:8888/…`): el dominio del Recorder, que resuelve a su IP de Tailscale.
+`host_publico` (config.json) es el nombre con el que se construyen las direcciones HLS de los
+destinos (`http://<host_publico>:8888/…`, para reproductores externos): el dominio del Recorder, que
+resuelve a su IP de Tailscale. Desde la 0.3.3 la vista previa ya no lo usa: va por el panel.

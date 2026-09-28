@@ -8,9 +8,13 @@ Reiniciar el panel no corta ninguna entrada ni salida.
 import contextvars
 import hashlib
 import json
+import logging
+import os
 import pathlib
 import re
 import secrets
+import signal
+import subprocess
 import time
 import unicodedata
 import urllib.error
@@ -18,9 +22,11 @@ import urllib.parse
 import urllib.request
 from typing import Literal, Optional
 
+import anyio
+from anyio.streams.buffered import BufferedByteReceiveStream
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -124,7 +130,10 @@ async def exigir_sesion(request: Request, call_next):
         return JSONResponse({"detail": "Petición rechazada: no viene de este panel"}, status_code=403)
     if ruta.startswith(PUBLICAS):
         return await call_next(request)
-    usuario, motivo = await run_in_threadpool(_usuario, request)
+    if ruta.startswith("/hls/"):        # vista previa: muchas peticiones, con sus propios hilos (ver abajo)
+        usuario, motivo = await anyio.to_thread.run_sync(_usuario, request, limiter=HILOS_VISTA)
+    else:
+        usuario, motivo = await run_in_threadpool(_usuario, request)
     if motivo == "sin_modulo":
         texto = "Tu usuario no tiene acceso al Streamer. Pide a un administrador que añada «streamer» en la columna Módulos de la hoja de usuarios."
         if ruta.startswith("/api/"):
@@ -344,13 +353,21 @@ def _limpiar(texto, secretos):
 
 
 # ---------------------------------------------------------------- HLS bajo demanda
-# El HLS de un flujo solo se sirve con un destino HLS activo o con la vista previa abierta. Las
-# reglas las aplica el supervisor en MediaMTX (ver mtx.asegurar_acceso), no este panel.
+# El HLS de un flujo solo se sirve a la red con un destino HLS activo o con la vista previa abierta.
+# Las reglas las aplica el supervisor en MediaMTX (ver mtx.asegurar_acceso), no este panel. La
+# vista previa del propio panel no depende de ellas: va por el panel (ver _RespuestaHLS).
 VISTA_SEGUNDOS = 3600
 
 
 def _url_hls(request, path):
+    """Dirección pública del HLS (la de los destinos HLS, para reproductores externos)."""
     return f"http://{_host(request)}:{HLS_PUERTO}/{path}/"
+
+
+def _url_vista(path):
+    """Vista previa a través del panel. Relativa: vale tras Caddy (/streamer/hls/…) y por un túnel
+    SSH al 8095 (/hls/…)."""
+    return f"hls/{urllib.parse.quote(path)}/"
 
 
 def _vista_flujo(f, salidas, estados, paths, request, secretos):
@@ -388,8 +405,10 @@ def _vista_flujo(f, salidas, estados, paths, request, secretos):
         if not ve_claves:       # "streamid" se queda (vacío): un app.js en caché lo sigue leyendo
             v.update(streamid="", tiene_streamid=bool(s["streamid"]), url=_url_visible(s["url"], s["tipo"], s["clave"]))
         if s["tipo"] == "hls":
-            v["url"] = _url_hls(request, composicion.path_comp(f["id"]) if s["fuente"] == "compuesta" else path)
+            path_s = composicion.path_comp(f["id"]) if s["fuente"] == "compuesta" else path
+            v["url"] = _url_hls(request, path_s)
             v["url_m3u8"] = v["url"] + "index.m3u8"
+            v["ver"] = _url_vista(path_s)           # el enlace "ver" del panel va por el panel
         vs.append(v)
     vf = {
         **{k: f[k] for k in ("id", "nombre", "entrada", "url", "streamid", "latencia_ms", "canal", "activo")},
@@ -397,7 +416,7 @@ def _vista_flujo(f, salidas, estados, paths, request, secretos):
         "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
-        "vista_previa": _url_hls(request, path),
+        "vista_previa": _url_vista(path),
         "composicion": _vista_composicion(f, estados, paths, request, secretos),
     }
     if not ve_claves:
@@ -431,7 +450,7 @@ def _vista_composicion(f, estados, paths, request, secretos):
             "kbps_salida": e.get("kbps"), "reinicios": e.get("reinicios", 0),
             "error": _limpiar(e.get("error", ""), secretos) if estado == "reintentando" else "",
             "path": composicion.path_comp(f["id"]),
-            "vista_previa": _url_hls(request, composicion.path_comp(f["id"])),
+            "vista_previa": _url_vista(composicion.path_comp(f["id"])),
             "preajustes": composicion.PREAJUSTES}
 
 
@@ -506,8 +525,9 @@ def crear_salida(fid: str, d: Salida):
 
 @app.post("/api/flujos/{fid}/vista-previa")
 def vista_previa(fid: str, request: Request, fuente: Literal["limpia", "compuesta"] = "limpia"):
-    """Abre el HLS del flujo durante una hora para verlo desde el navegador. Espera a que el
-    supervisor lo aplique en MediaMTX para que el enlace funcione a la primera."""
+    """Abre el HLS del flujo en MediaMTX durante una hora y espera a que el supervisor lo aplique
+    (como hasta la 0.3.2, para quien lo lea en el 8888). El enlace que devuelve va por el panel
+    (hls/<path>/, con la sesión), que no depende de esa hora."""
     c = db.conectar()
     f = c.execute("SELECT * FROM flujos WHERE id=?", (fid,)).fetchone()
     if not f:
@@ -527,7 +547,7 @@ def vista_previa(fid: str, request: Request, fuente: Literal["limpia", "compuest
         if path in (mtx.acceso_red() or set()):
             break
         time.sleep(0.3)
-    return {"url": _url_hls(request, path), "hasta": hasta}
+    return {"url": _url_vista(path), "hasta": hasta}
 
 
 @app.put("/api/flujos/{fid}/composicion")
@@ -608,6 +628,265 @@ def borrar_salida(sid: str):
         raise HTTPException(404, "Esa salida no existe")
     evento(c, "salida borrada", salida=sid)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- vista previa por el panel
+# El 8888 de MediaMTX no llega al navegador por Tailscale, así que la vista previa pasa por el
+# propio panel: hls/<path>/ (tras Caddy, /streamer/hls/<path>/), con la misma sesión que el resto.
+# El panel se la pide a MediaMTX desde 127.0.0.1, que lo puede leer todo (usuario LOCAL): la puerta
+# es el panel. Solo paths de flujos que existen o de su composición, con caracteres permitidos, y
+# siempre a 127.0.0.1:<hls_puerto>.
+# Va en asíncrono, sin hilos: las peticiones que MediaMTX retiene (HLS de baja latencia, hasta
+# ~20 s) no ocupan los hilos del resto del panel. Como mucho VISTA_MAX a la vez; las demás reciben
+# un 503 al momento y el reproductor reintenta.
+VISTA_MAX = 24
+VISTA_CONEXION, VISTA_LECTURA, VISTA_TOTAL = 3, 20, 60      # segundos
+TRAMO = r"[A-Za-z0-9_~-][A-Za-z0-9_.~-]{0,99}"                # sin "." delante: ni "." ni ".."
+RESTO_HLS = re.compile(rf"^{TRAMO}(/{TRAMO}){{0,3}}/?$")
+CLAVE_HLS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")      # _HLS_msn, _HLS_part, session…
+VALOR_HLS = re.compile(r"^[A-Za-z0-9_.-]{0,64}$")
+UBICACION_HLS = re.compile(r"^/[A-Za-z0-9_.~/-]*(\?[A-Za-z0-9_.=&-]*)?$")
+CABECERAS_HLS = {"content-type", "cache-control", "content-length"}
+VISTAS = anyio.CapacityLimiter(VISTA_MAX)       # peticiones de vista previa en curso
+HILOS_VISTA = anyio.CapacityLimiter(4)          # sus consultas de sesión y base: no las del resto
+_paths_vista = (0.0, frozenset())
+
+
+class _SinVistaEnRegistro(logging.Filter):
+    """El reproductor pide varias veces por segundo: esas líneas no van al registro de accesos
+    (journald), que si no se llenaría con cada trozo de vídeo mientras alguien mira."""
+
+    def filter(self, registro):
+        args = registro.args
+        return not (isinstance(args, tuple) and len(args) > 2 and str(args[2]).startswith("/hls/"))
+
+
+logging.getLogger("uvicorn.access").addFilter(_SinVistaEnRegistro())
+
+
+def _paths_con_vista():
+    """Paths que se pueden ver por el panel: el de cada flujo y el de su composición (2 s de caché)."""
+    global _paths_vista
+    ahora = time.monotonic()
+    if ahora - _paths_vista[0] > 2:
+        validos = set()
+        for f in db.filas(db.conectar(), "SELECT id, entrada, canal FROM flujos"):
+            validos |= {path_de_flujo(f), composicion.path_comp(f["id"])}
+        _paths_vista = (ahora, frozenset(validos))
+    return _paths_vista[1]
+
+
+def _consulta_hls(consulta):
+    """Parámetros para MediaMTX (los del HLS de baja latencia y la sesión): solo los inocuos."""
+    pares = urllib.parse.parse_qsl(consulta, keep_blank_values=True)[:10]
+    return urllib.parse.urlencode([(k, v) for k, v in pares if CLAVE_HLS.match(k) and VALOR_HLS.match(v)])
+
+
+class _RespuestaHLS(Response):
+    """Respuesta de MediaMTX pasada al navegador a trozos, según llega. Si el navegador se va, la
+    petición a MediaMTX se corta en el acto."""
+
+    def __init__(self, resto, consulta):
+        self.resto, self.consulta, self.arriba, self.empezada = resto, consulta, None, False
+        self.status_code, self.background, self.raw_headers = 200, None, []
+
+    async def _texto(self, send, codigo, texto):
+        self.empezada = True
+        cuerpo = texto.encode()
+        await send({"type": "http.response.start", "status": codigo, "headers": [
+            (b"content-type", b"text/plain; charset=utf-8"), (b"cache-control", b"no-store"),
+            (b"content-length", str(len(cuerpo)).encode())]})
+        await send({"type": "http.response.body", "body": cuerpo})
+
+    async def __call__(self, scope, receive, send):
+        try:
+            VISTAS.acquire_on_behalf_of_nowait(self)
+        except anyio.WouldBlock:
+            return await self._texto(send, 503, "Demasiadas peticiones de vista previa a la vez")
+        try:
+            async with anyio.create_task_group() as tg:
+                async def vigilar():
+                    while (await receive())["type"] != "http.disconnect":
+                        pass
+                    tg.cancel_scope.cancel()            # el navegador se fue
+                tg.start_soon(vigilar)
+                await self._pasar(send)
+                tg.cancel_scope.cancel()
+        finally:
+            with anyio.CancelScope(shield=True):
+                if self.arriba is not None:
+                    await self.arriba.aclose()
+                if not self.empezada:       # se fue antes de la respuesta: nadie la verá, pero sin
+                    with anyio.move_on_after(2):     # ella el middleware anota "No response returned"
+                        await self._texto(send, 502, "Vista previa cortada")
+            VISTAS.release_on_behalf_of(self)
+
+    def _cabeceras(self, cabecera):
+        """(estado, cabeceras que pasan, Content-Length o None) de la respuesta de MediaMTX."""
+        lineas = cabecera.split("\r\n")
+        m = re.match(r"HTTP/1\.[01] ([1-5]\d\d) ", lineas[0] + " ")
+        if not m:
+            raise ValueError("respuesta no HTTP")
+        cabeceras, largo = [(b"x-content-type-options", b"nosniff")], None
+        for linea in lineas[1:]:
+            nombre, _, valor = linea.partition(":")
+            nombre, valor = nombre.strip().lower(), valor.strip()
+            if not re.fullmatch(r"[\x20-\x7e]*", valor):
+                continue
+            if nombre in CABECERAS_HLS:
+                if nombre == "content-length":
+                    largo = int(valor)
+                cabeceras.append((nombre.encode(), valor.encode()))
+            elif nombre == "location" and UBICACION_HLS.match(valor):
+                # MediaMTX redirige a /<path>/…: relativa a esta petición, vale bajo cualquier prefijo
+                cabeceras.append((b"location", ("../" * self.resto.count("/") + valor[1:]).encode()))
+        return int(m.group(1)), cabeceras, largo
+
+    async def _pasar(self, send):
+        limite = time.monotonic() + VISTA_TOTAL
+
+        def queda(tope=VISTA_LECTURA):              # plazo de la próxima espera, dentro del total
+            return max(0.0, min(tope, limite - time.monotonic()))
+        consulta = "?" + self.consulta if self.consulta else ""
+        try:
+            with anyio.fail_after(VISTA_CONEXION):
+                self.arriba = await anyio.connect_tcp("127.0.0.1", HLS_PUERTO)
+            # HTTP/1.0: MediaMTX responde sin trozos y cierra al acabar (o con Content-Length)
+            await self.arriba.send(f"GET /{urllib.parse.quote(self.resto)}{consulta} HTTP/1.0\r\n"
+                                   f"Host: 127.0.0.1:{HLS_PUERTO}\r\nUser-Agent: msxs-panel\r\n\r\n".encode())
+            lector = BufferedByteReceiveStream(self.arriba)
+            with anyio.fail_after(queda()):
+                cabecera = (await lector.receive_until(b"\r\n\r\n", 16384)).decode("latin-1")
+            estado, cabeceras, pendiente = self._cabeceras(cabecera)
+        except TimeoutError:
+            return await self._texto(send, 504, "MediaMTX no respondió a tiempo")
+        except (OSError, ValueError, anyio.BrokenResourceError, anyio.EndOfStream,
+                anyio.IncompleteRead, anyio.DelimiterNotFound):
+            return await self._texto(send, 502, "MediaMTX no responde")
+        self.empezada = True
+        await send({"type": "http.response.start", "status": estado, "headers": cabeceras})
+        try:
+            while pendiente is None or pendiente > 0:
+                with anyio.fail_after(queda()):
+                    trozo = await lector.receive(65536 if pendiente is None else min(65536, pendiente))
+                if pendiente is not None:
+                    pendiente -= len(trozo)
+                with anyio.fail_after(queda(VISTA_TOTAL)):
+                    await send({"type": "http.response.body", "body": trozo, "more_body": True})
+        except anyio.EndOfStream:
+            if pendiente:
+                return                                  # cortada a medias: no se da por buena
+        except (TimeoutError, OSError, anyio.BrokenResourceError, anyio.ClosedResourceError):
+            return
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+@app.get("/hls/{resto:path}")
+async def vista_hls(resto: str, request: Request):
+    """Vista previa por el panel: la página de MediaMTX, sus listas y sus segmentos."""
+    if not RESTO_HLS.match(resto):
+        raise HTTPException(404, "No existe")
+    if resto.split("/", 1)[0] not in await anyio.to_thread.run_sync(_paths_con_vista, limiter=HILOS_VISTA):
+        raise HTTPException(404, "Ese flujo no existe")
+    return _RespuestaHLS(resto, _consulta_hls(request.url.query))
+
+
+# ---------------------------------------------------------------- foto de la entrada (lienzo)
+# El lienzo de la composición muestra una foto de la entrada limpia, que el panel renueva cada 5 s
+# mientras se ve. La saca el ffmpeg de la máquina: un fotograma a 640 px, desentrelazado si llega
+# entrelazado (canal1 es 1080i), con prioridad mínima y como mucho FOTO_LIMITE s (después se mata).
+# Cada flujo guarda la última FOTO_CACHE s; quien la pide mientras se saca espera a esa misma. Como
+# mucho FOTO_MAX a la vez, con sus propios hilos; si no, 503 al momento.
+FFMPEG = CFG.get("ffmpeg", "/usr/local/bin/ffmpeg")
+FOTO_CACHE, FOTO_LIMITE, FOTO_MAX = 4.0, 8.0, 2
+FOTO_FILTRO = "yadif=mode=send_frame:parity=auto:deint=interlaced,scale=640:trunc(ow/dar/2)*2,setsar=1"
+HILOS_FOTO = anyio.CapacityLimiter(FOTO_MAX)
+SIN_CACHE = {"Cache-Control": "no-store"}
+_fotos = {}             # flujo -> (cuándo se pidió, jpg o None, código HTTP)
+_fotos_en_curso = {}    # flujo -> anyio.Event de la foto que se está sacando
+_fotos_fallo = {}       # path -> último error de ffmpeg anotado (para no repetirlo cada 5 s)
+
+
+def _foto_de(path):
+    """JPEG de un fotograma del path, o None si ffmpeg falla o no lo saca en FOTO_LIMITE s."""
+    # -analyzeduration 1 s: con 1080i, ffmpeg apura por defecto los 5 s; no hace falta
+    cmd = ["nice", "-n", "19", FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error",
+           "-filter_threads", "1", "-threads", "1", "-analyzeduration", "1000000",
+           "-i", mtx.url_lectura(path), "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
+           "-vf", FOTO_FILTRO, "-threads", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "5", "pipe:1"]
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+    except OSError as err:
+        jpg, error = None, f"no se pudo lanzar ffmpeg: {err}"
+    else:
+        try:
+            jpg, salida_err = p.communicate(timeout=FOTO_LIMITE)
+            error = ""
+            if p.returncode or not jpg.startswith(b"\xff\xd8"):
+                lineas = salida_err.decode(errors="replace").strip().splitlines()
+                error = (lineas[-1] if lineas else f"ffmpeg terminó con {p.returncode}")[:200]
+        except subprocess.TimeoutExpired:
+            jpg, error = None, f"sin foto en {FOTO_LIMITE:.0f} s"
+        finally:
+            if p.poll() is None:                    # sigue vivo: fuera todo su grupo, y sin zombi
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                p.communicate()
+    if error and _fotos_fallo.get(path) != error:
+        print(f"foto de {path}: {error}", flush=True)
+    _fotos_fallo[path] = error
+    return None if error else jpg
+
+
+def _capturar(fid):
+    """(jpg o None, código HTTP) de la entrada limpia del flujo. Sin ffmpeg si el flujo está
+    parado o su entrada no está lista."""
+    f = db.conectar().execute("SELECT * FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not f:
+        return None, 404
+    path = path_de_flujo(dict(f))
+    try:
+        listo = f["activo"] and (mtx.paths_estado().get(path) or {}).get("ready")
+    except mtx.ErrorMTX:
+        listo = False
+    jpg = _foto_de(path) if listo else None
+    return jpg, 200 if jpg else 204
+
+
+@app.get("/api/flujos/{fid}/foto.jpg")
+async def foto_entrada(fid: str):
+    """Foto de la entrada limpia (JPEG de 640 px), o 204 si ahora no hay."""
+    guardada = _fotos.get(fid)
+    if not guardada or time.monotonic() - guardada[0] > FOTO_CACHE:
+        en_curso = _fotos_en_curso.get(fid)
+        if en_curso is not None:                    # ya se está sacando: se espera a esa
+            await en_curso.wait()
+        elif len(_fotos_en_curso) >= FOTO_MAX:
+            return Response(status_code=503, headers=SIN_CACHE)
+        else:
+            _fotos_en_curso[fid] = en_curso = anyio.Event()
+            resultado, pedida = (None, 204), time.monotonic()     # la edad cuenta desde que se pide
+            try:
+                with anyio.CancelScope(shield=True):   # se termina aunque este navegador se vaya
+                    resultado = await anyio.to_thread.run_sync(_capturar, fid, limiter=HILOS_FOTO)
+            except Exception as err:                # la foto nunca da un 500
+                print(f"foto de {fid}: {err!r}", flush=True)
+            finally:
+                if len(_fotos) > 200:
+                    _fotos.clear()
+                _fotos[fid] = (pedida, *resultado)
+                del _fotos_en_curso[fid]
+                en_curso.set()
+        guardada = _fotos.get(fid)
+    _, jpg, codigo = guardada or (0, None, 204)
+    if codigo == 404:
+        return JSONResponse({"detail": "Ese flujo no existe"}, status_code=404, headers=SIN_CACHE)
+    if not jpg:
+        return Response(status_code=204, headers=SIN_CACHE)
+    return Response(jpg, media_type="image/jpeg", headers=SIN_CACHE)
 
 
 # ---------------------------------------------------------------- recorder, sistema, eventos

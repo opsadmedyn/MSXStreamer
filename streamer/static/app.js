@@ -38,6 +38,7 @@ function vista(v) {
   $('#v-flujos').hidden = v !== 'flujos';
   $('#v-editor').hidden = v !== 'editor';
   if (v === 'flujos') { actual = null; history.replaceState(null, '', '#'); pintarLista(); }
+  seguirFoto();
   window.scrollTo(0, 0);
 }
 function irPaso(p) {
@@ -45,6 +46,7 @@ function irPaso(p) {
   $$('.pasos button').forEach(b => b.setAttribute('aria-selected', b.dataset.paso === p));
   ['entrada', 'comp', 'salidas', 'registro'].forEach(x => $('#p-' + x).hidden = x !== p);
   if (p === 'registro') cargarRegistro();
+  seguirFoto();
 }
 $$('[data-ir]').forEach(b => b.onclick = () => vista(b.dataset.ir));
 $$('.pasos button').forEach(b => b.onclick = () => {
@@ -125,7 +127,7 @@ function pintarEditor() {
     const w = window.open('', '_blank');           // abrir ya: tras el await el navegador lo bloquearía
     try {
       const r = await api('POST', `/api/flujos/${f.id}/vista-previa`);
-      if (w) { w.opener = null; w.location = r.url; } else window.open(r.url, '_blank', 'noopener');
+      abrirVista(w, r.url);
     } catch (err) { if (w) w.close(); alertaEditor(err.message); }
   };
   pintarSalidas(f);
@@ -174,7 +176,7 @@ function pintarSalidas(f) {
   tb.innerHTML = f.salidas.map(s => {
     const detalle = s.tipo === 'srt' ? `${s.url} · ${s.modo} · ${s.latencia_ms} ms` : s.url;
     const enlace = s.tipo === 'hls'
-      ? `<span class="num copiar" data-copiar="${esc(s.url_m3u8)}" title="Copiar">${esc(s.url_m3u8)}</span> · <a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--acento2)">ver</a>`
+      ? `<span class="num copiar" data-copiar="${esc(s.url_m3u8)}" title="Copiar">${esc(s.url_m3u8)}</span> · <a href="${esc(s.ver || s.url)}" target="_blank" rel="noopener" style="color:var(--acento2)">ver</a>`
       : `<span class="num">${esc(detalle)}</span>`;
     const err = s.estado === 'reintentando' && s.error ? `<div class="err">${esc(s.error)}</div>` : '';
     const rein = s.reinicios ? `<div class="nota">${s.reinicios} reinicio${s.reinicios > 1 ? 's' : ''}</div>` : '';
@@ -351,9 +353,54 @@ $('#c-ver').onclick = async e => {
   const w = window.open('', '_blank');
   try {
     const r = await api('POST', `/api/flujos/${actual}/vista-previa?fuente=compuesta`);
-    if (w) { w.opener = null; w.location = r.url; } else window.open(r.url, '_blank', 'noopener');
+    abrirVista(w, r.url);
   } catch (err) { if (w) w.close(); const av = $('#av-comp'); av.className = 'aviso error'; av.textContent = err.message; }
 };
+// la vista previa va por el panel (hls/<path>/, relativa): se resuelve contra esta página, que
+// puede estar tras Caddy (/streamer/) o en la raíz de un túnel
+function abrirVista(w, url) {
+  const abs = new URL(url, location.href).href;
+  if (w) { w.opener = null; w.location = abs; } else window.open(abs, '_blank', 'noopener');
+}
+
+// ---------------------------------------------------------------- foto de la entrada en el lienzo
+// Mientras se ve el paso Composición (y la pestaña del navegador está a la vista), el recuadro del
+// vídeo muestra una foto de la entrada limpia renovada cada 5 s. Sin foto (flujo parado o sin
+// señal) queda el recuadro "VÍDEO". Los fallos se ignoran: se reintenta en la siguiente vuelta.
+let fotoTimer = null, fotoDe = null, fotoPidiendo = false, fotoUrl = null;
+const fotoVisible = () => paso === 'comp' && !!actual && !$('#v-editor').hidden && document.visibilityState === 'visible';
+function ponerFoto(url) {
+  const v = $('#c-video');
+  v.style.backgroundImage = url ? `url("${url}")` : '';
+  v.classList.toggle('foto', !!url);
+  if (fotoUrl) URL.revokeObjectURL(fotoUrl);
+  fotoUrl = url;
+}
+function seguirFoto() {           // arranca o para la foto según lo que está a la vista
+  if (fotoDe !== actual) { ponerFoto(null); fotoDe = actual; }
+  clearTimeout(fotoTimer); fotoTimer = null;
+  if (fotoVisible() && !fotoPidiendo) pedirFoto();
+}
+async function pedirFoto() {
+  if (!fotoVisible()) { fotoTimer = null; return; }
+  const fid = actual, inicio = Date.now(), ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 15000);
+  fotoPidiendo = true;
+  try {
+    const r = await fetch(`api/flujos/${encodeURIComponent(fid)}/foto.jpg`, {cache: 'no-store', signal: ctl.signal});
+    if (r.status === 204 || r.status === 404) { if (fid === fotoDe) ponerFoto(null); }
+    else if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) {
+      const url = URL.createObjectURL(await r.blob());
+      const img = new Image(); img.src = url;
+      try { await img.decode(); } catch { URL.revokeObjectURL(url); return; }
+      if (fid === fotoDe) ponerFoto(url); else URL.revokeObjectURL(url);
+    }
+  } catch {} finally {
+    clearTimeout(t); fotoPidiendo = false;
+    clearTimeout(fotoTimer);         // la siguiente a los 5 s de pedir esta (enseguida si se cambió de flujo)
+    fotoTimer = fotoVisible() ? setTimeout(pedirFoto, fid === actual ? Math.max(1000, 5000 - (Date.now() - inicio)) : 0) : null;
+  }
+}
+document.addEventListener('visibilitychange', seguirFoto);
 
 function estadoComp(f) {
   const k = f.composicion;
