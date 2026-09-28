@@ -304,6 +304,71 @@ def _host(request: Request):
     return CFG.get("host_publico") or request.url.hostname
 
 
+# ---------------------------------------------------------------- credenciales a la vista
+# Un operador no ve el streamid, lo que va en las URL tras "?" o antes de "@", ni la clave RTMP
+# pegada al final de la URL (decisión 3 de la propuesta). A nadie se le enseña, en un error o en
+# el registro, la línea con la que el supervisor arranca ffmpeg (lleva todas las claves) ni un
+# valor guardado de los anteriores. Solo cambia lo que se devuelve: la base y el supervisor, no.
+OCULTO = "***"
+LINEA_ARRANQUE = re.compile(r"== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d ")     # la que escribe el supervisor al lanzar
+OPCIONES_SECRETAS = (" -srt_streamid ", " -passphrase ")
+PARAMS_NO_SECRETOS = {"mode", "latency", "rcvlatency", "peerlatency", "pkt_size", "payload_size", "transtype"}
+
+
+def _clave_en_ruta(ruta):
+    """Último tramo no vacío de la ruta de una URL RTMP: la clave, si no va aparte."""
+    return ruta.rstrip("/").rpartition("/")[2]
+
+
+def _url_visible(url, tipo, clave):
+    """URL sin usuario ni contraseña, sin parámetros y, en RTMP sin clave aparte, sin su último tramo."""
+    if not url:
+        return url
+    try:
+        p = urllib.parse.urlsplit(url, allow_fragments=False)
+    except ValueError:
+        return OCULTO
+    ruta = p.path
+    if tipo == "rtmp" and not clave and _clave_en_ruta(ruta):
+        sin_barra = ruta.rstrip("/")
+        ruta = sin_barra.rpartition("/")[0] + "/" + OCULTO + ruta[len(sin_barra):]
+    return urllib.parse.urlunsplit((p.scheme, p.netloc.rpartition("@")[2], ruta, OCULTO if p.query else "", ""))
+
+
+def _secretos(flujos, salidas):
+    """Valores guardados que no deben aparecer en un texto, también codificados como van en una
+    URL (mtx.conf_de_flujo los codifica, y un error de MediaMTX puede repetir esa URL)."""
+    valores = set()
+    for fila in [*flujos, *salidas]:
+        valores.update(fila.get(k) or "" for k in ("streamid", "passphrase", "clave"))
+        url = fila.get("url") or ""
+        try:
+            partes = urllib.parse.urlsplit(url, allow_fragments=False)
+            valores.update(v for k, v in urllib.parse.parse_qsl(partes.query) if k not in PARAMS_NO_SECRETOS)
+            valores.add(partes.password or "")
+            ruta = partes.path
+        except ValueError:                  # URL que no se puede analizar: se usa tal cual
+            ruta = url.split("?")[0]
+        if fila.get("tipo") == "rtmp" and not fila.get("clave"):
+            valores.add(_clave_en_ruta(ruta))
+    valores |= {urllib.parse.quote_plus(v) for v in valores}
+    return sorted((v for v in valores if v), key=len, reverse=True)
+
+
+def _limpiar(texto, secretos):
+    """Error o texto del registro sin la línea de arranque de ffmpeg ni valores secretos."""
+    if not texto:
+        return texto
+    m = LINEA_ARRANQUE.search(texto)
+    if m:
+        texto = texto[:m.start()] + "(línea de arranque oculta)"
+    elif any(o in texto for o in OPCIONES_SECRETAS):
+        return "(línea de arranque oculta)"
+    for s in secretos:
+        texto = texto.replace(s, OCULTO)
+    return texto
+
+
 # ---------------------------------------------------------------- HLS bajo demanda
 # El HLS de un flujo solo se sirve con un destino HLS activo o con la vista previa abierta. Las
 # reglas las aplica el supervisor en MediaMTX (ver mtx.asegurar_acceso), no este panel.
@@ -314,7 +379,8 @@ def _url_hls(request, path):
     return f"http://{_host(request)}:{HLS_PUERTO}/{path}/"
 
 
-def _vista_flujo(f, salidas, estados, paths, request):
+def _vista_flujo(f, salidas, estados, paths, request, secretos):
+    ve_claves = (getattr(request.state, "usuario", None) or {}).get("rol") == "admin"
     path = path_de_flujo(f)
     info = (paths or {}).get(path)
     listo = bool(info and info.get("ready"))
@@ -343,24 +409,29 @@ def _vista_flujo(f, salidas, estados, paths, request):
             est = "esperando" if (e.get("error") or "").startswith(("Esperando", "La composición")) else "reintentando"
         v = {k: s[k] for k in ("id", "nombre", "tipo", "url", "modo", "streamid", "latencia_ms", "activo", "fuente")}
         v.update(estado=est, kbps=e.get("kbps"), reinicios=e.get("reinicios", 0),
-                 error=e.get("error", ""), tiene_clave=bool(s["clave"]),
+                 error=_limpiar(e.get("error", ""), secretos), tiene_clave=bool(s["clave"]),
                  tiene_passphrase=bool(s["passphrase"]))
+        if not ve_claves:       # "streamid" se queda (vacío): un app.js en caché lo sigue leyendo
+            v.update(streamid="", tiene_streamid=bool(s["streamid"]), url=_url_visible(s["url"], s["tipo"], s["clave"]))
         if s["tipo"] == "hls":
             v["url"] = _url_hls(request, composicion.path_comp(f["id"]) if s["fuente"] == "compuesta" else path)
             v["url_m3u8"] = v["url"] + "index.m3u8"
         vs.append(v)
-    return {
+    vf = {
         **{k: f[k] for k in ("id", "nombre", "entrada", "url", "streamid", "latencia_ms", "canal", "activo")},
         "tiene_passphrase": bool(f["passphrase"]), "path": path, "estado": estado,
         "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
         "vista_previa": _url_hls(request, path),
-        "composicion": _vista_composicion(f, estados, paths, request),
+        "composicion": _vista_composicion(f, estados, paths, request, secretos),
     }
+    if not ve_claves:
+        vf.update(streamid="", tiene_streamid=bool(f["streamid"]), url=_url_visible(f["url"], "srt", ""))
+    return vf
 
 
-def _vista_composicion(f, estados, paths, request):
+def _vista_composicion(f, estados, paths, request, secretos):
     c = db.conectar()
     k = composicion.leer(c, f["id"])
     e = estados.get(composicion.id_tarea(f["id"]), {})
@@ -384,7 +455,7 @@ def _vista_composicion(f, estados, paths, request):
             "capas": capas, "kbps": k["kbps"], "estado": estado,
             "fps": composicion.fps_de(db.BASE / "run" / f"{composicion.id_tarea(f['id'])}.prog") if estado == "componiendo" else None,
             "kbps_salida": e.get("kbps"), "reinicios": e.get("reinicios", 0),
-            "error": e.get("error", "") if estado == "reintentando" else "",
+            "error": _limpiar(e.get("error", ""), secretos) if estado == "reintentando" else "",
             "path": composicion.path_comp(f["id"]),
             "vista_previa": _url_hls(request, composicion.path_comp(f["id"])),
             "preajustes": composicion.PREAJUSTES}
@@ -400,7 +471,8 @@ def listar(request: Request):
     estados = {e["salida"]: e for e in db.filas(c, "SELECT * FROM estado_salidas")}
     flujos = db.filas(c, "SELECT * FROM flujos ORDER BY creado")
     salidas = db.filas(c, "SELECT * FROM salidas ORDER BY creado")
-    return [_vista_flujo(f, [s for s in salidas if s["flujo"] == f["id"]], estados, paths, request)
+    secretos = _secretos(flujos, salidas)
+    return [_vista_flujo(f, [s for s in salidas if s["flujo"] == f["id"]], estados, paths, request, secretos)
             for f in flujos]
 
 
@@ -586,9 +658,15 @@ def sistema():
 def eventos(flujo: Optional[str] = None, limite: int = 50):
     c = db.conectar()
     if flujo:
-        return db.filas(c, """SELECT e.* FROM eventos e LEFT JOIN salidas s ON s.id=e.salida
-                              WHERE e.flujo=? OR s.flujo=? ORDER BY t DESC LIMIT ?""", flujo, flujo, limite)
-    return db.filas(c, "SELECT * FROM eventos ORDER BY t DESC LIMIT ?", min(limite, 500))
+        filas = db.filas(c, """SELECT e.* FROM eventos e LEFT JOIN salidas s ON s.id=e.salida
+                               WHERE e.flujo=? OR s.flujo=? ORDER BY t DESC LIMIT ?""", flujo, flujo, limite)
+    else:
+        filas = db.filas(c, "SELECT * FROM eventos ORDER BY t DESC LIMIT ?", min(limite, 500))
+    secretos = _secretos(db.filas(c, "SELECT url, streamid, passphrase FROM flujos"),
+                         db.filas(c, "SELECT tipo, url, streamid, passphrase, clave FROM salidas"))
+    for e in filas:
+        e["texto"] = _limpiar(e["texto"], secretos)
+    return filas
 
 
 @app.get("/api/version")
