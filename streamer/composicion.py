@@ -64,7 +64,11 @@ def leer(c, flujo_id):
 
 def filtro(comp):
     """filter_complex: vídeo reencuadrado sobre el fondo, capas "debajo" entre el fondo y el
-    vídeo, capas "encima" sobre todo. Las capas son las entradas 1, 2… (la 0 es la señal)."""
+    vídeo, capas "encima" sobre todo. Las capas son las entradas 1, 2… (la 0 es la señal).
+
+    eof_action=endall (= shortest=1 del diseño): si se acaba la señal, ffmpeg termina y el
+    supervisor relanza la composición cuando vuelve la entrada. Con "repeat" seguía emitiendo para
+    siempre la última imagen, sin audio, aunque la señal volviera."""
     x, y, w, h = normalizar(comp)
     capas = capas_de(comp)
     debajo = [i + 1 for i, c in enumerate(capas) if not c.get("encima", True)]
@@ -79,13 +83,13 @@ def filtro(comp):
         partes.append(f"[0:v]setsar=1,scale={w}:{h},pad={LIENZO_W}:{LIENZO_H}:{x}:{y}:color={fondo}[b0]")
     n = 0
     for i in debajo:
-        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=repeat[b{n + 1}]")
+        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=endall[b{n + 1}]")
         n += 1
     if debajo:
         partes.append(f"[b{n}][vb]overlay={x}:{y}[b{n + 1}]")
         n += 1
     for i in encima:
-        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=repeat[b{n + 1}]")
+        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=endall[b{n + 1}]")
         n += 1
     partes.append(f"[b{n}]format=yuv420p[out]")
     return ";".join(partes)
