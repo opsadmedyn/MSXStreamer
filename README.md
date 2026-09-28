@@ -97,4 +97,6 @@ Recorder y pregunta por ella a `http://127.0.0.1:8081/api/auth/yo` (caché de 10
 al login del Recorder, que devuelve aquí al entrar. En la red local: `http://<equipo>:8095/`. Por
 HTTPS (Tailscale): `https://<dominio del Recorder>/streamer/`, en el mismo Caddy. Admin: todo.
 Operador: ver, arrancar/parar destinos y vista previa. El registro anota quién hizo cada cambio.
-`clave_panel` queda como acceso de emergencia (entra como admin por `/login`).
+`clave_panel` queda como acceso de emergencia (entra como admin por `/login`). Si el Recorder no
+responde o contesta 5xx (el 503 de la 1.5.1 recién reiniciado, antes de leer la hoja), vale su
+última respuesta; un 401 (sesión cerrada) o cualquier otro 4xx deja fuera.

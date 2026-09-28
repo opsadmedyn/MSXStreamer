@@ -81,7 +81,9 @@ def _sesion_recorder(token):
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
             datos = json.loads(r.read())
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as e:
+        if e.code >= 500:                               # 503: Recorder recién reiniciado, sin hoja
+            return guardado[1] if guardado else None    # no se puede comprobar: vale la última
         datos = None                                    # 401: sesión caducada o cerrada
     except (urllib.error.URLError, OSError, ValueError):
         return guardado[1] if guardado else None        # Recorder no responde: vale la última
