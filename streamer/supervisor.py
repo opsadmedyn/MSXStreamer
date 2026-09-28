@@ -118,6 +118,19 @@ def matar(pid):
         pass
 
 
+def barrer(pid, prog):
+    """Tras morir una composición, mata lo que quede de su grupo con su comando: las capturas que
+    seguían esperando a que ffmpeg abriera su FIFO (si no llegó a abrirlo, se quedan bloqueadas
+    para siempre). No toca procesos de otro grupo ni con otro comando (un PID reutilizado)."""
+    for d in pathlib.Path("/proc").iterdir():
+        try:
+            if (d.name.isdigit() and int((d / "stat").read_text().rsplit(")", 1)[1].split()[2]) == pid
+                    and str(prog).encode() in (d / "cmdline").read_bytes().split(b"\0")):
+                os.kill(int(d.name), signal.SIGKILL)
+        except (OSError, ValueError, IndexError):
+            pass
+
+
 def recoger_hijos():
     while True:                             # evita zombis de los ffmpeg que lanzamos nosotros
         try:
@@ -341,6 +354,8 @@ class Supervisor:
                 db.evento(self.c, "relanzada por cambio de configuración", salida=sid)
 
             if not corriendo and e["pid"]:                  # murió por su cuenta: cuenta como caída
+                if cmd[0] == str(COMPONER):                 # composición: lo que quede de su grupo
+                    barrer(e["pid"], prog)
                 e["reinicios"] += 1
                 e["pid"] = None
                 db.evento(self.c, f"caída: {ultimo_error(log)}", salida=sid)
