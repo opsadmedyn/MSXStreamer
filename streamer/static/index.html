@@ -39,6 +39,18 @@
   .video-m{position:absolute;background:repeating-linear-gradient(135deg,#243049 0 12px,#1d2638 12px 24px);display:grid;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em;outline:1px solid #5b6f99}
   .video-m.foto{background-size:100% 100%;background-repeat:no-repeat}   /* foto de la entrada, estirada como en la composición */
   .video-m.foto span{display:none}
+  .video-m video,.resultado-m video{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;opacity:0;pointer-events:none}   /* estirado como en la composición; se ve cuando avanza */
+  .lienzo.vivo video{opacity:1}
+  .lienzo.vivo .video-m span,.lienzo.vivo .resultado-m span{display:none}
+  .resultado-m{position:absolute;inset:0;background:#000;display:none;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em}
+  .lienzo.resultado .resultado-m{display:grid}
+  .lienzo.resultado .video-m,.lienzo.resultado .capas-m{display:none}
+  .modos{display:inline-flex;border:1px solid var(--borde);border-radius:6px;overflow:hidden;flex:none}
+  .modos button{background:var(--fondo);border:0;padding:5px 12px;font-size:12px;font-weight:500;color:var(--suave);cursor:pointer}
+  .modos button+button{border-left:1px solid var(--borde)}
+  .modos button[aria-pressed="true"]{background:var(--panel2);color:var(--texto);box-shadow:inset 0 -2px 0 var(--acento)}
+  .modos button:disabled{opacity:.45;cursor:not-allowed}
+  #c-vivo-nota.ok{color:var(--ok)}
   .capas-m{position:absolute;inset:0;pointer-events:none}
   .capas-m iframe{position:absolute;left:0;top:0;width:1920px;height:1080px;border:0;transform-origin:0 0;background:transparent;color-scheme:normal}   /* sin esto Chrome pinta opaco el iframe (esquema claro dentro del panel oscuro) */
   .zona{position:absolute;border:1px dashed rgba(255,255,255,.28);pointer-events:none}
@@ -114,13 +126,22 @@
           <div><h2 style="margin:0">Composición</h2><p class="sub" style="margin:4px 0 0">Vídeo reencuadrado sobre un lienzo 1920×1080 y hasta dos capas HTML5 con transparencia.</p></div>
           <div class="acc"><span id="c-estado"></span></div>
         </div>
+        <div class="fila" style="margin-bottom:8px">
+          <div class="modos" id="c-modos" role="group" aria-label="Qué se ve en el lienzo">
+            <button type="button" data-modo="edicion" aria-pressed="true" title="La entrada en directo con las capas: para ajustar el encuadre antes de guardar">Edición</button>
+            <button type="button" data-modo="resultado" aria-pressed="false" disabled>Resultado</button>
+          </div>
+          <span class="nota" id="c-vivo-nota"></span>
+          <span class="nota" id="c-modo-nota"></span>
+        </div>
         <div class="lienzo" id="c-lienzo" aria-label="Vista del encuadre">
           <div class="capas-m" id="c-capas-debajo"></div>
-          <div class="video-m" id="c-video"><span>VÍDEO</span></div>
+          <div class="video-m" id="c-video"><span>VÍDEO</span><video id="c-vivo" muted autoplay playsinline disablepictureinpicture tabindex="-1" aria-hidden="true"></video></div>
           <div class="capas-m" id="c-capas-encima"></div>
+          <div class="resultado-m" id="c-resultado"><span>RESULTADO</span><video id="c-res-video" muted autoplay playsinline disablepictureinpicture tabindex="-1" aria-hidden="true"></video></div>
           <div class="zona z93"></div><div class="zona z90"></div>
         </div>
-        <p class="nota" style="margin-top:8px">Guías: zona de acción (93 %) y de títulos (90 %). Las capas se muestran tal cual si la página permite verse incrustada.</p>
+        <p class="nota" style="margin-top:8px">Edición: la entrada en directo con las capas, tal como quedará al guardar. Resultado: la señal compuesta que sale. Guías: zona de acción (93 %) y de títulos (90 %). Las capas se muestran tal cual si la página permite verse incrustada.</p>
         <div class="fila" style="margin-top:12px;gap:14px">
           <a href="#" id="c-ver" style="color:var(--acento2)">Ver el resultado (vista previa compuesta)</a>
           <span class="nota" id="c-datos"></span>

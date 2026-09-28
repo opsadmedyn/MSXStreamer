@@ -102,9 +102,15 @@ MediaMTX 9997 (solo local). La configuración de la máquina está en `config.js
   nueva hasta que el supervisor lo aplica: solo comprueban que se puede ver y dan el enlace del
   panel. Por el 8888 solo se sirven los flujos con un destino HLS activo. La vista previa por el
   panel no caduca: dura mientras la pestaña esté abierta y la sesión valga.
-- **Foto de la entrada en el lienzo.** En el paso Composición, el recuadro del vídeo muestra una
-  foto de la entrada limpia, renovada cada 5 s mientras se ve el paso con la pestaña a la vista.
-  La saca el `ffmpeg` de `config.json`: un fotograma a 640 px, desentrelazado si llega entrelazado,
+- **Lienzo en directo.** En el paso Composición, el recuadro del vídeo muestra la entrada limpia en
+  directo con las capas encima o debajo («Edición»), y el selector «Resultado» pasa el lienzo entero
+  a la señal compuesta real (`comp_<flujo>`) si la composición está activa y en marcha (tras
+  «Guardar composición» se reconecta sola). Es un vídeo por el panel (HLS de baja latencia, a la tasa
+  de la señal) por cada pestaña con el paso Composición a la vista; se corta al salir del paso, del
+  flujo o de la pestaña.
+- **Foto de la entrada en el lienzo.** Queda de reserva: se ve mientras arranca el vídeo, si falla o
+  si el navegador no lo reproduce, renovada cada 5 s; con el vídeo en marcha no se piden fotos. La
+  saca el `ffmpeg` de `config.json`: un fotograma a 640 px, desentrelazado si llega entrelazado,
   con `nice 19`, un hilo y como mucho 8 s (después se mata). Guarda la última 4 s por flujo, saca
   una sola a la vez por flujo y como mucho 2 en total. Con el flujo parado o sin señal no lanza
   ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT de 1 a 2 s en MediaMTX (tres
