@@ -37,8 +37,8 @@ Recorder no se entera y sigue grabando igual.
 El HLS no se publica por defecto. Se activa por flujo añadiendo un destino **HLS** en el panel, y
 la tabla muestra entonces la dirección `.m3u8` para copiarla. Mientras ese destino esté activo (y
 el flujo también), `http://<equipo>:8888/<path>/` responde desde la red; al detenerlo o borrarlo,
-deja de responder a las lecturas nuevas. La **vista previa** del panel abre el HLS de ese flujo
-durante una hora; desde la 0.3.3, el panel la enseña a través de sí mismo (ver abajo).
+deja de responder a las lecturas nuevas. La **vista previa** del panel no lo abre a la red (hasta
+la 0.3.2 lo abría una hora, sin sesión): desde la 0.3.3 va a través del propio panel (ver abajo).
 
 Las reglas viven en MediaMTX (`authMethod: internal`): desde el propio equipo se permite todo (las
 salidas leen de ahí) y, desde la red, solo la lectura de esos flujos. El supervisor las ajusta por
@@ -93,21 +93,29 @@ MediaMTX 9997 (solo local). La configuración de la máquina está en `config.js
   el propio panel, `https://<dominio del Recorder>/streamer/hls/<path>/`, con la misma sesión
   (cualquier rol). El panel lo pide a MediaMTX en 127.0.0.1 y solo deja ver paths de flujos que
   existen o de su composición. Va en asíncrono, sin ocupar los hilos del resto del panel: como
-  mucho 24 peticiones a la vez (las demás reciben un 503 y el reproductor reintenta), y no se
-  anotan en el registro de accesos. La dirección `.m3u8` que se copia para reproductores externos
+  mucho 24 peticiones a la vez (las demás reciben un 503 y el reproductor reintenta). Las que van
+  bien y esos 503 no se anotan en el registro de accesos; los rechazos (sin sesión, sin módulo,
+  path que no es de un flujo), sí. La dirección `.m3u8` que se copia para reproductores externos
   sigue siendo la del 8888, igual que antes.
+- **La vista previa ya no abre el 8888.** «Abrir» y «Ver el resultado» ya no publican el flujo (y
+  su composición) una hora en `http://<equipo>:8888/…` sin sesión, ni hacen esperar a la pestaña
+  nueva hasta que el supervisor lo aplica: solo comprueban que se puede ver y dan el enlace del
+  panel. Por el 8888 solo se sirven los flujos con un destino HLS activo. La vista previa por el
+  panel no caduca: dura mientras la pestaña esté abierta y la sesión valga.
 - **Foto de la entrada en el lienzo.** En el paso Composición, el recuadro del vídeo muestra una
   foto de la entrada limpia, renovada cada 5 s mientras se ve el paso con la pestaña a la vista.
   La saca el `ffmpeg` de `config.json`: un fotograma a 640 px, desentrelazado si llega entrelazado,
   con `nice 19`, un hilo y como mucho 8 s (después se mata). Guarda la última 4 s por flujo, saca
   una sola a la vez por flujo y como mucho 2 en total. Con el flujo parado o sin señal no lanza
-  ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT de 1 a 2 s en MediaMTX.
+  ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT de 1 a 2 s en MediaMTX (tres
+  líneas en su registro); en el del panel no se anotan las que van bien.
 
 Se despliega con `scripts/desplegar.sh <estación>`, sin `--mediamtx`: copia `streamer/` y reinicia
 solo `msxs-web` y `msxs-supervisor`. No cambian `supervisor.py`, `composicion.py`, `mtx.py`,
 `componer.sh`, MediaMTX ni las unidades: las salidas y las composiciones siguen al aire y no se
 relanzan, porque sus comandos de ffmpeg son los mismos. Caddy no cambia: `/streamer/hls/…` entra
-por el mismo `handle_path` que el resto del panel.
+por el mismo `handle_path` que el resto del panel. Una vista previa abierta antes del despliegue
+sigue en el 8888 hasta su hora: el supervisor la quita entonces, como siempre.
 
 Vuelta atrás: `git checkout v0.3.2 && scripts/desplegar.sh <estación>` (sin `--mediamtx`). No hay
 cambios en la base ni en `config.json`.

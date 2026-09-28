@@ -121,7 +121,7 @@ function pintarEditor() {
   st.innerHTML = `<div><small>Entrada</small><span class="num">${num(f.kbps)}</span></div>
     <div><small>Pistas</small><span>${esc(f.pistas.join(' · ') || '—')}</span></div>
     <div><small>Lectores</small><span class="num">${f.lectores}</span></div>
-    <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Publica el HLS de este flujo durante una hora" style="color:var(--acento2)">Abrir</a></span></div>`;
+    <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Vista previa por el panel, con tu sesión" style="color:var(--acento2)">Abrir</a></span></div>`;
   $('#b-vista').onclick = async e => {
     e.preventDefault();
     const w = window.open('', '_blank');           // abrir ya: tras el await el navegador lo bloquearía
