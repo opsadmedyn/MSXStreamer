@@ -84,3 +84,8 @@ sleep 4
 ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '")
 VER=$($SSH "curl -s http://127.0.0.1:8095/api/version")
 echo "== $HOST: servicios [$ESTADO] versión $VER · panel en el puerto 8095"
+
+# respaldo de esta versión a Google Drive (si la estación lo tiene instalado: scripts/instalar-respaldos.sh del Streamer)
+if $SSH "sudo test -x /home/mediasat/respaldos/bin/respaldar.sh"; then
+  $SSH "sudo /home/mediasat/respaldos/bin/respaldar.sh --drive 'streamer-v$VERSION'" || echo "!! el respaldo a Drive falló; la versión quedó instalada igualmente"
+fi

@@ -7,7 +7,12 @@
 # El código ya está en GitHub (etiquetas vX.Y.Z); aquí va lo que no está en el repositorio:
 # configuración, bases de datos, unidades systemd y ajustes del sistema. Lleva claves (panel,
 # destinos): guárdalo solo en sitios de confianza y nunca en el repositorio.
+#
+# Con --drive "<motivo>" (así lo lanzan desplegar.sh tras cada versión y el timer semanal
+# msx-respaldo.timer, desde /home/mediasat/respaldos/bin), en vez de sacarlo por la salida estándar
+# lo sube a Google Drive: "MSX Respaldos/<estación>/" en Mi unidad de la cuenta del sistema.
 set -euo pipefail
+DRIVE=""; [ "${1:-}" = "--drive" ] && DRIVE="${2:-manual}"
 FECHA=$(date +%Y%m%d-%H%M%S)
 DIR=/home/mediasat/respaldos
 TMP=$(mktemp -d)
@@ -28,6 +33,12 @@ sqlite_copia /home/mediasat/streamer/streamer.db
 copiar /home/mediasat/recorder/canales.json /home/mediasat/recorder/config.json /home/mediasat/recorder/VERSION \
        /home/mediasat/recorder/canales.json.respaldo-* /home/mediasat/recorder/canales.json.antes-*
 sqlite_copia /home/mediasat/recorder/usuarios.db
+sqlite_copia /home/mediasat/recorder/shows.db
+sqlite_copia /home/mediasat/recorder/indice.db
+copiar /home/mediasat/recorder/destinos.json /home/mediasat/recorder/qc.json
+# el código instalado, para que cada respaldo sirva por sí solo (sin entornos ni binarios)
+tar c -C / --exclude=venv --exclude=__pycache__ --exclude=cache --exclude='*.db*' --exclude='._*' \
+    home/mediasat/recorder home/mediasat/streamer/streamer 2>/dev/null | tar x -C "$R" || true
 copiar /etc/systemd/system/msxs-*.service /etc/systemd/system/msr-*.service /etc/systemd/system/caddy.service.d \
        /etc/sysctl.d/60-msx-streamer.conf /etc/caddy/Caddyfile /etc/sudoers.d/90-msr-mediasat
 
@@ -46,4 +57,9 @@ tar czf "$DIR/msx-$FECHA.tar.gz" -C "$TMP" "msx-$FECHA"
 chmod 600 "$DIR/msx-$FECHA.tar.gz"
 ls -1t "$DIR"/msx-*.tar.gz | tail -n +31 | xargs -r rm -f       # se conservan los 30 últimos
 echo "respaldo guardado en $(hostname):$DIR/msx-$FECHA.tar.gz ($(du -h "$DIR/msx-$FECHA.tar.gz" | cut -f1))" >&2
-cat "$DIR/msx-$FECHA.tar.gz"
+if [ -n "$DRIVE" ]; then
+  /home/mediasat/recorder/venv/bin/python -W ignore::FutureWarning /home/mediasat/respaldos/bin/respaldo_drive.py \
+    "$DIR/msx-$FECHA.tar.gz" "$DRIVE · Streamer $(cat /home/mediasat/streamer/VERSION 2>/dev/null) · Recorder $(cat /home/mediasat/recorder/VERSION 2>/dev/null)" >&2
+else
+  cat "$DIR/msx-$FECHA.tar.gz"
+fi
