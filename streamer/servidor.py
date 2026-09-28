@@ -541,14 +541,15 @@ def vista_previa(fid: str, request: Request, fuente: Literal["limpia", "compuest
         raise HTTPException(404, "Ese flujo no existe")
     if not f["activo"]:
         raise HTTPException(409, "Inicia el flujo para ver la vista previa")
-    hasta = time.time() + VISTA_SEGUNDOS
-    c.execute("INSERT INTO vistas_previas(flujo, hasta) VALUES (?,?) "
-              "ON CONFLICT(flujo) DO UPDATE SET hasta=excluded.hasta", (fid, hasta))
     path = path_de_flujo(dict(f))
     if fuente == "compuesta":
         if not composicion.leer(c, fid)["activa"]:
             raise HTTPException(409, "Activa la composición para verla")
         path = composicion.path_comp(fid)
+    # se abre (limpia y compuesta) solo cuando ya no hay motivo para rechazarla
+    hasta = time.time() + VISTA_SEGUNDOS
+    c.execute("INSERT INTO vistas_previas(flujo, hasta) VALUES (?,?) "
+              "ON CONFLICT(flujo) DO UPDATE SET hasta=excluded.hasta", (fid, hasta))
     for _ in range(20):                         # el supervisor da una vuelta cada 2 s
         if path in (mtx.acceso_red() or set()):
             break
