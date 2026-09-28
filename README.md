@@ -56,6 +56,27 @@ señal limpia sigue igual para las demás. Todo va en un grupo de procesos: se p
 Runtime (Node y Chromium): `scripts/instalar-compositor.sh <estación>`, una vez. Capa de ejemplo:
 `http://127.0.0.1:8095/static/capa-ejemplo.html` (L-bar con reloj, para el preajuste "L derecha").
 
+### Salvaguardas de la composición (0.3.1)
+
+Una composición nunca debe afectar a la señal limpia ni al Recorder:
+
+- **Sin entrada, termina.** Si se corta la señal (o muere una captura), la composición termina en
+  vez de emitir una imagen congelada, y el supervisor la relanza cuando la entrada vuelve. Si sigue
+  viva pero su vídeo lleva 15 s sin avanzar (`frame=` del `.prog`), el supervisor también la relanza.
+- **Como mucho 3 a la vez** (`composicion_max` en `config.json`, 3 si no está). El panel no deja
+  activar una cuarta; si la base tiene más (un flujo que se inicia, una edición a mano), el
+  supervisor arranca solo 3, primero las que ya corren, y las demás esperan con «Límite de…».
+- **Prioridad baja:** `componer.sh` se pone nice 10, ionice best-effort 7 y `oom_score_adj` 500, y
+  lo heredan Chromium y ffmpeg: si falta CPU, disco o memoria, cede y cae antes que lo demás.
+- **Datos dañados:** una composición que no se puede construir queda como «Composición no válida»
+  y el supervisor sigue vigilando y relanzando las demás salidas.
+- **Disco:** los `.prog` (más de 1 MB en disco) y los `.log` (más de 5 MB) se recortan también
+  mientras el proceso corre; si una composición no llega a abrir la entrada, el supervisor mata las
+  capturas que se quedaron esperando su FIFO.
+
+Al desplegar la 0.3.1 cambia el comando de la composición: la que esté en marcha se relanza una
+vez (la señal compuesta y sus destinos se cortan unos 20 s). Las salidas limpias no se relanzan.
+
 ## Despliegue
 
 ```
