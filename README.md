@@ -74,8 +74,14 @@ Una composición nunca debe afectar a la señal limpia ni al Recorder:
   mientras el proceso corre; si una composición no llega a abrir la entrada, el supervisor mata las
   capturas que se quedaron esperando su FIFO.
 
-Al desplegar la 0.3.1 cambia el comando de la composición: la que esté en marcha se relanza una
-vez (la señal compuesta y sus destinos se cortan unos 20 s). Las salidas limpias no se relanzan.
+**Despliegue de la 0.3.1:** entera, con `scripts/desplegar.sh <estación>` sin `--mediamtx` (copia
+todo `streamer/` y reinicia `msxs-supervisor` y `msxs-web`). No basta copiar `servidor.py` y
+reiniciar `msxs-web`: `servidor.py` importa `supervisor.py`, que necesita `composicion.maximo` del
+nuevo `composicion.py`; con el de la 0.3.0 el panel no arranca (ni en :8095 ni en `/streamer/`), y
+las salvaguardas del supervisor solo se aplican al reiniciarlo. Efecto: cambia el comando de la
+composición, así que la que esté en marcha se relanza una vez (la señal compuesta y sus destinos se
+cortan unos 20 s). Las salidas limpias no se relanzan. Si en el mismo día se despliega el Recorder
+1.5.1, primero el Streamer: así su panel no manda al login mientras el Recorder arranca.
 
 ## Despliegue
 
