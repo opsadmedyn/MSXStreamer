@@ -115,9 +115,30 @@ def _usuario(request: Request):
     return None, "sin_sesion"
 
 
+def _de_otro_sitio(request: Request):
+    """Petición que cambia algo y que un navegador manda desde otra página (CSRF): su Origin no es
+    este panel. Tras Caddy vale el Host o el X-Forwarded-Host (un navegador no puede poner este
+    último en una petición a otro sitio sin permiso CORS, que el panel no da). Sin Origin se deja
+    pasar: los navegadores actuales siempre lo mandan en un POST desde otro sitio."""
+    origen = request.headers.get("origin")
+    if request.method in ("GET", "HEAD", "OPTIONS") or origen is None:
+        return False
+    propios = {request.headers.get("host", "").lower(), request.headers.get("x-forwarded-host", "").lower()}
+    try:
+        netloc = urllib.parse.urlsplit(origen).netloc.lower()
+    except ValueError:
+        netloc = ""
+    return not netloc or netloc not in propios          # Origin "null" (sin netloc): fuera
+
+
 @app.middleware("http")
 async def exigir_sesion(request: Request, call_next):
     ruta = request.url.path
+    if _de_otro_sitio(request):
+        h = request.headers
+        print(f"petición rechazada (Origin ajeno): {request.method} {ruta} Origin={h.get('origin')!r} "
+              f"Host={h.get('host')!r} X-Forwarded-Host={h.get('x-forwarded-host')!r}", flush=True)
+        return JSONResponse({"detail": "Petición rechazada: no viene de este panel"}, status_code=403)
     if ruta.startswith(PUBLICAS):
         return await call_next(request)
     usuario, motivo = await run_in_threadpool(_usuario, request)
