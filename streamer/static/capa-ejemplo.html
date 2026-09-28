@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Capa de ejemplo · MSX Streamer</title>
+<!-- Capa HTML5 de ejemplo para probar la composición: L-bar (izquierda y abajo) con reloj y rótulo
+     que se desplaza. El fondo es transparente: lo que no se pinta deja ver el vídeo. Pensada para
+     el preajuste "L 78 % arriba a la derecha" (vídeo en x=422, y=0, 1498x842). -->
+<style>
+html,body{margin:0;width:1920px;height:1080px;background:transparent;overflow:hidden;font-family:Montserrat,"Helvetica Neue",Arial,sans-serif}
+#izq{position:absolute;left:0;top:0;width:422px;height:842px;background:linear-gradient(180deg,rgba(15,17,21,.94),rgba(40,22,10,.9))}
+#marca{position:absolute;left:40px;top:48px;color:#fff;font-size:34px;letter-spacing:-.5px}
+#marca b{color:#FF5A00}
+#reloj{position:absolute;left:40px;top:120px;color:#fff;font:600 64px "JetBrains Mono",Menlo,monospace}
+#fecha{position:absolute;left:40px;top:205px;color:#9aa4b5;font-size:26px;text-transform:capitalize}
+#vivo{position:absolute;left:40px;top:300px;padding:8px 18px;background:#FF5A00;color:#fff;font-weight:800;font-size:28px;border-radius:6px;letter-spacing:.08em}
+#abajo{position:absolute;left:0;top:842px;width:1920px;height:238px;background:rgba(15,17,21,.94);border-top:4px solid #FF5A00}
+#titulo{position:absolute;left:60px;top:36px;color:#fff;font-size:54px;font-weight:800}
+#cinta{position:absolute;top:150px;white-space:nowrap;color:#e6e9ef;font-size:40px;will-change:transform}
+</style></head>
+<body>
+<div id="izq"><div id="marca">Media <b>Syntaxis</b></div><div id="reloj"></div><div id="fecha"></div><div id="vivo">EN DIRECTO</div></div>
+<div id="abajo"><div id="titulo">MSX Streamer · capa de ejemplo</div>
+<div id="cinta">Composición en el Z8 · vídeo reencuadrado + capa HTML5 con transparencia · codificado con NVENC · &nbsp;&nbsp;&nbsp; Composición en el Z8 · vídeo reencuadrado + capa HTML5 con transparencia · codificado con NVENC ·</div></div>
+<script>
+const reloj = document.getElementById("reloj"), fecha = document.getElementById("fecha"), cinta = document.getElementById("cinta");
+let x = 1920;
+function paso() {
+  const d = new Date();
+  reloj.textContent = d.toLocaleTimeString("es-ES");
+  fecha.textContent = d.toLocaleDateString("es-ES", {weekday: "long", day: "numeric", month: "long"});
+  x -= 3; if (x < -cinta.offsetWidth / 2) x = 0;
+  cinta.style.transform = `translateX(${x}px)`;
+  requestAnimationFrame(paso);
+}
+requestAnimationFrame(paso);
+</script>
+</body></html>

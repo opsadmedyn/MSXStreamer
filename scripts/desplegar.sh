@@ -45,7 +45,7 @@ fi
 
 echo "== $HOST: copiando v$VERSION"
 $SSH "$COMO mkdir -p $DEST/streamer $DEST/releases/v$VERSION"
-COPYFILE_DISABLE=1 tar cz --no-xattrs streamer/*.py streamer/static VERSION config systemd \
+COPYFILE_DISABLE=1 tar cz --no-xattrs streamer/*.py streamer/componer.sh streamer/compositor streamer/static VERSION config systemd \
   | $SSH "$COMO tar xz -C $DEST/releases/v$VERSION"
 $SSH "$COMO bash -c 'rsync -a $DEST/releases/v$VERSION/streamer/ $DEST/streamer/ && cp $DEST/releases/v$VERSION/VERSION $DEST/ && cd $DEST/streamer && python3 -m py_compile *.py'"
 

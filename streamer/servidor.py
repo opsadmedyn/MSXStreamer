@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import composicion
 import db
 import mtx
 from supervisor import path_de_flujo
@@ -109,6 +110,23 @@ class Salida(BaseModel):
     passphrase: str = ""
     latencia_ms: int = Field(300, ge=20, le=8000)
     clave: str = ""
+    fuente: Literal["limpia", "compuesta"] = "limpia"
+
+
+class Capa(BaseModel):
+    url: str = Field("", max_length=2000)
+    activa: bool = True
+    encima: bool = True
+
+
+class Composicion(BaseModel):
+    activa: bool = False
+    x: int = Field(0, ge=0, le=1920)
+    y: int = Field(0, ge=0, le=1080)
+    ancho: int = Field(1920, ge=320, le=1920)
+    fondo: str = "#000000"
+    capas: list[Capa] = Field(default_factory=list, max_length=2)
+    kbps: int = Field(8000, ge=1000, le=40000)
 
 
 def _passphrase(p):
@@ -195,19 +213,23 @@ def _vista_flujo(f, salidas, estados, paths, request):
         if not (f["activo"] and s["activo"]):
             est = "detenida"
         elif s["tipo"] == "hls":
-            est = "publicando" if listo else "esperando"
+            if s["fuente"] == "compuesta":
+                ci = (paths or {}).get(composicion.path_comp(f["id"]))
+                est = "publicando" if ci and ci.get("ready") else "esperando"
+            else:
+                est = "publicando" if listo else "esperando"
         elif e.get("pid") and e.get("kbps"):
             est = "conectada"
         elif e.get("pid"):
             est = "conectando"
         else:
-            est = "esperando" if e.get("error") == "Esperando la entrada" else "reintentando"
-        v = {k: s[k] for k in ("id", "nombre", "tipo", "url", "modo", "streamid", "latencia_ms", "activo")}
+            est = "esperando" if (e.get("error") or "").startswith(("Esperando", "La composición")) else "reintentando"
+        v = {k: s[k] for k in ("id", "nombre", "tipo", "url", "modo", "streamid", "latencia_ms", "activo", "fuente")}
         v.update(estado=est, kbps=e.get("kbps"), reinicios=e.get("reinicios", 0),
                  error=e.get("error", ""), tiene_clave=bool(s["clave"]),
                  tiene_passphrase=bool(s["passphrase"]))
         if s["tipo"] == "hls":
-            v["url"] = _url_hls(request, path)
+            v["url"] = _url_hls(request, composicion.path_comp(f["id"]) if s["fuente"] == "compuesta" else path)
             v["url_m3u8"] = v["url"] + "index.m3u8"
         vs.append(v)
     return {
@@ -217,7 +239,38 @@ def _vista_flujo(f, salidas, estados, paths, request):
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
         "vista_previa": _url_hls(request, path),
+        "composicion": _vista_composicion(f, estados, paths, request),
     }
+
+
+def _vista_composicion(f, estados, paths, request):
+    c = db.conectar()
+    k = composicion.leer(c, f["id"])
+    e = estados.get(composicion.id_tarea(f["id"]), {})
+    info = (paths or {}).get(composicion.path_comp(f["id"]))
+    if not (k["activa"] and f["activo"]):
+        estado = "desactivada"
+    elif info and info.get("ready"):
+        estado = "componiendo"
+    elif e.get("pid"):
+        estado = "arrancando"
+    elif (e.get("error") or "").startswith("Esperando"):
+        estado = "esperando"
+    else:
+        estado = "reintentando"
+    x, y, w, h = composicion.normalizar(k)
+    try:
+        capas = json.loads(k["capas"] or "[]")
+    except ValueError:
+        capas = []
+    return {"activa": bool(k["activa"]), "x": x, "y": y, "ancho": w, "alto": h, "fondo": k["fondo"],
+            "capas": capas, "kbps": k["kbps"], "estado": estado,
+            "fps": composicion.fps_de(db.BASE / "run" / f"{composicion.id_tarea(f['id'])}.prog") if estado == "componiendo" else None,
+            "kbps_salida": e.get("kbps"), "reinicios": e.get("reinicios", 0),
+            "error": e.get("error", "") if estado == "reintentando" else "",
+            "path": composicion.path_comp(f["id"]),
+            "vista_previa": _url_hls(request, composicion.path_comp(f["id"])),
+            "preajustes": composicion.PREAJUSTES}
 
 
 @app.get("/api/flujos")
@@ -280,16 +333,16 @@ def crear_salida(fid: str, d: Salida):
     if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
         raise HTTPException(404, "Ese flujo no existe")
     sid = _nuevo_id(c, "salidas", d.nombre)
-    c.execute("""INSERT INTO salidas(id,flujo,nombre,tipo,url,modo,streamid,passphrase,latencia_ms,clave)
-                 VALUES (?,?,?,?,?,?,?,?,?,?)""",
+    c.execute("""INSERT INTO salidas(id,flujo,nombre,tipo,url,modo,streamid,passphrase,latencia_ms,clave,fuente)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
               (sid, fid, d.nombre.strip(), d.tipo, d.url.strip(), d.modo, d.streamid.strip(),
-               d.passphrase, d.latencia_ms, d.clave.strip()))
+               d.passphrase, d.latencia_ms, d.clave.strip(), d.fuente))
     db.evento(c, f"salida creada: {d.nombre}", flujo=fid, salida=sid)
     return {"id": sid}
 
 
 @app.post("/api/flujos/{fid}/vista-previa")
-def vista_previa(fid: str, request: Request):
+def vista_previa(fid: str, request: Request, fuente: Literal["limpia", "compuesta"] = "limpia"):
     """Abre el HLS del flujo durante una hora para verlo desde el navegador. Espera a que el
     supervisor lo aplique en MediaMTX para que el enlace funcione a la primera."""
     c = db.conectar()
@@ -302,11 +355,35 @@ def vista_previa(fid: str, request: Request):
     c.execute("INSERT INTO vistas_previas(flujo, hasta) VALUES (?,?) "
               "ON CONFLICT(flujo) DO UPDATE SET hasta=excluded.hasta", (fid, hasta))
     path = path_de_flujo(dict(f))
+    if fuente == "compuesta":
+        if not composicion.leer(c, fid)["activa"]:
+            raise HTTPException(409, "Activa la composición para verla")
+        path = composicion.path_comp(fid)
     for _ in range(20):                         # el supervisor da una vuelta cada 2 s
         if path in (mtx.acceso_red() or set()):
             break
         time.sleep(0.3)
     return {"url": _url_hls(request, path), "hasta": hasta}
+
+
+@app.put("/api/flujos/{fid}/composicion")
+def guardar_composicion(fid: str, d: Composicion):
+    c = db.conectar()
+    if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
+        raise HTTPException(404, "Ese flujo no existe")
+    if not composicion.validar_fondo(d.fondo):
+        raise HTTPException(422, "El color de fondo debe ser #RRGGBB")
+    for i, capa in enumerate(d.capas, start=1):
+        if capa.url.strip() and not composicion.validar_url_capa(capa.url.strip()):
+            raise HTTPException(422, f"La URL de la capa {i} debe empezar por http:// o https://")
+    x, y, w, _ = composicion.normalizar(d.model_dump())
+    capas = json.dumps([{"url": k.url.strip(), "activa": k.activa, "encima": k.encima} for k in d.capas])
+    c.execute("""INSERT INTO composiciones(flujo,activa,x,y,ancho,fondo,capas,kbps) VALUES (?,?,?,?,?,?,?,?)
+                 ON CONFLICT(flujo) DO UPDATE SET activa=excluded.activa,x=excluded.x,y=excluded.y,
+                 ancho=excluded.ancho,fondo=excluded.fondo,capas=excluded.capas,kbps=excluded.kbps""",
+              (fid, int(d.activa), x, y, w, d.fondo.lower(), capas, d.kbps))
+    db.evento(c, "composición " + ("activada" if d.activa else "guardada (desactivada)"), flujo=fid)
+    return {"ok": True}
 
 
 @app.post("/api/flujos/{fid}/{accion}")
@@ -335,10 +412,11 @@ def editar_salida(sid: str, d: Salida):
     actual = c.execute("SELECT passphrase, clave FROM salidas WHERE id=?", (sid,)).fetchone()
     if not actual:
         raise HTTPException(404, "Esa salida no existe")
-    c.execute("""UPDATE salidas SET nombre=?,tipo=?,url=?,modo=?,streamid=?,passphrase=?,latencia_ms=?,clave=?
+    c.execute("""UPDATE salidas SET nombre=?,tipo=?,url=?,modo=?,streamid=?,passphrase=?,latencia_ms=?,clave=?,fuente=?
                  WHERE id=?""",
               (d.nombre.strip(), d.tipo, d.url.strip(), d.modo, d.streamid.strip(),
-               d.passphrase or actual["passphrase"], d.latencia_ms, d.clave.strip() or actual["clave"], sid))
+               d.passphrase or actual["passphrase"], d.latencia_ms, d.clave.strip() or actual["clave"],
+               d.fuente, sid))
     db.evento(c, "salida editada", salida=sid)
     return {"ok": True}
 

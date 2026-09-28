@@ -101,7 +101,7 @@ function abrirFlujo(id) {
   tipoEntrada(f.entrada, f.canal);
   $('#b-guardar').textContent = 'Guardar entrada';
   irPaso('salidas');
-  vista('editor'); cargarCanales(); pintarEditor();
+  vista('editor'); cargarCanales(); cargarComp(f); pintarEditor();
 }
 
 function pintarEditor() {
@@ -128,6 +128,7 @@ function pintarEditor() {
     } catch (err) { if (w) w.close(); alertaEditor(err.message); }
   };
   pintarSalidas(f);
+  estadoComp(f);
 }
 
 function tipoEntrada(t, canal) {
@@ -178,7 +179,7 @@ function pintarSalidas(f) {
     const rein = s.reinicios ? `<div class="nota">${s.reinicios} reinicio${s.reinicios > 1 ? 's' : ''}</div>` : '';
     return `<tr data-id="${esc(s.id)}">
       <td><span class="tipo">${esc(s.tipo.toUpperCase())}</span></td>
-      <td>${esc(s.nombre)}<br>${enlace}${err}</td>
+      <td>${esc(s.nombre)}${s.fuente === 'compuesta' ? ' <span class="chip"><b>COMPUESTA</b></span>' : ''}<br>${enlace}${err}</td>
       <td>${pill(ESTADO_SALIDA[s.estado])}${rein}</td>
       <td class="num">${s.tipo === 'hls' ? '—' : num(s.kbps)}</td>
       <td><div class="acciones-fila">
@@ -212,7 +213,7 @@ function abrirDestino(s) {
   $('#d-nota').hidden = !s;
   $$('.tipos button').forEach(b => b.disabled = !!s && b.dataset.tipo !== s.tipo);
   if (s) {
-    $('#d-nom').value = s.nombre;
+    $('#d-nom').value = s.nombre; $('#d-fuente').value = s.fuente || 'limpia';
     if (s.tipo === 'srt') { $('#d-srturl').value = s.url; $('#d-modo').value = s.modo; $('#d-lat').value = s.latencia_ms; $('#d-sid').value = s.streamid; }
     if (s.tipo === 'rtmp') $('#d-rtmpurl').value = s.url;
   }
@@ -224,7 +225,7 @@ $('#d-cancel').onclick = () => $('#dlg').close();
 $('#f-dest').onsubmit = e => { e.preventDefault(); $('#d-ok').click(); };
 $('#d-ok').onclick = async () => {
   const tipo = $('.tipos button[aria-pressed=true]').dataset.tipo;
-  const d = {nombre: $('#d-nom').value.trim(), tipo};
+  const d = {nombre: $('#d-nom').value.trim(), tipo, fuente: $('#d-fuente').value};
   if (tipo === 'srt') Object.assign(d, {url: $('#d-srturl').value.trim(), modo: $('#d-modo').value,
     latencia_ms: +$('#d-lat').value || 300, passphrase: $('#d-pass').value, streamid: $('#d-sid').value.trim()});
   if (tipo === 'rtmp') Object.assign(d, {url: $('#d-rtmpurl').value.trim(), clave: $('#d-clave').value.trim()});
@@ -235,6 +236,133 @@ $('#d-ok').onclick = async () => {
     $('#dlg').close(); await refrescar();
   } catch (err) { $('#d-aviso').textContent = err.message; }
 };
+
+// ---------------------------------------------------------------- composición (fase 2)
+const ESTADO_COMP = {
+  componiendo: ['ok', 'Componiendo'], arrancando: ['av', 'Arrancando'], esperando: ['av', 'Esperando señal'],
+  reintentando: ['er', 'Reintentando'], desactivada: ['off', 'Desactivada'],
+};
+const CAPA_EJEMPLO = 'http://127.0.0.1:8095/static/capa-ejemplo.html';
+let comp = null;      // copia editable de la composición del flujo abierto
+
+function cargarComp(f) {
+  const k = f.composicion;
+  comp = {activa: k.activa, x: k.x, y: k.y, ancho: k.ancho, fondo: k.fondo, kbps: k.kbps,
+    capas: [0, 1].map(i => ({url: '', activa: true, encima: true, ...(k.capas[i] || {})}))};
+  $('#av-comp').textContent = '';
+  formComp();
+}
+
+function formComp() {
+  $('#c-activa').checked = comp.activa;
+  $('#c-ancho').value = comp.ancho; $('#c-x').value = comp.x; $('#c-y').value = comp.y;
+  $('#c-fondo').value = comp.fondo; $('#c-kbps').value = comp.kbps;
+  $('#c-capas').innerHTML = comp.capas.map((c, i) => `
+    <div class="capa2" data-i="${i}">
+      <div class="capa-cab"><span class="orden">${i + 1}</span><b style="flex:1">Capa ${i + 1}</b>
+        <select data-k="encima" style="width:auto"><option value="1">Encima del vídeo</option><option value="0">Debajo del vídeo</option></select>
+        <span class="sw" title="Capa activa"><input type="checkbox" data-k="activa"><span></span></span></div>
+      <input type="text" data-k="url" placeholder="https://… (vacía: sin capa)">
+    </div>`).join('');
+  $$('#c-capas .capa2').forEach(el => {
+    const c = comp.capas[+el.dataset.i];
+    el.querySelector('[data-k=url]').value = c.url;
+    el.querySelector('[data-k=activa]').checked = c.activa;
+    el.querySelector('[data-k=encima]').value = c.encima ? '1' : '0';
+    el.querySelector('[data-k=url]').oninput = e => { c.url = e.target.value.trim(); lienzo(); };
+    el.querySelector('[data-k=activa]').onchange = e => { c.activa = e.target.checked; lienzo(); };
+    el.querySelector('[data-k=encima]').onchange = e => { c.encima = e.target.value === '1'; lienzo(); };
+  });
+  lienzo();
+}
+
+function ajustar() {                 // igual que en el servidor: el vídeo cabe entero, medidas pares
+  comp.ancho = Math.max(320, Math.min(1920, +comp.ancho || 1920)) & ~1;
+  const alto = Math.round(comp.ancho * 9 / 16) & ~1;
+  comp.x = Math.max(0, Math.min(1920 - comp.ancho, +comp.x || 0)) & ~1;
+  comp.y = Math.max(0, Math.min(1080 - alto, +comp.y || 0)) & ~1;
+  return alto;
+}
+
+function lienzo() {
+  const alto = ajustar();
+  $('#c-ancho').value = comp.ancho; $('#c-x').value = comp.x; $('#c-y').value = comp.y;
+  $('#c-ancho-txt').textContent = `${comp.ancho}×${alto} · ${Math.round(comp.ancho / 19.2)} %`;
+  const v = $('#c-video');
+  Object.assign(v.style, {left: comp.x / 19.2 + '%', top: comp.y / 10.8 + '%', width: comp.ancho / 19.2 + '%', height: alto / 10.8 + '%'});
+  $('#c-lienzo').style.background = comp.fondo;
+  $$('#c-presets button').forEach(b => {
+    const [x, y, w] = (flujos.find(f => f.id === actual)?.composicion.preajustes || {})[b.dataset.p] || [];
+    b.setAttribute('aria-pressed', x === comp.x && y === comp.y && w === comp.ancho);
+  });
+  for (const lado of ['encima', 'debajo']) {
+    const cont = $('#c-capas-' + lado);
+    const urls = comp.capas.filter(c => c.activa && /^https?:\/\//.test(c.url) && (lado === 'encima') === c.encima).map(c => c.url);
+    const actuales = [...cont.querySelectorAll('iframe')].map(f => f.dataset.url);
+    if (urls.join('|') !== actuales.join('|')) {
+      cont.innerHTML = urls.map(u => `<iframe data-url="${esc(u)}" src="${esc(vistaCapa(u))}" tabindex="-1" sandbox="allow-scripts allow-same-origin"></iframe>`).join('');
+    }
+  }
+  escalarCapas();
+}
+// la capa de ejemplo se pide a 127.0.0.1 desde el Z8; en el navegador se ve desde este mismo panel
+const vistaCapa = u => u.startsWith('http://127.0.0.1:8095/') ? u.replace('http://127.0.0.1:8095', '') : u;
+function escalarCapas() {
+  const k = $('#c-lienzo').clientWidth / 1920;
+  $$('#c-lienzo iframe').forEach(f => f.style.transform = `scale(${k})`);
+}
+new ResizeObserver(escalarCapas).observe($('#c-lienzo'));
+
+$('#c-activa').onchange = e => { comp.activa = e.target.checked; };
+$('#c-ancho').oninput = e => {           // al cambiar el ancho se mantiene el centro del vídeo
+  const cx = comp.x + comp.ancho / 2, cy = comp.y + comp.ancho * 9 / 32;
+  comp.ancho = +e.target.value; comp.x = Math.round(cx - comp.ancho / 2); comp.y = Math.round(cy - comp.ancho * 9 / 32);
+  lienzo();
+};
+$('#c-x').onchange = e => { comp.x = +e.target.value; lienzo(); };
+$('#c-y').onchange = e => { comp.y = +e.target.value; lienzo(); };
+$('#c-fondo').oninput = e => { comp.fondo = e.target.value; lienzo(); };
+$('#c-kbps').onchange = e => { comp.kbps = +e.target.value || 8000; };
+$$('#c-presets button').forEach(b => b.onclick = () => {
+  const p = (flujos.find(f => f.id === actual)?.composicion.preajustes || {})[b.dataset.p];
+  if (p) { [comp.x, comp.y, comp.ancho] = p; lienzo(); }
+});
+$('#c-ejemplo').onclick = () => {
+  const libre = comp.capas.findIndex(c => !c.url);
+  const c = comp.capas[libre < 0 ? 0 : libre];
+  Object.assign(c, {url: CAPA_EJEMPLO, activa: true, encima: true});
+  if (JSON.stringify([comp.x, comp.y, comp.ancho]) === JSON.stringify([0, 0, 1920])) [comp.x, comp.y, comp.ancho] = [422, 0, 1498];
+  formComp();
+};
+$('#f-comp').onsubmit = async e => {
+  e.preventDefault();
+  const av = $('#av-comp'); av.className = 'aviso'; av.textContent = '';
+  const d = {...comp, capas: comp.capas.filter(c => c.url)};
+  try {
+    await api('PUT', `/api/flujos/${actual}/composicion`, d);
+    av.className = 'aviso ok';
+    av.textContent = d.activa ? 'Guardada. La composición arranca en unos segundos.' : 'Guardada (desactivada).';
+    await refrescar();
+  } catch (err) { av.className = 'aviso error'; av.textContent = err.message; }
+};
+$('#c-ver').onclick = async e => {
+  e.preventDefault();
+  const w = window.open('', '_blank');
+  try {
+    const r = await api('POST', `/api/flujos/${actual}/vista-previa?fuente=compuesta`);
+    if (w) { w.opener = null; w.location = r.url; } else window.open(r.url, '_blank', 'noopener');
+  } catch (err) { if (w) w.close(); const av = $('#av-comp'); av.className = 'aviso error'; av.textContent = err.message; }
+};
+
+function estadoComp(f) {
+  const k = f.composicion;
+  $('#c-estado').innerHTML = pill(ESTADO_COMP[k.estado] || ['off', k.estado]);
+  const partes = [];
+  if (k.estado === 'componiendo') partes.push(`${k.fps ? k.fps.toFixed(2).replace('.', ',') + ' fps' : ''}`, num(k.kbps_salida));
+  if (k.reinicios) partes.push(`${k.reinicios} reinicio${k.reinicios > 1 ? 's' : ''}`);
+  if (k.error) partes.push(k.error);
+  $('#c-datos').textContent = partes.filter(Boolean).join(' · ');
+}
 
 // ---------------------------------------------------------------- utilidades
 async function accion(ruta) {

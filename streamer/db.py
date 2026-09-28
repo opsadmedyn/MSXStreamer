@@ -53,6 +53,16 @@ CREATE TABLE IF NOT EXISTS vistas_previas (   -- vista previa HLS abierta desde 
     flujo       TEXT PRIMARY KEY REFERENCES flujos(id) ON DELETE CASCADE,
     hasta       REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS composiciones (  -- fase 2: una por flujo; publica en el path "comp_<flujo>"
+    flujo       TEXT PRIMARY KEY REFERENCES flujos(id) ON DELETE CASCADE,
+    activa      INTEGER NOT NULL DEFAULT 0,
+    x           INTEGER NOT NULL DEFAULT 0,      -- vídeo dentro del lienzo 1920x1080 (16:9)
+    y           INTEGER NOT NULL DEFAULT 0,
+    ancho       INTEGER NOT NULL DEFAULT 1920,   -- el alto sale del ancho (16:9)
+    fondo       TEXT NOT NULL DEFAULT '#000000',
+    capas       TEXT NOT NULL DEFAULT '[]',      -- JSON: [{"url", "activa", "encima"}], hasta 2
+    kbps        INTEGER NOT NULL DEFAULT 8000
+);
 CREATE TABLE IF NOT EXISTS paths_mtx (       -- paths de MediaMTX creados por el supervisor
     nombre      TEXT PRIMARY KEY
 );
@@ -71,7 +81,15 @@ def conectar():
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     c.executescript(ESQUEMA)
+    migrar(c)
     return c
+
+
+def migrar(c):
+    """Columnas añadidas después de crear la base (CREATE TABLE IF NOT EXISTS no las añade)."""
+    columnas = {r["name"] for r in c.execute("PRAGMA table_info(salidas)")}
+    if "fuente" not in columnas:          # fase 2: 'limpia' (en copia) o 'compuesta'
+        c.execute("ALTER TABLE salidas ADD COLUMN fuente TEXT NOT NULL DEFAULT 'limpia'")
 
 
 def filas(c, sql, *args):

@@ -5,7 +5,10 @@ Cada 2 s compara lo que pide la base de datos con lo que está corriendo y lo co
   - declara en MediaMTX los paths de los flujos activos (y borra los que sobran);
   - mantiene un ffmpeg por cada salida SRT/RTMP activa, en copia, y lo relanza si cae,
     con espera creciente (2, 4, 8… hasta 30 s);
-  - las salidas HLS no necesitan proceso: las sirve MediaMTX.
+  - las salidas HLS no necesitan proceso: las sirve MediaMTX;
+  - fase 2: mantiene un proceso de composición por flujo con la composición activa (capturas de
+    Chromium + ffmpeg con NVENC) que publica en "comp_<flujo>"; las salidas con fuente
+    "compuesta" leen de ahí. Se vigila igual que una salida.
 
 Los ffmpeg corren en su propia sesión: si el supervisor se reinicia (por ejemplo al desplegar),
 las salidas siguen al aire y el supervisor las vuelve a adoptar por su PID.
@@ -20,6 +23,7 @@ import sys
 import time
 import urllib.parse
 
+import composicion
 import db
 import mtx
 
@@ -29,6 +33,7 @@ LOGS = db.BASE / "logs"
 LOG_MAX = 5 * 1024 * 1024
 VUELTA = 2.0
 ESPERA_MAX = 30.0
+COMPONER = pathlib.Path(__file__).parent / "componer.sh"
 
 
 def path_de_flujo(f):
@@ -173,6 +178,8 @@ class Supervisor:
             conf = mtx.conf_de_flujo(f, canales)
             if conf:
                 deseados[path_de_flujo(f)] = conf
+        for fid in composicion.activas(self.c):     # la composición publica ahí (desde este equipo)
+            deseados[composicion.path_comp(fid)] = {"source": "publisher"}
         try:
             actuales = mtx.paths_config()
             for nombre, conf in deseados.items():
@@ -201,49 +208,76 @@ class Supervisor:
         """HLS bajo demanda: solo se lee desde la red un flujo activo con un destino HLS activo o
         con la vista previa abierta. Las reglas quedan en MediaMTX y no dependen del panel."""
         activos = {f["id"]: path_de_flujo(f) for f in flujos}
-        con_hls = {r["flujo"] for r in self.c.execute(
-            "SELECT DISTINCT flujo FROM salidas WHERE activo=1 AND tipo='hls'")}
+        comps = composicion.activas(self.c)
+        paths = set()
+        for r in self.c.execute("SELECT DISTINCT flujo, fuente FROM salidas WHERE activo=1 AND tipo='hls'"):
+            if r["flujo"] in activos:
+                paths.add(composicion.path_comp(r["flujo"]) if r["fuente"] == "compuesta" else activos[r["flujo"]])
         self.c.execute("DELETE FROM vistas_previas WHERE hasta < ?", (time.time(),))
-        vista = {r["flujo"] for r in self.c.execute("SELECT flujo FROM vistas_previas")}
-        paths = {activos[f] for f in (con_hls | vista) if f in activos}
+        for (f,) in self.c.execute("SELECT flujo FROM vistas_previas").fetchall():
+            if f in activos:                        # la vista previa enseña la limpia y la compuesta
+                paths.add(activos[f])
+                if f in comps:
+                    paths.add(composicion.path_comp(f))
         if mtx.asegurar_acceso(paths):
             db.evento(self.c, "HLS publicado: " + (", ".join(sorted(paths)) or "ninguno"))
+
+    def tareas(self, flujos, por_id):
+        """Procesos que deben correr: {id: (comando, path que necesita listo, error si no puede)}."""
+        comps = composicion.activas(self.c)
+        tareas = {}
+        for fid, comp in comps.items():
+            cmd = composicion.comando(comp, path_de_flujo(por_id[fid]), FFMPEG, RUN, COMPONER)
+            tareas[composicion.id_tarea(fid)] = (cmd, path_de_flujo(por_id[fid]), None)
+        for s in db.filas(self.c, "SELECT * FROM salidas WHERE activo=1 AND tipo IN ('srt','rtmp')"):
+            if s["flujo"] not in por_id:
+                continue
+            if s.get("fuente") == "compuesta":
+                if s["flujo"] not in comps:
+                    tareas[s["id"]] = (None, None, "La composición del flujo está desactivada")
+                    continue
+                path = composicion.path_comp(s["flujo"])
+            else:
+                path = path_de_flujo(por_id[s["flujo"]])
+            tareas[s["id"]] = (comando(s, path), path, None)
+        return tareas
 
     def vuelta(self):
         recoger_hijos()
         flujos = db.filas(self.c, "SELECT * FROM flujos WHERE activo=1")
         por_id = {f["id"]: f for f in flujos}
         estado_paths = self.sincronizar_mediamtx(flujos)
-        salidas = db.filas(self.c, "SELECT * FROM salidas WHERE activo=1 AND tipo IN ('srt','rtmp')")
-        deseadas = {s["id"]: s for s in salidas if s["flujo"] in por_id}
+        deseadas = self.tareas(flujos, por_id)
 
-        # salidas que ya no deben correr (borradas, desactivadas o de un flujo detenido)
+        # procesos que ya no deben correr (borrados, desactivados o de un flujo detenido)
         for e in db.filas(self.c, "SELECT * FROM estado_salidas"):
-            if e["salida"] not in deseadas:
+            if e["salida"] not in deseadas or deseadas[e["salida"]][0] is None:
                 if vivo(e["pid"], RUN / f"{e['salida']}.prog"):
                     matar(e["pid"])
                     db.evento(self.c, "salida detenida", salida=e["salida"])
-                self.c.execute("DELETE FROM estado_salidas WHERE salida=?", (e["salida"],))
+                if e["salida"] not in deseadas:
+                    self.c.execute("DELETE FROM estado_salidas WHERE salida=?", (e["salida"],))
                 self.espera.pop(e["salida"], None)
 
-        for sid, s in deseadas.items():
-            path = path_de_flujo(por_id[s["flujo"]])
-            cmd = comando(s, path)
+        for sid, (cmd, path, impedimento) in deseadas.items():
+            e = self.estado(sid)
+            if cmd is None:                                  # no puede correr (p. ej. sin composición)
+                self.guardar({**e, "pid": None, "desde": None, "kbps": None, "error": impedimento})
+                continue
             huella = firma(cmd)
             prog, log = RUN / f"{sid}.prog", LOGS / f"{sid}.log"
-            e = self.estado(sid)
             corriendo = vivo(e["pid"], prog)
 
-            if corriendo and e["firma"] != huella:          # se editó la salida: relanzar
+            if corriendo and e["firma"] != huella:          # se editó: relanzar
                 matar(e["pid"])
                 corriendo, e["pid"] = False, None
                 self.espera.pop(sid, None)
-                db.evento(self.c, "salida relanzada por cambio de configuración", salida=sid)
+                db.evento(self.c, "relanzada por cambio de configuración", salida=sid)
 
             if not corriendo and e["pid"]:                  # murió por su cuenta: cuenta como caída
                 e["reinicios"] += 1
                 e["pid"] = None
-                db.evento(self.c, f"salida caída: {ultimo_error(log)}", salida=sid)
+                db.evento(self.c, f"caída: {ultimo_error(log)}", salida=sid)
 
             if corriendo:
                 kbps = leer_kbps(prog)
@@ -252,12 +286,12 @@ class Supervisor:
                 self.guardar({**e, "kbps": kbps, "error": ""})
                 continue
 
-            # no corre: ¿hay entrada? sin entrada no tiene sentido lanzar ffmpeg
+            # no corre: ¿hay entrada? sin entrada no tiene sentido lanzarlo
             listo = estado_paths is not None and (estado_paths.get(path) or {}).get("ready")
             if not listo:
+                esperando = "Esperando la composición" if path.startswith("comp_") else "Esperando la entrada"
                 self.guardar({**e, "pid": None, "desde": None, "kbps": None,
-                              "error": "Esperando la entrada" if estado_paths is not None
-                              else "MediaMTX no responde"})
+                              "error": esperando if estado_paths is not None else "MediaMTX no responde"})
                 continue
 
             espera, cuando = self.espera.get(sid, (0.0, 0.0))
@@ -275,7 +309,7 @@ class Supervisor:
                     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=salida_log, start_new_session=True)
             except OSError as err:
-                self.guardar({**e, "pid": None, "error": f"No se pudo lanzar ffmpeg: {err}"})
+                self.guardar({**e, "pid": None, "error": f"No se pudo lanzar: {err}"})
                 continue
             espera = min(ESPERA_MAX, max(2.0, espera * 2))
             self.espera[sid] = (espera, time.time() + espera)

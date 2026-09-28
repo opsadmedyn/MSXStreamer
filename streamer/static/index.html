@@ -31,6 +31,15 @@
   .copiar{cursor:pointer;border-bottom:1px dotted var(--tenue)}
   .mini{display:grid;place-items:center;color:var(--tenue);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
   .mini.aire{background:linear-gradient(135deg,#1c2a1f,#14301d);color:var(--ok)}
+  .comp{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr);gap:16px;align-items:start}
+  .lienzo{position:relative;width:100%;aspect-ratio:16/9;background:#000;border:1px solid var(--borde);border-radius:6px;overflow:hidden;container-type:inline-size}
+  .video-m{position:absolute;background:repeating-linear-gradient(135deg,#243049 0 12px,#1d2638 12px 24px);display:grid;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em;outline:1px solid #5b6f99}
+  .capas-m{position:absolute;inset:0;pointer-events:none}
+  .capas-m iframe{position:absolute;left:0;top:0;width:1920px;height:1080px;border:0;transform-origin:0 0;background:transparent}
+  .zona{position:absolute;border:1px dashed rgba(255,255,255,.28);pointer-events:none}
+  .zona.z93{inset:3.5%}.zona.z90{inset:5%}
+  .presets button[aria-pressed="true"]{border-color:var(--acento)}
+  @media (max-width:980px){.comp{grid-template-columns:1fr}}
   @media (max-width:560px){.reg div{grid-template-columns:1fr;gap:2px}}
 </style>
 </head>
@@ -94,10 +103,56 @@
   </div>
 
   <div id="p-comp" hidden>
-    <div class="panel fase2">
-      <h2>Composición</h2>
-      <h3>Llega en la fase 2</h3>
-      <p>Reencuadre del vídeo (tamaño y posición, con zonas seguras) y hasta dos capas HTML5, cada una con su URL de origen. De momento todas las salidas llevan el feed limpio en copia, sin recodificar.</p>
+    <div class="comp">
+      <div class="panel">
+        <div class="cab" style="margin-bottom:12px">
+          <div><h2 style="margin:0">Composición</h2><p class="sub" style="margin:4px 0 0">Vídeo reencuadrado sobre un lienzo 1920×1080 y hasta dos capas HTML5 con transparencia.</p></div>
+          <div class="acc"><span id="c-estado"></span></div>
+        </div>
+        <div class="lienzo" id="c-lienzo" aria-label="Vista del encuadre">
+          <div class="capas-m" id="c-capas-debajo"></div>
+          <div class="video-m" id="c-video"><span>VÍDEO</span></div>
+          <div class="capas-m" id="c-capas-encima"></div>
+          <div class="zona z93"></div><div class="zona z90"></div>
+        </div>
+        <p class="nota" style="margin-top:8px">Guías: zona de acción (93 %) y de títulos (90 %). Las capas se muestran tal cual si la página permite verse incrustada.</p>
+        <div class="fila" style="margin-top:12px;gap:14px">
+          <a href="#" id="c-ver" style="color:var(--acento2)">Ver el resultado (vista previa compuesta)</a>
+          <span class="nota" id="c-datos"></span>
+        </div>
+      </div>
+      <form class="panel ctrl" id="f-comp">
+        <label class="check"><span class="sw"><input type="checkbox" id="c-activa"><span></span></span> Composición activa</label>
+        <div class="grupo">
+          <label class="l">Encuadre del vídeo</label>
+          <div class="presets" id="c-presets" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+            <button type="button" data-p="completa"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="currentColor" opacity=".5"/></svg>Completa</button>
+            <button type="button" data-p="l_derecha"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="10.7" y="1" width="32.3" height="18.2" fill="currentColor" opacity=".5"/></svg>L derecha</button>
+            <button type="button" data-p="l_izquierda"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="1" y="1" width="32.3" height="18.2" fill="currentColor" opacity=".5"/></svg>L izquierda</button>
+            <button type="button" data-p="centrada"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="5.2" y="3.4" width="33.6" height="18.2" fill="currentColor" opacity=".5"/></svg>Centrada 80 %</button>
+          </div>
+          <label class="l"><span>Ancho del vídeo</span><span class="num" id="c-ancho-txt"></span></label>
+          <input type="range" id="c-ancho" min="320" max="1920" step="2">
+          <div class="dos">
+            <label class="campo-f"><span>X (px)</span><input type="number" id="c-x" min="0" max="1920" step="2"></label>
+            <label class="campo-f"><span>Y (px)</span><input type="number" id="c-y" min="0" max="1080" step="2"></label>
+          </div>
+          <label class="campo-f"><span>Color de fondo</span><input type="color" id="c-fondo" value="#000000" style="height:36px;padding:2px"></label>
+        </div>
+        <div class="grupo">
+          <label class="l"><span>Capas HTML5</span><button type="button" class="btn peq" id="c-ejemplo">Usar la capa de ejemplo</button></label>
+          <div class="capas" id="c-capas"></div>
+          <p class="nota">URL de una página web con fondo transparente, pensada para 1920×1080. Encima: tapa el vídeo donde pinta. Debajo: solo se ve fuera del vídeo.</p>
+        </div>
+        <div class="grupo">
+          <label class="campo-f"><span>Calidad de la señal compuesta (kbps)</span><input type="number" id="c-kbps" min="1000" max="40000" step="500"></label>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn pri" id="c-guardar">Guardar composición</button>
+          <span class="aviso" id="av-comp"></span>
+        </div>
+        <p class="nota">Los destinos eligen si llevan la señal limpia (en copia) o la compuesta, en su configuración.</p>
+      </form>
     </div>
   </div>
 
@@ -105,7 +160,7 @@
     <div class="panel">
       <div class="cab" style="margin-bottom:8px"><div><h2 style="margin:0">Destinos</h2></div><div class="acc"><button class="btn pri" id="b-add">Añadir destino</button></div></div>
       <div class="scroll"><table class="tabla"><thead><tr><th>Tipo</th><th>Destino</th><th>Estado</th><th>Tasa</th><th></th></tr></thead><tbody id="t-sal"></tbody></table></div>
-      <p class="nota" style="margin-top:12px">Todas las salidas van en copia: la misma calidad que la entrada, sin recodificar. Si un destino falla, solo ese se reintenta.</p>
+      <p class="nota" style="margin-top:12px">La señal limpia va en copia: la misma calidad que la entrada, sin recodificar. La compuesta sale de la composición del flujo. Si un destino falla, solo ese se reintenta.</p>
     </div>
   </div>
 
@@ -121,7 +176,8 @@
     <button type="button" data-tipo="srt" aria-pressed="true">SRT</button><button type="button" data-tipo="rtmp" aria-pressed="false">RTMP</button><button type="button" data-tipo="hls" aria-pressed="false">HLS</button>
   </div>
   <form id="f-dest" class="form">
-    <label class="campo-f ancho"><span>Nombre</span><input id="d-nom" type="text" required maxlength="80" placeholder="Master control"></label>
+    <label class="campo-f"><span>Nombre</span><input id="d-nom" type="text" required maxlength="80" placeholder="Master control"></label>
+    <label class="campo-f"><span>Señal</span><select id="d-fuente"><option value="limpia">Limpia (en copia)</option><option value="compuesta">Compuesta (con capas)</option></select></label>
     <div class="ancho form" data-t="srt" style="padding:0">
       <label class="campo-f ancho"><span>URL</span><input id="d-srturl" type="text" placeholder="srt://destino.ejemplo.com:9000"></label>
       <label class="campo-f"><span>Modo</span><select id="d-modo"><option value="caller">Caller (conectamos nosotros)</option><option value="listener">Listener (el destino se conecta)</option></select></label>

@@ -2,9 +2,12 @@
 
 Hub SRT de la suite Media Syntaxis: recibe feeds, los enruta y los distribuye a varios destinos.
 
-**Fase 1 (esta versión):** entradas desde un canal de MSX Recorder del mismo equipo o por SRT pull;
-salidas SRT (caller o listener), RTMP y HLS, todas en copia (sin recodificar). La composición con
-reencuadre y capas HTML5 llega en la fase 2.
+**Fase 1:** entradas desde un canal de MSX Recorder del mismo equipo o por SRT pull; salidas SRT
+(caller o listener), RTMP y HLS en copia (sin recodificar).
+
+**Fase 2 (0.2.0):** composición por flujo: el vídeo reencuadrado en un lienzo 1920×1080 (preajustes
+y posición libre, con guías de zonas seguras) y hasta dos capas HTML5 con transparencia, encima o
+debajo del vídeo. Cada destino elige señal limpia (en copia) o compuesta.
 
 ## Cómo funciona
 
@@ -42,6 +45,16 @@ salidas leen de ahí) y, desde la red, solo la lectura de esos flujos. El superv
 la API en cada vuelta, en caliente y sin cortar a nadie, así que **no dependen del panel**: con el
 panel parado, las salidas se siguen conectando. Como `hlsAlwaysRemux` está apagado, el HLS solo se
 genera mientras alguien lo mira.
+
+### Composición (fase 2)
+
+El supervisor mantiene, por cada flujo con la composición activa, un proceso `componer.sh`: una
+captura de Chromium sin pantalla por capa (`compositor/captura.mjs`, PNG con alfa a 29,97 fps por un
+FIFO) y un ffmpeg que reencuadra y superpone por CPU (el ffmpeg del Z8 no trae filtros CUDA), codifica
+con NVENC y publica en MediaMTX en `comp_<flujo>`. Las salidas con fuente "compuesta" leen de ahí; la
+señal limpia sigue igual para las demás. Todo va en un grupo de procesos: se para o relanza entero.
+Runtime (Node y Chromium): `scripts/instalar-compositor.sh <estación>`, una vez. Capa de ejemplo:
+`http://127.0.0.1:8095/static/capa-ejemplo.html` (L-bar con reloj, para el preajuste "L derecha").
 
 ## Despliegue
 
