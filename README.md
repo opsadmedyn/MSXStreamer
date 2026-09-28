@@ -68,12 +68,15 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
-## Acceso (0.3.0)
+## Acceso (0.3.1)
 
-Se entra con los usuarios del MSX Recorder del mismo equipo, sin usuarios propios: hace falta
-«streamer» en la columna G «Módulos» de la hoja de usuarios. El panel lee la cookie de sesión del
-Recorder y pregunta por ella a `http://127.0.0.1:8081/api/auth/yo` (caché de 10 s); sin sesión, manda
-al login del Recorder, que devuelve aquí al entrar. En la red local: `http://<equipo>:8095/`. Por
-HTTPS (Tailscale): `https://<dominio del Recorder>/streamer/`, en el mismo Caddy. Admin: todo.
-Operador: ver, arrancar/parar destinos y vista previa. El registro anota quién hizo cada cambio.
-`clave_panel` queda como acceso de emergencia (entra como admin por `/login`).
+Solo por Tailscale y solo con los usuarios del MSX Recorder del mismo equipo. El panel escucha en
+`127.0.0.1:8095` y lo publica el Caddy del Recorder en `https://<dominio del Recorder>/streamer/`
+(mismo dominio, así que comparte la cookie de sesión del Recorder). Hace falta «streamer» en la
+columna G «Módulos» de la hoja de usuarios. El panel pregunta por la sesión a
+`http://127.0.0.1:8081/api/auth/yo` (caché de 10 s); sin sesión, manda al login del Recorder, que
+devuelve aquí al entrar. Admin: todo. Operador: ver, arrancar/parar destinos y vista previa. El
+registro anota quién hizo cada cambio. No hay clave propia ni acceso por la red local.
+
+`host_publico` (config.json) es el nombre con el que se construyen los enlaces HLS y de vista previa
+(`http://<host_publico>:8888/…`): el dominio del Recorder, que resuelve a su IP de Tailscale.
