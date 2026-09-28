@@ -6,10 +6,11 @@ const num = n => n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('
 let flujos = [], actual = null, paso = 'entrada', editandoSalida = null, canales = [];
 
 async function api(metodo, ruta, cuerpo) {
-  const r = await fetch(ruta, {method: metodo, headers: {'Content-Type': 'application/json'},
+  // rutas relativas: el panel funciona igual en :8095 que tras Caddy en /streamer/
+  const r = await fetch(ruta.replace(/^\//, ''), {method: metodo, headers: {'Content-Type': 'application/json'},
     body: cuerpo ? JSON.stringify(cuerpo) : undefined});
-  if (r.status === 401) { location.href = '/login'; throw new Error('Sesión caducada'); }
   const d = await r.json().catch(() => ({}));
+  if (r.status === 401) { location.href = d.login || 'login'; throw new Error('Sesión caducada'); }
   if (!r.ok) {
     const det = d.detail;
     throw new Error(Array.isArray(det) ? det.map(x => x.msg).join('; ') : det || 'Error ' + r.status);
@@ -110,8 +111,8 @@ function pintarEditor() {
   $('#e-titulo').textContent = f.nombre;
   $('#e-sub').textContent = describirEntrada(f);
   $('#e-acc').innerHTML = `${pill(ESTADO_FLUJO[f.estado])}
-    <button class="btn" id="b-onoff">${f.activo ? 'Detener flujo' : 'Iniciar flujo'}</button>
-    <button class="btn peligro" id="b-borrar">Borrar</button>`;
+    <button class="btn" id="b-onoff" data-admin>${f.activo ? 'Detener flujo' : 'Iniciar flujo'}</button>
+    <button class="btn peligro" id="b-borrar" data-admin>Borrar</button>`;
   $('#b-onoff').onclick = () => accion(`/api/flujos/${f.id}/${f.activo ? 'detener' : 'iniciar'}`);
   confirmarBorrado($('#b-borrar'), async () => { await api('DELETE', `/api/flujos/${f.id}`); await refrescar(); vista('flujos'); });
   const st = $('#e-stats'); st.hidden = false;
@@ -184,8 +185,8 @@ function pintarSalidas(f) {
       <td class="num">${s.tipo === 'hls' ? '—' : num(s.kbps)}</td>
       <td><div class="acciones-fila">
         <button class="btn peq" data-a="onoff">${s.activo ? 'Detener' : 'Iniciar'}</button>
-        <button class="btn peq" data-a="editar">Editar</button>
-        <button class="btn peq peligro" data-a="borrar">Borrar</button></div></td></tr>`;
+        <button class="btn peq" data-a="editar" data-admin>Editar</button>
+        <button class="btn peq peligro" data-a="borrar" data-admin>Borrar</button></div></td></tr>`;
   }).join('');
   $$('#t-sal tr[data-id]').forEach(tr => {
     const s = f.salidas.find(x => x.id === tr.dataset.id);
@@ -306,7 +307,7 @@ function lienzo() {
   escalarCapas();
 }
 // la capa de ejemplo se pide a 127.0.0.1 desde el Z8; en el navegador se ve desde este mismo panel
-const vistaCapa = u => u.startsWith('http://127.0.0.1:8095/') ? u.replace('http://127.0.0.1:8095', '') : u;
+const vistaCapa = u => u.startsWith('http://127.0.0.1:8095/') ? u.replace('http://127.0.0.1:8095/', '') : u;
 function escalarCapas() {
   const k = $('#c-lienzo').clientWidth / 1920;
   $$('#c-lienzo iframe').forEach(f => f.style.transform = `scale(${k})`);
@@ -394,7 +395,6 @@ async function cargarRegistro() {
 async function sistema() {
   try {
     const s = await api('GET', '/api/sistema');
-    $('#b-salir').hidden = !s.con_clave;
     $('#sis-mtx').className = 'pill ' + (s.mediamtx ? 'ok' : 'er');
     const sup = s.supervisor_visto_s;
     $('#sis-sup').className = 'pill ' + (sup == null ? 'off' : sup < 10 ? 'ok' : 'er');
@@ -409,9 +409,16 @@ async function refrescar() {
   else if (actual) pintarEditor();
 }
 
-$('#b-salir').onclick = async () => { await api('POST', '/api/salir'); location.href = '/login'; };
+$('#b-salir').onclick = async () => { const r = await api('POST', '/api/salir'); location.href = r.login || 'login'; };
+let yo = {rol: 'operador'};
+async function cargarYo() {
+  try { yo = await api('GET', '/api/yo'); } catch { return; }
+  $('#quien').textContent = `${yo.email} · ${yo.rol}`;
+  document.body.classList.toggle('operador', yo.rol !== 'admin');
+  if (yo.via === 'recorder') { $('#lnk-recorder').href = yo.recorder_url; $('#lnk-recorder').hidden = false; }
+}
 (async () => {
-  await refrescar(); sistema();
+  await cargarYo(); await refrescar(); sistema();
   const h = location.hash.slice(1);
   if (h && flujos.some(f => f.id === h)) abrirFlujo(h);
   setInterval(refrescar, 2000);

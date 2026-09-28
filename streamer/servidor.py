@@ -5,6 +5,7 @@ El panel solo guarda en la base de datos lo que se quiere; el supervisor lo llev
 Reiniciar el panel no corta ninguna entrada ni salida.
 """
 
+import contextvars
 import hashlib
 import hmac
 import json
@@ -13,10 +14,14 @@ import re
 import secrets
 import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,11 +41,19 @@ except OSError:
 app = FastAPI(title="Media Syntaxis Streamer")
 
 # ---------------------------------------------------------------- acceso
-# Clave única del panel en config.json ("clave_panel"). Sin clave, el panel queda abierto:
-# solo es aceptable mientras escuche únicamente en la red local.
+# Se entra con los usuarios del Recorder de este mismo equipo: el navegador trae la cookie de
+# sesión del Recorder (mismo equipo; por HTTPS, mismo dominio en /streamer/) y se pregunta por
+# ella a su /api/auth/yo, que dice email, rol y módulos (columna G de la hoja de usuarios).
+# Hace falta el módulo "streamer". Admin: todo. Operador: ver, arrancar/parar destinos y vista
+# previa. La clave del panel (config.json → clave_panel) queda como acceso de emergencia (admin).
 CLAVE = CFG.get("clave_panel", "")
 SECRETO = hashlib.sha256(("msxs:" + CLAVE).encode()).digest()
+RECORDER_API = CFG.get("recorder_api", "http://127.0.0.1:8081")
+COOKIE_RECORDER = "msr_sesion"
 PUBLICAS = ("/login", "/static/", "/api/login", "/api/version")
+USUARIO = contextvars.ContextVar("usuario", default=None)
+_cache_sesiones = {}          # hash de la cookie -> (caduca, datos del Recorder o None)
+OPERADOR_PUEDE = re.compile(r"^/api/(salidas/[^/]+/(iniciar|detener)|flujos/[^/]+/vista-previa|salir)$")
 
 
 def _firma(valor):
@@ -55,14 +68,76 @@ def _sesion_valida(cookie):
         return False
 
 
+def _sesion_recorder(token):
+    """Pregunta al Recorder por su sesión (con 10 s de caché: el panel refresca cada 2 s)."""
+    clave = hashlib.sha256(token.encode()).hexdigest()
+    ahora = time.time()
+    guardado = _cache_sesiones.get(clave)
+    if guardado and guardado[0] > ahora:
+        return guardado[1]
+    req = urllib.request.Request(RECORDER_API + "/api/auth/yo",
+                                 headers={"Cookie": f"{COOKIE_RECORDER}={token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            datos = json.loads(r.read())
+    except urllib.error.HTTPError:
+        datos = None                                    # 401: sesión caducada o cerrada
+    except (urllib.error.URLError, OSError, ValueError):
+        return guardado[1] if guardado else None        # Recorder no responde: vale la última
+    if len(_cache_sesiones) > 500:
+        _cache_sesiones.clear()
+    _cache_sesiones[clave] = (ahora + 10, datos)
+    return datos
+
+
+def _url_login(request: Request):
+    """Login del Recorder de este equipo, con vuelta a esta página."""
+    if request.url.scheme == "https":                   # tras Caddy: mismo dominio, /streamer/
+        return "/login?volver=" + urllib.parse.quote("/streamer/")
+    volver = f"http://{request.url.hostname}:{request.url.port or 80}/"
+    return f"http://{request.url.hostname}:8081/login?volver=" + urllib.parse.quote(volver, safe="")
+
+
+def _usuario(request: Request):
+    """(usuario, motivo del rechazo). Usuario: {"email", "rol", "via"}."""
+    token = request.cookies.get(COOKIE_RECORDER)
+    if token:
+        yo = _sesion_recorder(token)
+        if yo:
+            if "streamer" not in (yo.get("modulos") or []):
+                return None, "sin_modulo"
+            return {"email": yo["email"], "rol": yo["rol"], "via": "recorder"}, None
+    if CLAVE and _sesion_valida(request.cookies.get("msxs")):
+        return {"email": "clave del panel", "rol": "admin", "via": "clave"}, None
+    return None, "sin_sesion"
+
+
 @app.middleware("http")
 async def exigir_sesion(request: Request, call_next):
-    if CLAVE and not request.url.path.startswith(PUBLICAS) \
-            and not _sesion_valida(request.cookies.get("msxs")):
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"detail": "Sesión caducada"}, status_code=401)
-        return RedirectResponse("/login")
+    ruta = request.url.path
+    if ruta.startswith(PUBLICAS):
+        return await call_next(request)
+    usuario, motivo = await run_in_threadpool(_usuario, request)
+    if motivo == "sin_modulo":
+        texto = "Tu usuario no tiene acceso al Streamer. Pide a un administrador que añada «streamer» en la columna Módulos de la hoja de usuarios."
+        if ruta.startswith("/api/"):
+            return JSONResponse({"detail": texto}, status_code=403)
+        return HTMLResponse(f"<p style='font-family:sans-serif;padding:24px'>{texto}</p>", status_code=403)
+    if not usuario:
+        if ruta.startswith("/api/"):
+            return JSONResponse({"detail": "Sesión caducada", "login": _url_login(request)}, status_code=401)
+        return RedirectResponse(_url_login(request), status_code=303)
+    if usuario["rol"] != "admin" and request.method != "GET" and not OPERADOR_PUEDE.match(ruta):
+        return JSONResponse({"detail": "Solo un administrador puede hacer esto"}, status_code=403)
+    request.state.usuario = usuario
+    USUARIO.set(usuario)
     return await call_next(request)
+
+
+def evento(c, texto, flujo=None, salida=None):
+    """Como db.evento, pero anotando quién lo hizo desde el panel."""
+    u = USUARIO.get()
+    db.evento(c, f"{texto} · {u['email']}" if u else texto, flujo=flujo, salida=salida)
 
 
 class Login(BaseModel):
@@ -81,10 +156,28 @@ def login(d: Login):
 
 
 @app.post("/api/salir")
-def salir():
-    r = JSONResponse({"ok": True})
+def salir(request: Request):
+    """Cierra la sesión del panel. Con usuario del Recorder, la cierra también allí (es la misma)."""
+    token = request.cookies.get(COOKIE_RECORDER)
+    if token:
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                RECORDER_API + "/api/auth/salir", method="POST", data=b"",
+                headers={"Cookie": f"{COOKIE_RECORDER}={token}"}), timeout=3).close()
+        except (urllib.error.URLError, OSError):
+            pass
+        _cache_sesiones.pop(hashlib.sha256(token.encode()).hexdigest(), None)
+    r = JSONResponse({"ok": True, "login": _url_login(request)})
     r.delete_cookie("msxs")
+    r.delete_cookie(COOKIE_RECORDER, path="/")
     return r
+
+
+@app.get("/api/yo")
+def yo(request: Request):
+    u = request.state.usuario
+    recorder = "/" if request.url.scheme == "https" else f"http://{request.url.hostname}:8081/"
+    return {**u, "recorder_url": recorder}
 
 
 # ---------------------------------------------------------------- modelos
@@ -305,7 +398,7 @@ def crear_flujo(d: Flujo):
                  VALUES (?,?,?,?,?,?,?,?)""",
               (fid, d.nombre.strip(), d.entrada, d.url.strip(), d.streamid.strip(), d.passphrase,
                d.latencia_ms, d.canal))
-    db.evento(c, f"flujo creado: {d.nombre}", flujo=fid)
+    evento(c, f"flujo creado: {d.nombre}", flujo=fid)
     return {"id": fid}
 
 
@@ -322,7 +415,7 @@ def editar_flujo(fid: str, d: Flujo):
                  WHERE id=?""",
               (d.nombre.strip(), d.entrada, d.url.strip(), d.streamid.strip(), passphrase,
                d.latencia_ms, d.canal, fid))
-    db.evento(c, "flujo editado", flujo=fid)
+    evento(c, "flujo editado", flujo=fid)
     return {"ok": True}
 
 
@@ -337,7 +430,7 @@ def crear_salida(fid: str, d: Salida):
                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
               (sid, fid, d.nombre.strip(), d.tipo, d.url.strip(), d.modo, d.streamid.strip(),
                d.passphrase, d.latencia_ms, d.clave.strip(), d.fuente))
-    db.evento(c, f"salida creada: {d.nombre}", flujo=fid, salida=sid)
+    evento(c, f"salida creada: {d.nombre}", flujo=fid, salida=sid)
     return {"id": sid}
 
 
@@ -382,7 +475,7 @@ def guardar_composicion(fid: str, d: Composicion):
                  ON CONFLICT(flujo) DO UPDATE SET activa=excluded.activa,x=excluded.x,y=excluded.y,
                  ancho=excluded.ancho,fondo=excluded.fondo,capas=excluded.capas,kbps=excluded.kbps""",
               (fid, int(d.activa), x, y, w, d.fondo.lower(), capas, d.kbps))
-    db.evento(c, "composición " + ("activada" if d.activa else "guardada (desactivada)"), flujo=fid)
+    evento(c, "composición " + ("activada" if d.activa else "guardada (desactivada)"), flujo=fid)
     return {"ok": True}
 
 
@@ -391,7 +484,7 @@ def accion_flujo(fid: str, accion: Literal["iniciar", "detener"]):
     c = db.conectar()
     if not c.execute("UPDATE flujos SET activo=? WHERE id=?", (int(accion == "iniciar"), fid)).rowcount:
         raise HTTPException(404, "Ese flujo no existe")
-    db.evento(c, f"flujo {'iniciado' if accion == 'iniciar' else 'detenido'}", flujo=fid)
+    evento(c, f"flujo {'iniciado' if accion == 'iniciar' else 'detenido'}", flujo=fid)
     return {"ok": True}
 
 
@@ -400,7 +493,7 @@ def borrar_flujo(fid: str):
     c = db.conectar()
     if not c.execute("DELETE FROM flujos WHERE id=?", (fid,)).rowcount:
         raise HTTPException(404, "Ese flujo no existe")
-    db.evento(c, "flujo borrado", flujo=fid)
+    evento(c, "flujo borrado", flujo=fid)
     return {"ok": True}
 
 
@@ -417,7 +510,7 @@ def editar_salida(sid: str, d: Salida):
               (d.nombre.strip(), d.tipo, d.url.strip(), d.modo, d.streamid.strip(),
                d.passphrase or actual["passphrase"], d.latencia_ms, d.clave.strip() or actual["clave"],
                d.fuente, sid))
-    db.evento(c, "salida editada", salida=sid)
+    evento(c, "salida editada", salida=sid)
     return {"ok": True}
 
 
@@ -426,7 +519,7 @@ def accion_salida(sid: str, accion: Literal["iniciar", "detener"]):
     c = db.conectar()
     if not c.execute("UPDATE salidas SET activo=? WHERE id=?", (int(accion == "iniciar"), sid)).rowcount:
         raise HTTPException(404, "Esa salida no existe")
-    db.evento(c, f"salida {'iniciada' if accion == 'iniciar' else 'detenida'}", salida=sid)
+    evento(c, f"salida {'iniciada' if accion == 'iniciar' else 'detenida'}", salida=sid)
     return {"ok": True}
 
 
@@ -435,7 +528,7 @@ def borrar_salida(sid: str):
     c = db.conectar()
     if not c.execute("DELETE FROM salidas WHERE id=?", (sid,)).rowcount:
         raise HTTPException(404, "Esa salida no existe")
-    db.evento(c, "salida borrada", salida=sid)
+    evento(c, "salida borrada", salida=sid)
     return {"ok": True}
 
 

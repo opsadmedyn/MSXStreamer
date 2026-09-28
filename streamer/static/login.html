@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Entrar · Media Syntaxis Streamer</title>
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;500;800&display=swap" rel="stylesheet">
 <style>
   :root { --fondo:#0f1115; --panel:#171a21; --borde:#262b36; --texto:#e6e9ef; --suave:#9aa4b5;
@@ -29,7 +29,7 @@
 </head>
 <body>
 <div class="caja">
-  <h1><img src="/static/logo.svg" alt="MediaSyntaxis"><small>Streamer</small></h1>
+  <h1><img src="static/logo.svg" alt="MediaSyntaxis"><small>Streamer</small></h1>
   <form id="f">
     <label for="clave">Clave del panel</label>
     <input id="clave" type="password" autocomplete="current-password" autofocus required>
@@ -43,9 +43,9 @@ document.getElementById('f').onsubmit = async e => {
   const b = document.getElementById('b'), aviso = document.getElementById('aviso');
   b.disabled = true; aviso.textContent = '';
   try {
-    const r = await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    const r = await fetch('api/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({clave: document.getElementById('clave').value})});
-    if (r.ok) { location.href = '/'; return; }
+    if (r.ok) { location.href = './'; return; }
     aviso.textContent = (await r.json()).detail || 'No se pudo entrar';
   } catch { aviso.textContent = 'El servidor no responde'; }
   b.disabled = false;

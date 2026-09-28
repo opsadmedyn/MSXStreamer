@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Media Syntaxis Streamer</title>
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;500;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/base.css">
+<link rel="stylesheet" href="static/base.css">
 <style>
   body{margin:0}
   .sistema{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--suave)}
@@ -28,6 +28,9 @@
   .reg time{color:var(--tenue)}
   .fase2{max-width:620px}
   .fase2 p{color:var(--suave)}
+  body.operador [data-admin]{display:none!important}
+  body.operador #f-comp, body.operador #f-flujo{pointer-events:none;opacity:.75}
+  #quien{font-size:12px;color:var(--suave)}
   .copiar{cursor:pointer;border-bottom:1px dotted var(--tenue)}
   .mini{display:grid;place-items:center;color:var(--tenue);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
   .mini.aire{background:linear-gradient(135deg,#1c2a1f,#14301d);color:var(--ok)}
@@ -47,14 +50,14 @@
 <header class="top">
   <div class="marca"><span class="br">[</span><span>Media</span><b>Syntaxis</b><span class="br">]</span> <em>Streamer</em></div>
   <nav aria-label="Secciones"><button data-ir="flujos" aria-current="page">Flujos</button></nav>
-  <div class="sistema"><span id="sis-mtx" class="pill off">MediaMTX</span><span id="sis-sup" class="pill off">Supervisor</span><button class="btn peq" id="b-salir" hidden>Salir</button></div>
+  <div class="sistema"><span id="sis-mtx" class="pill off">MediaMTX</span><span id="sis-sup" class="pill off">Supervisor</span><span id="quien"></span><a id="lnk-recorder" class="btn peq" href="#" hidden>Recorder</a><button class="btn peq" id="b-salir">Salir</button></div>
 </header>
 
 <main>
 <section id="v-flujos">
   <div class="cab">
     <div><h1>Flujos</h1><p class="sub">Cada flujo es una entrada y sus salidas.</p></div>
-    <div class="acc"><button class="btn pri" id="b-nuevo">Nuevo flujo</button></div>
+    <div class="acc"><button class="btn pri" id="b-nuevo" data-admin>Nuevo flujo</button></div>
   </div>
   <div class="lista" id="lista"></div>
 </section>
@@ -96,7 +99,7 @@
         </div>
       </div>
       <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn pri" id="b-guardar">Guardar entrada</button>
+        <button class="btn pri" id="b-guardar" data-admin>Guardar entrada</button>
         <span class="aviso" id="av-flujo"></span>
       </div>
     </form>
@@ -140,7 +143,7 @@
           <label class="campo-f"><span>Color de fondo</span><input type="color" id="c-fondo" value="#000000" style="height:36px;padding:2px"></label>
         </div>
         <div class="grupo">
-          <label class="l"><span>Capas HTML5</span><button type="button" class="btn peq" id="c-ejemplo">Usar la capa de ejemplo</button></label>
+          <label class="l"><span>Capas HTML5</span><button type="button" class="btn peq" id="c-ejemplo" data-admin>Usar la capa de ejemplo</button></label>
           <div class="capas" id="c-capas"></div>
           <p class="nota">URL de una página web con fondo transparente, pensada para 1920×1080. Encima: tapa el vídeo donde pinta. Debajo: solo se ve fuera del vídeo.</p>
         </div>
@@ -148,7 +151,7 @@
           <label class="campo-f"><span>Calidad de la señal compuesta (kbps)</span><input type="number" id="c-kbps" min="1000" max="40000" step="500"></label>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn pri" id="c-guardar">Guardar composición</button>
+          <button class="btn pri" id="c-guardar" data-admin>Guardar composición</button>
           <span class="aviso" id="av-comp"></span>
         </div>
         <p class="nota">Los destinos eligen si llevan la señal limpia (en copia) o la compuesta, en su configuración.</p>
@@ -158,7 +161,7 @@
 
   <div id="p-salidas" hidden>
     <div class="panel">
-      <div class="cab" style="margin-bottom:8px"><div><h2 style="margin:0">Destinos</h2></div><div class="acc"><button class="btn pri" id="b-add">Añadir destino</button></div></div>
+      <div class="cab" style="margin-bottom:8px"><div><h2 style="margin:0">Destinos</h2></div><div class="acc"><button class="btn pri" id="b-add" data-admin>Añadir destino</button></div></div>
       <div class="scroll"><table class="tabla"><thead><tr><th>Tipo</th><th>Destino</th><th>Estado</th><th>Tasa</th><th></th></tr></thead><tbody id="t-sal"></tbody></table></div>
       <p class="nota" style="margin-top:12px">La señal limpia va en copia: la misma calidad que la entrada, sin recodificar. La compuesta sale de la composición del flujo. Si un destino falla, solo ese se reintenta.</p>
     </div>
@@ -196,6 +199,6 @@
   <div class="pie"><button class="btn" id="d-cancel" type="button">Cancelar</button><button class="btn pri" id="d-ok" type="button">Guardar</button></div>
 </dialog>
 
-<script src="/static/app.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>
