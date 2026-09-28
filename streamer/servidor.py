@@ -278,6 +278,7 @@ def _host(request: Request):
 OCULTO = "***"
 LINEA_ARRANQUE = re.compile(r"== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d ")     # la que escribe el supervisor al lanzar
 OPCIONES_SECRETAS = (" -srt_streamid ", " -passphrase ")
+URL_EN_TEXTO = re.compile(r"\b(srt|rtmps?)://[^\s\"'<>]+")
 PARAMS_NO_SECRETOS = {"mode", "latency", "rcvlatency", "peerlatency", "pkt_size", "payload_size", "transtype"}
 
 
@@ -321,8 +322,15 @@ def _secretos(flujos, salidas):
     return sorted((v for v in valores if v), key=len, reverse=True)
 
 
+def _url_en_texto(m):
+    url = m.group(0).rstrip(":,.;)]")                   # "rtmp://…/clave: Connection refused"
+    return _url_visible(url, "srt" if m.group(1) == "srt" else "rtmp", "") + m.group(0)[len(url):]
+
+
 def _limpiar(texto, secretos):
-    """Error o texto del registro sin la línea de arranque de ffmpeg ni valores secretos."""
+    """Error o texto del registro sin la línea de arranque de ffmpeg ni valores secretos. Además,
+    toda URL SRT o RTMP sale como la ve un operador: así tampoco aparecen las claves de un destino
+    o flujo ya borrado o editado, que ya no están en la base."""
     if not texto:
         return texto
     m = LINEA_ARRANQUE.search(texto)
@@ -332,7 +340,7 @@ def _limpiar(texto, secretos):
         return "(línea de arranque oculta)"
     for s in secretos:
         texto = texto.replace(s, OCULTO)
-    return texto
+    return URL_EN_TEXTO.sub(_url_en_texto, texto)
 
 
 # ---------------------------------------------------------------- HLS bajo demanda

@@ -121,7 +121,8 @@ otro 4xx deja fuera. Con un Recorder antiguo cuya respuesta no trae los módulos
 los admins. Una petición que cambia algo y viene de otra página (su `Origin` no es este panel) se
 rechaza con 403. Los operadores no ven el streamid de entradas y destinos, ni lo que va en las URL
 tras `?` o antes de `@`, ni la clave RTMP (salen como `***`); en los errores y en el registro no
-aparecen para nadie.
+aparecen para nadie, tampoco los de un destino o flujo ya borrado o editado: toda URL SRT o RTMP
+sale ahí como la ve un operador.
 
 `host_publico` (config.json) es el nombre con el que se construyen los enlaces HLS y de vista previa
 (`http://<host_publico>:8888/…`): el dominio del Recorder, que resuelve a su IP de Tailscale.
