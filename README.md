@@ -96,6 +96,18 @@ salvaguardas de la composición (arriba) y los del acceso (abajo). Se despliega 
 `composicion.py` (con el de la 0.3.1 el panel no arranca y `/streamer/` queda fuera), y las
 salvaguardas del supervisor solo se aplican al reiniciarlo.
 
+Desde la 0.3.2, el despliegue normal pone también la unidad `msxs-web` de la versión (antes solo lo
+hacían `--instalar` y `--mediamtx`, que reinicia MediaMTX y corta las salidas): el panel escucha
+solo en `127.0.0.1:8095`. Si en el Z8 seguía en `0.0.0.0`, desde ese momento `http://<IP local>:8095`
+deja de responder y solo se entra por `https://<dominio del Recorder>/streamer/`. Al terminar, el
+script comprueba con `ss` que el 8095 solo escucha en 127.0.0.1 y, si no, avisa con `!!` (a mano:
+`ssh z8 "ss -Hltn 'sport = :8095'"` debe mostrar solo `127.0.0.1:8095`). También borra el
+`static/login.html` de la clave del panel que quedó de la 0.3.0 (rsync no borra nada).
+
+Vuelta atrás: `git checkout v0.3.1 && scripts/desplegar.sh <estación>` (sin `--mediamtx`). No hay
+cambios en la base ni en la unidad `msxs-web`, y la 0.3.1 ignora `composicion_max`; una composición
+con alguna capa activa se relanza una vez.
+
 Efecto al desplegar: las salidas limpias SRT y RTMP no se relanzan, porque su comando de ffmpeg no
 cambia (el HLS lo sirve MediaMTX, que no se reinicia). Una composición con alguna capa activa cambia
 de comando (`eof_action=endall`), así que se relanza una vez: la señal compuesta y sus destinos se
