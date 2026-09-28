@@ -36,6 +36,7 @@ VUELTA = 2.0
 ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
 COMP_MAX = composicion.maximo(db.config())
+VIDEO_PARADO = 15.0                         # composición viva con el vídeo quieto tanto tiempo: se relanza
 
 
 def path_de_flujo(f):
@@ -141,11 +142,16 @@ def recoger_hijos():
             return
 
 
+def final_de(prog):
+    """Últimos 600 bytes del .prog: crece mientras el proceso corre y basta con el final."""
+    with open(prog, "rb") as f:
+        f.seek(max(0, os.fstat(f.fileno()).st_size - 600))
+        return f.read().decode(errors="replace")
+
+
 def leer_kbps(prog):
     try:
-        with open(prog, "rb") as f:          # solo el final: el archivo crece mientras corre
-            f.seek(max(0, os.fstat(f.fileno()).st_size - 600))
-            txt = f.read().decode(errors="replace")
+        txt = final_de(prog)
         if time.time() - prog.stat().st_mtime > 6:
             return None
     except OSError:
@@ -155,6 +161,21 @@ def leer_kbps(prog):
             v = linea.split("=", 1)[1].replace("kbits/s", "").strip()
             try:
                 return float(v)
+            except ValueError:
+                return None
+    return None
+
+
+def fotogramas(prog):
+    """Fotogramas de vídeo que lleva escritos el proceso (frame= del .prog), o None."""
+    try:
+        txt = final_de(prog)
+    except OSError:
+        return None
+    for linea in reversed(txt.splitlines()):
+        if linea.startswith("frame="):
+            try:
+                return int(linea.split("=", 1)[1])
             except ValueError:
                 return None
     return None
@@ -209,6 +230,7 @@ class Supervisor:
         self.mtx_ok = None
         self.comps = {}                     # composiciones de esta vuelta: {flujo: fila}
         self.comps_fuera = set()            # activas que se quedan paradas por el tope
+        self.video = {}                     # composición -> (pid, fotogramas, desde cuándo no cambian)
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -287,6 +309,20 @@ class Supervisor:
         orden = sorted(todas, key=lambda fid: (not corre(fid), creado(fid), fid))
         return {fid: todas[fid] for fid in orden[:COMP_MAX]}, set(orden[COMP_MAX:])
 
+    def video_parado(self, sid, pid, prog):
+        """La composición sigue viva pero su vídeo lleva VIDEO_PARADO s sin avanzar. Pasa si se cae
+        una captura: con eof_action=endall el vídeo termina, pero el audio va en copia y ffmpeg
+        sigue emitiéndolo con la imagen quieta."""
+        n, ahora = fotogramas(prog), time.time()
+        if n is None:                       # aún sin progreso (arrancando): no se juzga
+            self.video.pop(sid, None)
+            return False
+        antes = self.video.get(sid)
+        if not antes or antes[:2] != (pid, n):
+            self.video[sid] = (pid, n, ahora)
+            return False
+        return ahora - antes[2] > VIDEO_PARADO
+
     def tareas(self, flujos, por_id):
         """Procesos que deben correr: {id: (comando, path que necesita listo, error si no puede)}."""
         comps = self.comps
@@ -352,6 +388,12 @@ class Supervisor:
                 corriendo, e["pid"] = False, None
                 self.espera.pop(sid, None)
                 db.evento(self.c, "relanzada por cambio de configuración", salida=sid)
+
+            if corriendo and cmd[0] == str(COMPONER) and self.video_parado(sid, e["pid"], prog):
+                matar(e["pid"])                             # cuenta como caída (abajo) y se relanza
+                corriendo = False
+                db.evento(self.c, f"vídeo de la composición parado más de {VIDEO_PARADO:.0f} s: se relanza",
+                          salida=sid)
 
             if not corriendo and e["pid"]:                  # murió por su cuenta: cuenta como caída
                 if cmd[0] == str(COMPONER):                 # composición: lo que quede de su grupo

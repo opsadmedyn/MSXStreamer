@@ -77,7 +77,8 @@ def filtro(comp):
 
     eof_action=endall (= shortest=1 del diseño): si se acaba la señal, ffmpeg termina y el
     supervisor relanza la composición cuando vuelve la entrada. Con "repeat" seguía emitiendo para
-    siempre la última imagen, sin audio, aunque la señal volviera."""
+    siempre la última imagen, sin audio, aunque la señal volviera. Si se acaba una capa, termina el
+    vídeo pero no ffmpeg (el audio va en copia): lo relanza el supervisor al ver el vídeo parado."""
     x, y, w, h = normalizar(comp)
     capas = capas_de(comp)
     debajo = [i + 1 for i, c in enumerate(capas) if not c.get("encima", True)]
