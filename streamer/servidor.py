@@ -33,6 +33,7 @@ from supervisor import path_de_flujo
 ESTATICOS = pathlib.Path(__file__).parent / "static"
 CFG = db.config()
 HLS_PUERTO = int(CFG.get("hls_puerto", 8888))
+COMP_MAX = composicion.maximo(CFG)
 try:
     VERSION = (pathlib.Path(__file__).parent.parent / "VERSION").read_text().strip()
 except OSError:
@@ -565,6 +566,13 @@ def guardar_composicion(fid: str, d: Composicion):
     for i, capa in enumerate(d.capas, start=1):
         if capa.url.strip() and not composicion.validar_url_capa(capa.url.strip()):
             raise HTTPException(422, f"La URL de la capa {i} debe empezar por http:// o https://")
+    if d.activa:        # tope de composiciones a la vez; una que ya estaba activa se puede editar siempre
+        antes = c.execute("SELECT activa FROM composiciones WHERE flujo=?", (fid,)).fetchone()
+        otras = c.execute("""SELECT COUNT(*) FROM composiciones k JOIN flujos f ON f.id = k.flujo
+                             WHERE k.activa = 1 AND f.activo = 1 AND k.flujo <> ?""", (fid,)).fetchone()[0]
+        if not (antes and antes["activa"]) and otras >= COMP_MAX:
+            raise HTTPException(409, f"Ya hay {otras} composiciones activas y el máximo es {COMP_MAX} a la vez. "
+                                     "Desactiva otra antes de activar esta.")
     x, y, w, _ = composicion.normalizar(d.model_dump())
     capas = json.dumps([{"url": k.url.strip(), "activa": k.activa, "encima": k.encima} for k in d.capas])
     c.execute("""INSERT INTO composiciones(flujo,activa,x,y,ancho,fondo,capas,kbps) VALUES (?,?,?,?,?,?,?,?)

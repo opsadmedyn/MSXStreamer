@@ -34,6 +34,7 @@ LOG_MAX = 5 * 1024 * 1024
 VUELTA = 2.0
 ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
+COMP_MAX = composicion.maximo(db.config())
 
 
 def path_de_flujo(f):
@@ -161,6 +162,7 @@ class Supervisor:
         self.espera = {}                    # salida -> (segundos de espera, cuándo reintentar)
         self.mtx_ok = None
         self.comps = {}                     # composiciones de esta vuelta: {flujo: fila}
+        self.comps_fuera = set()            # activas que se quedan paradas por el tope
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -223,6 +225,22 @@ class Supervisor:
         if mtx.asegurar_acceso(paths):
             db.evento(self.c, "HLS publicado: " + (", ".join(sorted(paths)) or "ninguno"))
 
+    def composiciones(self, por_id):
+        """Composiciones activas de los flujos de esta vuelta, como mucho COMP_MAX: primero las que
+        ya corren y después las de los flujos más antiguos. Devuelve (las que pueden correr,
+        las que se quedan fuera por el tope)."""
+        todas = {fid: k for fid, k in composicion.activas(self.c).items() if fid in por_id}
+
+        def corre(fid):
+            tarea = composicion.id_tarea(fid)
+            return vivo(self.estado(tarea)["pid"], RUN / f"{tarea}.prog")
+
+        def creado(fid):                    # un valor raro en la base no debe romper la vuelta
+            v = por_id[fid].get("creado")
+            return v if isinstance(v, (int, float)) else float("inf")
+        orden = sorted(todas, key=lambda fid: (not corre(fid), creado(fid), fid))
+        return {fid: todas[fid] for fid in orden[:COMP_MAX]}, set(orden[COMP_MAX:])
+
     def tareas(self, flujos, por_id):
         """Procesos que deben correr: {id: (comando, path que necesita listo, error si no puede)}."""
         comps = self.comps
@@ -237,12 +255,16 @@ class Supervisor:
                 tareas[composicion.id_tarea(fid)] = (cmd, path_de_flujo(por_id[fid]), None)
             except Exception as err:
                 tareas[composicion.id_tarea(fid)] = (None, None, f"Composición no válida: {err!r}"[:300])
+        limite = f"Límite de {COMP_MAX} composiciones a la vez: arrancará cuando se libere una"
+        for fid in self.comps_fuera:                        # el bucle de limpieza las para
+            tareas[composicion.id_tarea(fid)] = (None, None, limite)
         for s in db.filas(self.c, "SELECT * FROM salidas WHERE activo=1 AND tipo IN ('srt','rtmp')"):
             if s["flujo"] not in por_id:
                 continue
             if s.get("fuente") == "compuesta":
                 if s["flujo"] not in comps:
-                    tareas[s["id"]] = (None, None, "La composición del flujo está desactivada")
+                    tareas[s["id"]] = (None, None, limite if s["flujo"] in self.comps_fuera
+                                       else "La composición del flujo está desactivada")
                     continue
                 path = composicion.path_comp(s["flujo"])
             else:
@@ -255,8 +277,8 @@ class Supervisor:
         flujos = db.filas(self.c, "SELECT * FROM flujos WHERE activo=1")
         por_id = {f["id"]: f for f in flujos}
         # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
-        # las dos consultas ya no deja la vuelta a medias)
-        self.comps = {fid: k for fid, k in composicion.activas(self.c).items() if fid in por_id}
+        # las dos consultas ya no deja la vuelta a medias), con el tope de composiciones a la vez
+        self.comps, self.comps_fuera = self.composiciones(por_id)
         estado_paths = self.sincronizar_mediamtx(flujos)
         deseadas = self.tareas(flujos, por_id)
 

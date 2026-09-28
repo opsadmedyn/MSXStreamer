@@ -27,6 +27,14 @@ PREAJUSTES = {
 }
 
 
+def maximo(cfg):
+    """Tope de composiciones a la vez (config.json → composicion_max; 3 por defecto, como el diseño)."""
+    try:
+        return max(0, int(cfg.get("composicion_max", 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
 def path_comp(flujo_id):
     return "comp_" + flujo_id
 

@@ -5,5 +5,6 @@
   "recorder_canales": "/home/mediasat/recorder/canales.json",
   "mediamtx_api": "http://127.0.0.1:9997",
   "mediamtx_srt": "srt://127.0.0.1:8890",
-  "hls_puerto": 8888
+  "hls_puerto": 8888,
+  "composicion_max": 3
 }
