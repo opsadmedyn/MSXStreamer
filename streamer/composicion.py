@@ -10,6 +10,7 @@ esquema que el PoC (19 h estable, ~4,4 núcleos, 29,95 fps).
 """
 
 import json
+import os
 import re
 
 import mtx
@@ -144,7 +145,9 @@ def activas(c):
 
 def fps_de(prog):
     try:
-        txt = prog.read_text()[-600:]
+        with open(prog, "rb") as f:          # solo el final: el archivo crece mientras corre
+            f.seek(max(0, os.fstat(f.fileno()).st_size - 600))
+            txt = f.read().decode(errors="replace")
     except OSError:
         return None
     for linea in reversed(txt.splitlines()):

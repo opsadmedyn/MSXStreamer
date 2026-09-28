@@ -31,6 +31,7 @@ FFMPEG = db.config().get("ffmpeg", "ffmpeg")
 RUN = db.BASE / "run"
 LOGS = db.BASE / "logs"
 LOG_MAX = 5 * 1024 * 1024
+PROG_MAX = 1024 * 1024                      # espacio en disco de un .prog antes de recortarlo
 VUELTA = 2.0
 ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
@@ -129,7 +130,9 @@ def recoger_hijos():
 
 def leer_kbps(prog):
     try:
-        txt = prog.read_text()[-600:]
+        with open(prog, "rb") as f:          # solo el final: el archivo crece mientras corre
+            f.seek(max(0, os.fstat(f.fileno()).st_size - 600))
+            txt = f.read().decode(errors="replace")
         if time.time() - prog.stat().st_mtime > 6:
             return None
     except OSError:
@@ -142,6 +145,36 @@ def leer_kbps(prog):
             except ValueError:
                 return None
     return None
+
+
+_sin_huecos = set()                         # .prog que no se pueden recortar (sistema de archivos sin huecos)
+
+
+def recortar(prog, log):
+    """Acota en disco los archivos de un proceso que sigue corriendo (antes solo se hacía al lanzarlo).
+    .prog: ffmpeg escribe en su propia posición (sin O_APPEND), así que se vacía y se reescribe el
+    final en el mismo sitio: queda un archivo disperso de pocos KB en disco. .log: el supervisor lo
+    abrió en modo añadir, así que basta con dejar su final."""
+    try:
+        if prog not in _sin_huecos and os.stat(prog).st_blocks * 512 > PROG_MAX:
+            with open(prog, "r+b") as f:
+                fin = f.seek(0, 2)
+                f.seek(max(0, fin - 4096))
+                cola = f.read()
+                f.truncate(0)
+                f.seek(fin - len(cola))
+                f.write(cola)
+            if os.stat(prog).st_blocks * 512 > PROG_MAX:    # no se ganó espacio: no insistir
+                _sin_huecos.add(prog)
+        if os.path.getsize(log) > LOG_MAX:
+            with open(log, "r+b") as f:
+                f.seek(-(LOG_MAX // 5), 2)
+                cola = f.read()
+                f.seek(0)
+                f.truncate()
+                f.write(cola)
+    except OSError:
+        pass
 
 
 def ultimo_error(log):
@@ -313,6 +346,7 @@ class Supervisor:
                 db.evento(self.c, f"caída: {ultimo_error(log)}", salida=sid)
 
             if corriendo:
+                recortar(prog, log)
                 kbps = leer_kbps(prog)
                 if kbps and e["desde"] and time.time() - e["desde"] > 60:
                     self.espera.pop(sid, None)              # un minuto estable: se reinicia la espera
