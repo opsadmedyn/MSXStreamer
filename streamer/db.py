@@ -102,7 +102,7 @@ def evento(c, texto, flujo=None, salida=None):
 
 
 def config():
-    """config.json de la máquina (puertos, clave del panel, host público)."""
+    """config.json de la máquina (puertos, host público, tope de composiciones)."""
     try:
         return json.loads((BASE / "config.json").read_text())
     except (OSError, ValueError):

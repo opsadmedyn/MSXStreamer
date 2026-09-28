@@ -7,7 +7,6 @@ Reiniciar el panel no corta ninguna entrada ni salida.
 
 import contextvars
 import hashlib
-import hmac
 import json
 import pathlib
 import re
@@ -42,31 +41,17 @@ except OSError:
 app = FastAPI(title="Media Syntaxis Streamer")
 
 # ---------------------------------------------------------------- acceso
-# Se entra con los usuarios del Recorder de este mismo equipo: el navegador trae la cookie de
-# sesión del Recorder (mismo equipo; por HTTPS, mismo dominio en /streamer/) y se pregunta por
-# ella a su /api/auth/yo, que dice email, rol y módulos (columna G de la hoja de usuarios).
-# Hace falta el módulo "streamer". Admin: todo. Operador: ver, arrancar/parar destinos y vista
-# previa. La clave del panel (config.json → clave_panel) queda como acceso de emergencia (admin).
-CLAVE = CFG.get("clave_panel", "")
-SECRETO = hashlib.sha256(("msxs:" + CLAVE).encode()).digest()
+# Se entra solo con los usuarios del Recorder de este mismo equipo, y solo por Tailscale: el panel
+# escucha en 127.0.0.1 y lo publica Caddy en https://<dominio del Recorder>/streamer/. El
+# navegador trae la cookie de sesión del Recorder (mismo dominio) y se pregunta por ella a su
+# /api/auth/yo, que dice email, rol y módulos (columna G de la hoja de usuarios). Hace falta el
+# módulo "streamer". Admin: todo. Operador: ver, arrancar/parar destinos y vista previa.
 RECORDER_API = CFG.get("recorder_api", "http://127.0.0.1:8081")
 COOKIE_RECORDER = "msr_sesion"
-PUBLICAS = ("/login", "/static/", "/api/login", "/api/version")
+PUBLICAS = ("/static/", "/api/version")
 USUARIO = contextvars.ContextVar("usuario", default=None)
 _cache_sesiones = {}          # hash de la cookie -> (caduca, datos del Recorder o None)
 OPERADOR_PUEDE = re.compile(r"^/api/(salidas/[^/]+/(iniciar|detener)|flujos/[^/]+/vista-previa|salir)$")
-
-
-def _firma(valor):
-    return hmac.new(SECRETO, valor.encode(), "sha256").hexdigest()[:32]
-
-
-def _sesion_valida(cookie):
-    try:
-        caduca, firma = cookie.split(".")
-        return int(caduca) > time.time() and hmac.compare_digest(firma, _firma(caduca))
-    except (AttributeError, ValueError):
-        return False
 
 
 def _sesion_recorder(token):
@@ -94,11 +79,8 @@ def _sesion_recorder(token):
 
 
 def _url_login(request: Request):
-    """Login del Recorder de este equipo, con vuelta a esta página."""
-    if request.url.scheme == "https":                   # tras Caddy: mismo dominio, /streamer/
-        return "/login?volver=" + urllib.parse.quote("/streamer/")
-    volver = f"http://{request.url.hostname}:{request.url.port or 80}/"
-    return f"http://{request.url.hostname}:8081/login?volver=" + urllib.parse.quote(volver, safe="")
+    """Login del Recorder (mismo dominio, tras Caddy), con vuelta al Streamer."""
+    return "/login?volver=" + urllib.parse.quote("/streamer/")
 
 
 def _usuario(request: Request):
@@ -113,8 +95,6 @@ def _usuario(request: Request):
             if not permitido:
                 return None, "sin_modulo"
             return {"email": yo["email"], "rol": yo["rol"], "via": "recorder"}, None
-    if CLAVE and _sesion_valida(request.cookies.get("msxs")):
-        return {"email": "clave del panel", "rol": "admin", "via": "clave"}, None
     return None, "sin_sesion"
 
 
@@ -167,21 +147,6 @@ def evento(c, texto, flujo=None, salida=None):
     db.evento(c, f"{texto} · {u['email']}" if u else texto, flujo=flujo, salida=salida)
 
 
-class Login(BaseModel):
-    clave: str
-
-
-@app.post("/api/login")
-def login(d: Login):
-    if not CLAVE or not hmac.compare_digest(d.clave, CLAVE):
-        time.sleep(1)
-        raise HTTPException(401, "Clave incorrecta")
-    caduca = str(int(time.time()) + 12 * 3600)
-    r = JSONResponse({"ok": True})
-    r.set_cookie("msxs", f"{caduca}.{_firma(caduca)}", max_age=12 * 3600, httponly=True, samesite="lax")
-    return r
-
-
 @app.post("/api/salir")
 def salir(request: Request):
     """Cierra la sesión del panel. Con usuario del Recorder, la cierra también allí (es la misma)."""
@@ -195,7 +160,6 @@ def salir(request: Request):
             pass
         _cache_sesiones.pop(hashlib.sha256(token.encode()).hexdigest(), None)
     r = JSONResponse({"ok": True, "login": _url_login(request)})
-    r.delete_cookie("msxs")
     r.delete_cookie(COOKIE_RECORDER, path="/")
     return r
 
@@ -203,8 +167,7 @@ def salir(request: Request):
 @app.get("/api/yo")
 def yo(request: Request):
     u = request.state.usuario
-    recorder = "/" if request.url.scheme == "https" else f"http://{request.url.hostname}:8081/"
-    return {**u, "recorder_url": recorder}
+    return {**u, "recorder_url": "/"}
 
 
 # ---------------------------------------------------------------- modelos
@@ -660,7 +623,7 @@ def sistema():
         mediamtx = True
     except mtx.ErrorMTX:
         mediamtx = False
-    return {"version": VERSION, "mediamtx": mediamtx, "con_clave": bool(CLAVE),
+    return {"version": VERSION, "mediamtx": mediamtx,
             "supervisor_visto_s": round(time.time() - visto, 1) if visto else None,
             "supervisor_iniciado": ultimo}
 
@@ -688,11 +651,6 @@ def version():
 @app.get("/")
 def inicio():
     return FileResponse(ESTATICOS / "index.html")
-
-
-@app.get("/login")
-def pagina_login():
-    return FileResponse(ESTATICOS / "login.html")
 
 
 app.mount("/static", StaticFiles(directory=str(ESTATICOS)), name="static")

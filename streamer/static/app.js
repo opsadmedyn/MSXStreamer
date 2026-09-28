@@ -10,7 +10,7 @@ async function api(metodo, ruta, cuerpo) {
   const r = await fetch(ruta.replace(/^\//, ''), {method: metodo, headers: {'Content-Type': 'application/json'},
     body: cuerpo ? JSON.stringify(cuerpo) : undefined});
   const d = await r.json().catch(() => ({}));
-  if (r.status === 401) { location.href = d.login || 'login'; throw new Error('Sesión caducada'); }
+  if (r.status === 401) { location.href = d.login || '/login?volver=/streamer/'; throw new Error('Sesión caducada'); }
   if (!r.ok) {
     const det = d.detail;
     throw new Error(Array.isArray(det) ? det.map(x => x.msg).join('; ') : det || 'Error ' + r.status);
@@ -409,7 +409,7 @@ async function refrescar() {
   else if (actual) pintarEditor();
 }
 
-$('#b-salir').onclick = async () => { const r = await api('POST', '/api/salir'); location.href = r.login || 'login'; };
+$('#b-salir').onclick = async () => { const r = await api('POST', '/api/salir'); location.href = r.login || '/login'; };
 let yo = {rol: 'operador'};
 async function cargarYo() {
   try { yo = await api('GET', '/api/yo'); } catch { return; }

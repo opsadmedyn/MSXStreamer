@@ -2,7 +2,7 @@
 # Despliega MSX Streamer en una estación.
 #   scripts/desplegar.sh <alias ssh> [--instalar | --mediamtx]
 # --instalar: primera vez. Comprueba que los puertos estén libres, descarga MediaMTX, crea el
-#   entorno de Python, genera config.json (con una clave aleatoria) e instala los servicios.
+#   entorno de Python, crea config.json desde el ejemplo e instala los servicios.
 # Sin opciones: copia el código y reinicia el panel y el supervisor. Las salidas siguen al aire.
 # --mediamtx: además sustituye mediamtx.yml y las unidades systemd por las de esta versión (la
 #   anterior queda como mediamtx.yml.antes-<versión>) y reinicia MediaMTX: las salidas se cortan
@@ -56,12 +56,7 @@ set -euo pipefail
 cd $DEST
 [ -f mediamtx.yml ] || cp releases/v$VERSION/config/mediamtx.yml mediamtx.yml
 if [ ! -f config.json ]; then
-  EJEMPLO=releases/v$VERSION/config/config.ejemplo.json python3 -c '
-import json, os, secrets
-c = json.load(open(os.environ["EJEMPLO"]))
-c["clave_panel"] = secrets.token_urlsafe(12)
-json.dump(c, open("config.json", "w"), indent=2)
-print("   clave del panel:", c["clave_panel"])'
+  cp releases/v$VERSION/config/config.ejemplo.json config.json    # revisar host_publico
 fi
 REMOTO
   # búfer UDP grande para el reenvío del Recorder (ver udpReadBufferSize en mediamtx.yml)
@@ -83,7 +78,7 @@ fi
 sleep 4
 ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '")
 VER=$($SSH "curl -s http://127.0.0.1:8095/api/version")
-echo "== $HOST: servicios [$ESTADO] versión $VER · panel en el puerto 8095"
+echo "== $HOST: servicios [$ESTADO] versión $VER · panel en https://<dominio del Recorder>/streamer/ (solo Tailscale)"
 
 # respaldo de esta versión a Google Drive (si la estación lo tiene instalado: scripts/instalar-respaldos.sh del Streamer)
 if $SSH "sudo test -x /home/mediasat/respaldos/bin/respaldar.sh"; then

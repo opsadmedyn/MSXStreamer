@@ -1,6 +1,5 @@
 {
-  "clave_panel": "cambia-esta-clave",
-  "host_publico": "192.168.1.202",
+  "host_publico": "recorder2.mediasyntaxis.com",
   "ffmpeg": "/usr/local/bin/ffmpeg",
   "recorder_canales": "/home/mediasat/recorder/canales.json",
   "mediamtx_api": "http://127.0.0.1:9997",

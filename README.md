@@ -56,7 +56,7 @@ señal limpia sigue igual para las demás. Todo va en un grupo de procesos: se p
 Runtime (Node y Chromium): `scripts/instalar-compositor.sh <estación>`, una vez. Capa de ejemplo:
 `http://127.0.0.1:8095/static/capa-ejemplo.html` (L-bar con reloj, para el preajuste "L derecha").
 
-### Salvaguardas de la composición (0.3.1)
+### Salvaguardas de la composición (0.3.2)
 
 Una composición nunca debe afectar a la señal limpia ni al Recorder:
 
@@ -74,15 +74,6 @@ Una composición nunca debe afectar a la señal limpia ni al Recorder:
   mientras el proceso corre; si una composición no llega a abrir la entrada, el supervisor mata las
   capturas que se quedaron esperando su FIFO.
 
-**Despliegue de la 0.3.1:** entera, con `scripts/desplegar.sh <estación>` sin `--mediamtx` (copia
-todo `streamer/` y reinicia `msxs-supervisor` y `msxs-web`). No basta copiar `servidor.py` y
-reiniciar `msxs-web`: `servidor.py` importa `supervisor.py`, que necesita `composicion.maximo` del
-nuevo `composicion.py`; con el de la 0.3.0 el panel no arranca (ni en :8095 ni en `/streamer/`), y
-las salvaguardas del supervisor solo se aplican al reiniciarlo. Efecto: cambia el comando de la
-composición, así que la que esté en marcha se relanza una vez (la señal compuesta y sus destinos se
-cortan unos 20 s). Las salidas limpias no se relanzan. Si en el mismo día se despliega el Recorder
-1.5.1, primero el Streamer: así su panel no manda al login mientras el Recorder arranca.
-
 ## Despliegue
 
 ```
@@ -95,14 +86,42 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
-## Acceso (0.3.0)
+### 0.3.2
 
-Se entra con los usuarios del MSX Recorder del mismo equipo, sin usuarios propios: hace falta
-«streamer» en la columna G «Módulos» de la hoja de usuarios. El panel lee la cookie de sesión del
-Recorder y pregunta por ella a `http://127.0.0.1:8081/api/auth/yo` (caché de 10 s); sin sesión, manda
-al login del Recorder, que devuelve aquí al entrar. En la red local: `http://<equipo>:8095/`. Por
-HTTPS (Tailscale): `https://<dominio del Recorder>/streamer/`, en el mismo Caddy. Admin: todo.
-Operador: ver, arrancar/parar destinos y vista previa. El registro anota quién hizo cada cambio.
-`clave_panel` queda como acceso de emergencia (entra como admin por `/login`). Si el Recorder no
-responde o contesta 5xx (el 503 de la 1.5.1 recién reiniciado, antes de leer la hoja), vale su
-última respuesta; un 401 (sesión cerrada) o cualquier otro 4xx deja fuera.
+La 0.3.1 desplegada (solo Tailscale, sin clave del panel) más los arreglos revisados: las
+salvaguardas de la composición (arriba) y los del acceso (abajo). Se despliega entera con
+`scripts/desplegar.sh <estación>`, sin `--mediamtx`: copia todo `streamer/` y reinicia solo
+`msxs-supervisor` y `msxs-web`; MediaMTX sigue igual. No basta copiar `servidor.py` y reiniciar
+`msxs-web`: `servidor.py` importa `supervisor.py`, que necesita `composicion.maximo` del nuevo
+`composicion.py` (con el de la 0.3.1 el panel no arranca y `/streamer/` queda fuera), y las
+salvaguardas del supervisor solo se aplican al reiniciarlo.
+
+Efecto al desplegar: las salidas limpias SRT y RTMP no se relanzan, porque su comando de ffmpeg no
+cambia (el HLS lo sirve MediaMTX, que no se reinicia). Una composición con alguna capa activa cambia
+de comando (`eof_action=endall`), así que se relanza una vez: la señal compuesta y sus destinos se
+cortan unos 20 s. Una sin capas activas no cambia de comando y sigue corriendo; la prioridad baja de
+`componer.sh` le llega en su próximo relanzamiento. Si hubiera más de 3 composiciones activas, siguen
+3 (primero las que ya corren y, entre ellas, las de los flujos más antiguos) y las demás, con sus
+destinos compuestos, se paran con «Límite de…». Si en el mismo día se despliega el Recorder 1.5.3,
+primero el Streamer: así su panel no manda al login mientras el Recorder arranca.
+
+## Acceso (0.3.1)
+
+Solo por Tailscale y solo con los usuarios del MSX Recorder del mismo equipo. El panel escucha en
+`127.0.0.1:8095` y lo publica el Caddy del Recorder en `https://<dominio del Recorder>/streamer/`
+(mismo dominio, así que comparte la cookie de sesión del Recorder). Hace falta «streamer» en la
+columna G «Módulos» de la hoja de usuarios. El panel pregunta por la sesión a
+`http://127.0.0.1:8081/api/auth/yo` (caché de 10 s); sin sesión, manda al login del Recorder, que
+devuelve aquí al entrar. Admin: todo. Operador: ver, arrancar/parar destinos y vista previa. El
+registro anota quién hizo cada cambio. No hay clave propia ni acceso por la red local.
+
+Además, desde la 0.3.2: si el Recorder no responde o contesta 5xx (el 503 del Recorder 1.5.3 recién
+reiniciado, antes de leer la hoja), vale su última respuesta; un 401 (sesión cerrada) o cualquier
+otro 4xx deja fuera. Con un Recorder antiguo cuya respuesta no trae los módulos (1.4.1) solo entran
+los admins. Una petición que cambia algo y viene de otra página (su `Origin` no es este panel) se
+rechaza con 403. Los operadores no ven el streamid de entradas y destinos, ni lo que va en las URL
+tras `?` o antes de `@`, ni la clave RTMP (salen como `***`); en los errores y en el registro no
+aparecen para nadie.
+
+`host_publico` (config.json) es el nombre con el que se construyen los enlaces HLS y de vista previa
+(`http://<host_publico>:8888/…`): el dominio del Recorder, que resuelve a su IP de Tailscale.

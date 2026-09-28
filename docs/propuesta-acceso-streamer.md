@@ -2,6 +2,7 @@
 
 **Estado:** pendiente de tu aprobación. No se ha tocado nada todavía.
 **Fecha:** 27-09-2026. Revisada contra el código real de MSXRecorder y MSXStreamer desde tres ángulos: seguridad, robustez y compatibilidad.
+**Después (0.3.1):** se decidió quitar también la clave de emergencia (sección D): no hay clave del panel, solo los usuarios del Recorder y solo por Tailscale (`https://<dominio del Recorder>/streamer/`). Lo vigente está en el README.
 
 ## En pocas palabras
 
