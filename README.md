@@ -38,7 +38,7 @@ El HLS no se publica por defecto. Se activa por flujo añadiendo un destino **HL
 la tabla muestra entonces la dirección `.m3u8` para copiarla. Mientras ese destino esté activo (y
 el flujo también), `http://<equipo>:8888/<path>/` responde desde la red; al detenerlo o borrarlo,
 deja de responder a las lecturas nuevas. La **vista previa** del panel no lo abre a la red (hasta
-la 0.3.2 lo abría una hora, sin sesión): desde la 0.3.3 va a través del propio panel (ver abajo).
+la 0.3.2 lo abría una hora, sin sesión): desde la 0.3.4 va a través del propio panel (ver abajo).
 
 Las reglas viven en MediaMTX (`authMethod: internal`): desde el propio equipo se permite todo (las
 salidas leen de ahí) y, desde la red, solo la lectura de esos flujos. El supervisor las ajusta por
@@ -86,7 +86,10 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
-### 0.3.3
+### 0.3.4
+
+Incluye la 0.3.3 (vista previa por el panel y foto en el lienzo), que llegó a GitHub pero no se
+instaló, y le añade el lienzo en directo.
 
 - **Vista previa por el panel.** «Abrir» (vista previa), «Ver el resultado» (composición) y «ver»
   (destino HLS) ya no llevan a `http://<host_publico>:8888/…`, que por Tailscale no llega: van por
@@ -183,4 +186,4 @@ sale ahí como la ve un operador.
 
 `host_publico` (config.json) es el nombre con el que se construyen las direcciones HLS de los
 destinos (`http://<host_publico>:8888/…`, para reproductores externos): el dominio del Recorder, que
-resuelve a su IP de Tailscale. Desde la 0.3.3 la vista previa ya no lo usa: va por el panel.
+resuelve a su IP de Tailscale. Desde la 0.3.4 la vista previa ya no lo usa: va por el panel.
