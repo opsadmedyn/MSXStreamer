@@ -6,9 +6,11 @@ Cada 2 s compara lo que pide la base de datos con lo que está corriendo y lo co
   - mantiene un ffmpeg por cada salida SRT/RTMP activa, en copia, y lo relanza si cae,
     con espera creciente (2, 4, 8… hasta 30 s);
   - las salidas HLS no necesitan proceso: las sirve MediaMTX;
-  - fase 2: mantiene un proceso de composición por flujo con la composición activa (capturas de
-    Chromium + ffmpeg con NVENC) que publica en "comp_<flujo>"; las salidas con fuente
-    "compuesta" leen de ahí. Se vigila igual que una salida.
+  - fase 2: mantiene un proceso de composición por flujo con la composición activa (ffmpeg con
+    NVENC) que publica en "comp_<flujo>"; las salidas con fuente "compuesta" leen de ahí. Si tiene
+    capas, otro proceso aparte (Chromium, "capas-<flujo>") deja la última imagen de cada una en
+    memoria y el compositor la relee: el navegador no marca el ritmo del vídeo. Se vigilan igual
+    que una salida, y los dos se relanzan si se quedan parados.
 
 Los ffmpeg corren en su propia sesión: si el supervisor se reinicia (por ejemplo al desplegar),
 las salidas siguen al aire y el supervisor las vuelve a adoptar por su PID.
@@ -35,8 +37,10 @@ PROG_MAX = 1024 * 1024                      # espacio en disco de un .prog antes
 VUELTA = 2.0
 ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
-COMP_MAX = composicion.maximo(db.config())
-VIDEO_PARADO = 15.0                         # composición viva con el vídeo quieto tanto tiempo: se relanza
+CAPAS = pathlib.Path(__file__).parent / "compositor" / "capas.sh"
+CFG = db.config()
+COMP_MAX = composicion.maximo(CFG)
+VIDEO_PARADO = 15.0                         # composición (o capas) viva pero quieta tanto tiempo: se relanza
 
 
 def path_de_flujo(f):
@@ -310,9 +314,9 @@ class Supervisor:
         return {fid: todas[fid] for fid in orden[:COMP_MAX]}, set(orden[COMP_MAX:])
 
     def video_parado(self, sid, pid, prog):
-        """La composición sigue viva pero su vídeo lleva VIDEO_PARADO s sin avanzar. Pasa si se cae
-        una captura: con eof_action=endall el vídeo termina, pero el audio va en copia y ffmpeg
-        sigue emitiéndolo con la imagen quieta."""
+        """La composición sigue viva pero su vídeo lleva VIDEO_PARADO s sin avanzar (el audio va en
+        copia y ffmpeg podría seguir emitiéndolo con la imagen quieta), o el proceso de las capas
+        lleva ese tiempo sin latir (frame= de su archivo de latido): está colgado."""
         n, ahora = fotogramas(prog), time.time()
         if n is None:                       # aún sin progreso (arrancando): no se juzga
             self.video.pop(sid, None)
@@ -330,10 +334,24 @@ class Supervisor:
         for fid, comp in comps.items():
             # una composición mal guardada detiene solo esa composición, no la vuelta de las salidas
             try:
-                cmd = composicion.comando(comp, path_de_flujo(por_id[fid]), FFMPEG, RUN, COMPONER)
+                carpeta = composicion.carpeta_capas(CFG, fid)
+                cmd = composicion.comando(comp, path_de_flujo(por_id[fid]), FFMPEG, RUN, COMPONER, carpeta)
                 firma(cmd)                                  # falla si algún valor no es texto
                 if any("\0" in a for a in cmd):             # Popen no lo aceptaría
                     raise ValueError("carácter nulo")
+                if composicion.capas_de(comp):
+                    # lo que pide el panel pasa en caliente a las capas, sin relanzar nada
+                    estado = carpeta / "capas.json"
+                    nuevo = composicion.estado_capas(comp)
+                    try:
+                        igual = estado.read_text() == nuevo
+                    except OSError:
+                        igual = False
+                    if not igual:
+                        composicion.escribir(estado, nuevo.encode())
+                    composicion.preparar_capas(comp, carpeta)
+                    tareas[composicion.id_capas(fid)] = (composicion.comando_capas(carpeta, RUN, CAPAS),
+                                                         path_de_flujo(por_id[fid]), None)
                 tareas[composicion.id_tarea(fid)] = (cmd, path_de_flujo(por_id[fid]), None)
             except Exception as err:
                 tareas[composicion.id_tarea(fid)] = (None, None, f"Composición no válida: {err!r}"[:300])
@@ -389,11 +407,11 @@ class Supervisor:
                 self.espera.pop(sid, None)
                 db.evento(self.c, "relanzada por cambio de configuración", salida=sid)
 
-            if corriendo and cmd[0] == str(COMPONER) and self.video_parado(sid, e["pid"], prog):
+            if corriendo and cmd[0] in (str(COMPONER), str(CAPAS)) and self.video_parado(sid, e["pid"], prog):
                 matar(e["pid"])                             # cuenta como caída (abajo) y se relanza
                 corriendo = False
-                db.evento(self.c, f"vídeo de la composición parado más de {VIDEO_PARADO:.0f} s: se relanza",
-                          salida=sid)
+                que = "vídeo de la composición" if cmd[0] == str(COMPONER) else "proceso de las capas"
+                db.evento(self.c, f"{que} parado más de {VIDEO_PARADO:.0f} s: se relanza", salida=sid)
 
             if not corriendo and e["pid"]:                  # murió por su cuenta: cuenta como caída
                 if cmd[0] == str(COMPONER):                 # composición: lo que quede de su grupo
