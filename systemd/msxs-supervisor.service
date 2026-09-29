@@ -1,0 +1,18 @@
+[Unit]
+Description=Media Syntaxis Streamer - supervisor de salidas
+After=msxs-mediamtx.service
+
+[Service]
+Type=simple
+User=mediasat
+WorkingDirectory=/home/mediasat/streamer/streamer
+Environment=MSXS_BASE=/home/mediasat/streamer
+ExecStart=/usr/bin/python3 supervisor.py
+Restart=always
+RestartSec=2
+# Solo se para el supervisor: los ffmpeg de las salidas siguen al aire y los vuelve a adoptar
+# al arrancar. Para cortar las salidas, detén el flujo desde el panel.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

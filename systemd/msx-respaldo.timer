@@ -1,0 +1,10 @@
+[Unit]
+Description=MSX - respaldo semanal a Google Drive (domingo 04:30)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

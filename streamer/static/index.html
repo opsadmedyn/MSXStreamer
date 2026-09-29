@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Syntaxis Streamer</title>
+<link rel="icon" type="image/svg+xml" href="static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;500;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="static/base.css">
+<style>
+  body{margin:0}
+  .sistema{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--suave)}
+  .vacio{padding:40px 16px;text-align:center;color:var(--suave)}
+  .vacio .btn{margin-top:12px}
+  .stats{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:18px}
+  .stats div{display:grid}
+  .stats small{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--tenue)}
+  .stats span{font-size:15px}
+  .acciones-fila{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+  .btn.peligro{color:var(--error)}
+  .btn.peligro.confirmar{background:var(--error);border-color:var(--error);color:#fff}
+  .aviso{font-size:13px;min-height:18px;margin-top:10px}
+  .aviso.error{color:var(--error)}.aviso.ok{color:var(--ok)}
+  .err{font-size:12px;color:var(--error);margin-top:4px;max-width:420px;overflow-wrap:anywhere}
+  .reg{display:grid;gap:0;font-size:13px}
+  .reg div{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--borde)}
+  .reg time{color:var(--tenue)}
+  .fase2{max-width:620px}
+  .fase2 p{color:var(--suave)}
+  body.operador [data-admin]{display:none!important}
+  body.operador #f-comp, body.operador #f-flujo{pointer-events:none;opacity:.75}
+  #quien{font-size:12px;color:var(--suave)}
+  .copiar{cursor:pointer;border-bottom:1px dotted var(--tenue)}
+  .mini{display:grid;place-items:center;color:var(--tenue);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  .mini.aire{background:linear-gradient(135deg,#1c2a1f,#14301d);color:var(--ok)}
+  .comp{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr);gap:16px;align-items:start}
+  .lienzo{position:relative;width:100%;aspect-ratio:16/9;background:#000;border:1px solid var(--borde);border-radius:6px;overflow:hidden;container-type:inline-size}
+  .video-m{position:absolute;background:repeating-linear-gradient(135deg,#243049 0 12px,#1d2638 12px 24px);display:grid;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em;outline:1px solid #5b6f99}
+  .video-m.foto{background-size:100% 100%;background-repeat:no-repeat}   /* foto de la entrada, estirada como en la composición */
+  .video-m.foto span{display:none}
+  .video-m video,.resultado-m video{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;opacity:0;pointer-events:none}   /* estirado como en la composición; se ve cuando avanza */
+  .lienzo.vivo video{opacity:1}
+  .lienzo.vivo .video-m span,.lienzo.vivo .resultado-m span{display:none}
+  .resultado-m{position:absolute;inset:0;background:#000;display:none;place-items:center;color:#c9d3e6;font:600 12px var(--mono);letter-spacing:.1em}
+  .lienzo.resultado .resultado-m{display:grid}
+  .lienzo.resultado .video-m,.lienzo.resultado .capas-m{display:none}
+  .modos{display:inline-flex;border:1px solid var(--borde);border-radius:6px;overflow:hidden;flex:none}
+  .modos button{background:var(--fondo);border:0;padding:5px 12px;font-size:12px;font-weight:500;color:var(--suave);cursor:pointer}
+  .modos button+button{border-left:1px solid var(--borde)}
+  .modos button[aria-pressed="true"]{background:var(--panel2);color:var(--texto);box-shadow:inset 0 -2px 0 var(--acento)}
+  .modos button:disabled{opacity:.45;cursor:not-allowed}
+  #c-vivo-nota.ok{color:var(--ok)}
+  .capas-m{position:absolute;inset:0;pointer-events:none}
+  .capas-m iframe{position:absolute;left:0;top:0;width:1920px;height:1080px;border:0;transform-origin:0 0;background:transparent;color-scheme:normal}   /* sin esto Chrome pinta opaco el iframe (esquema claro dentro del panel oscuro) */
+  .zona{position:absolute;border:1px dashed rgba(255,255,255,.28);pointer-events:none}
+  .zona.z93{inset:3.5%}.zona.z90{inset:5%}
+  .presets button[aria-pressed="true"]{border-color:var(--acento)}
+  @media (max-width:980px){.comp{grid-template-columns:1fr}}
+  @media (max-width:560px){.reg div{grid-template-columns:1fr;gap:2px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="marca"><span class="br">[</span><span>Media</span><b>Syntaxis</b><span class="br">]</span> <em>Streamer</em></div>
+  <nav aria-label="Secciones"><button data-ir="flujos" aria-current="page">Flujos</button></nav>
+  <div class="sistema"><span id="sis-mtx" class="pill off">MediaMTX</span><span id="sis-sup" class="pill off">Supervisor</span><span id="quien"></span><a id="lnk-recorder" class="btn peq" href="#" hidden>Recorder</a><button class="btn peq" id="b-salir">Salir</button></div>
+</header>
+
+<main>
+<section id="v-flujos">
+  <div class="cab">
+    <div><h1>Flujos</h1><p class="sub">Cada flujo es una entrada y sus salidas.</p></div>
+    <div class="acc"><button class="btn pri" id="b-nuevo" data-admin>Nuevo flujo</button></div>
+  </div>
+  <div class="lista" id="lista"></div>
+</section>
+
+<section id="v-editor" hidden>
+  <div class="cab">
+    <div><h1 id="e-titulo">Nuevo flujo</h1><p class="sub" id="e-sub">Elige de dónde llega la señal.</p></div>
+    <div class="acc" id="e-acc"></div>
+  </div>
+  <div class="stats" id="e-stats" hidden></div>
+
+  <div class="pasos" role="tablist">
+    <button role="tab" data-paso="entrada" aria-selected="true"><small>1</small>Entrada</button>
+    <button role="tab" data-paso="comp" aria-selected="false"><small>2</small>Composición</button>
+    <button role="tab" data-paso="salidas" aria-selected="false"><small>3</small>Salidas</button>
+    <button role="tab" data-paso="registro" aria-selected="false">Registro</button>
+  </div>
+
+  <div id="p-entrada">
+    <form id="f-flujo">
+      <label class="campo-f" style="max-width:760px;margin-bottom:18px"><span>Nombre del flujo</span><input id="i-nombre" type="text" required maxlength="80" placeholder="Yankees vs Red Sox · Programa"></label>
+      <div class="opciones" role="radiogroup" aria-label="Tipo de entrada">
+        <label class="opc"><input type="radio" name="entrada" value="recorder" checked><h3>Canal de MSX Recorder</h3><p>Usa el feed que ya graba el Recorder en este equipo, sin abrir otra conexión al origen.</p></label>
+        <label class="opc"><input type="radio" name="entrada" value="pull"><h3>SRT pull</h3><p>El Streamer se conecta a una URL SRT remota y reintenta si se cae.</p></label>
+        <label class="opc dis"><input type="radio" name="entrada" value="push" disabled><h3>SRT push</h3><p>El encoder envía al Streamer. Fase futura.</p></label>
+      </div>
+      <div class="panel" id="f-rec">
+        <h2>Canales del Recorder en este equipo</h2>
+        <div class="canales" id="canales"></div>
+        <p class="nota" style="margin-top:12px">El canal tiene que tener activado el reenvío al Streamer (una vez por canal, en su configuración del Recorder). El reenvío no afecta a la grabación: si el Streamer se detiene, el Recorder sigue grabando igual.</p>
+      </div>
+      <div class="panel" id="f-pull" hidden>
+        <h2>Origen SRT</h2>
+        <div class="form">
+          <label class="campo-f ancho"><span>URL del origen</span><input id="i-url" type="text" placeholder="srt://203.0.113.40:9000"></label>
+          <label class="campo-f"><span>Stream ID (opcional)</span><input id="i-sid" type="text"></label>
+          <label class="campo-f"><span>Passphrase (opcional)</span><input id="i-pass" type="password" autocomplete="new-password"></label>
+          <label class="campo-f"><span>Latencia SRT (ms)</span><input id="i-lat" type="number" min="20" max="8000" value="400"></label>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn pri" id="b-guardar" data-admin>Guardar entrada</button>
+        <span class="aviso" id="av-flujo"></span>
+      </div>
+    </form>
+  </div>
+
+  <div id="p-comp" hidden>
+    <div class="comp">
+      <div class="panel">
+        <div class="cab" style="margin-bottom:12px">
+          <div><h2 style="margin:0">Composición</h2><p class="sub" style="margin:4px 0 0">Vídeo reencuadrado sobre un lienzo 1920×1080 y hasta dos capas HTML5 con transparencia.</p></div>
+          <div class="acc"><span id="c-estado"></span></div>
+        </div>
+        <div class="fila" style="margin-bottom:8px">
+          <div class="modos" id="c-modos" role="group" aria-label="Qué se ve en el lienzo">
+            <button type="button" data-modo="edicion" aria-pressed="true" title="La entrada en directo con las capas: para ajustar el encuadre antes de guardar">Edición</button>
+            <button type="button" data-modo="resultado" aria-pressed="false" disabled>Resultado</button>
+          </div>
+          <span class="nota" id="c-vivo-nota"></span>
+          <span class="nota" id="c-modo-nota"></span>
+        </div>
+        <div class="lienzo" id="c-lienzo" aria-label="Vista del encuadre">
+          <div class="capas-m" id="c-capas-debajo"></div>
+          <div class="video-m" id="c-video"><span>VÍDEO</span><video id="c-vivo" muted autoplay playsinline disablepictureinpicture tabindex="-1" aria-hidden="true"></video></div>
+          <div class="capas-m" id="c-capas-encima"></div>
+          <div class="resultado-m" id="c-resultado"><span>RESULTADO</span><video id="c-res-video" muted autoplay playsinline disablepictureinpicture tabindex="-1" aria-hidden="true"></video></div>
+          <div class="zona z93"></div><div class="zona z90"></div>
+        </div>
+        <p class="nota" style="margin-top:8px">Edición: la entrada en directo con las capas, tal como quedará al guardar. Resultado: la señal compuesta que sale. Guías: zona de acción (93 %) y de títulos (90 %). Las capas se muestran tal cual si la página permite verse incrustada.</p>
+        <div class="fila" style="margin-top:12px;gap:14px">
+          <a href="#" id="c-ver" style="color:var(--acento2)">Ver el resultado (vista previa compuesta)</a>
+          <span class="nota" id="c-datos"></span>
+        </div>
+      </div>
+      <form class="panel ctrl" id="f-comp">
+        <label class="check"><span class="sw"><input type="checkbox" id="c-activa"><span></span></span> Composición activa</label>
+        <div class="grupo">
+          <label class="l">Encuadre del vídeo</label>
+          <div class="presets" id="c-presets" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+            <button type="button" data-p="completa"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="currentColor" opacity=".5"/></svg>Completa</button>
+            <button type="button" data-p="l_derecha"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="10.7" y="1" width="32.3" height="18.2" fill="currentColor" opacity=".5"/></svg>L derecha</button>
+            <button type="button" data-p="l_izquierda"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="1" y="1" width="32.3" height="18.2" fill="currentColor" opacity=".5"/></svg>L izquierda</button>
+            <button type="button" data-p="centrada"><svg viewBox="0 0 44 25"><rect x="1" y="1" width="42" height="23" fill="none" stroke="currentColor"/><rect x="5.2" y="3.4" width="33.6" height="18.2" fill="currentColor" opacity=".5"/></svg>Centrada 80 %</button>
+          </div>
+          <label class="l"><span>Ancho del vídeo</span><span class="num" id="c-ancho-txt"></span></label>
+          <input type="range" id="c-ancho" min="320" max="1920" step="2">
+          <div class="dos">
+            <label class="campo-f"><span>X (px)</span><input type="number" id="c-x" min="0" max="1920" step="2"></label>
+            <label class="campo-f"><span>Y (px)</span><input type="number" id="c-y" min="0" max="1080" step="2"></label>
+          </div>
+          <label class="campo-f"><span>Color de fondo</span><input type="color" id="c-fondo" value="#000000" style="height:36px;padding:2px"></label>
+        </div>
+        <div class="grupo">
+          <label class="l"><span>Capas HTML5</span><button type="button" class="btn peq" id="c-ejemplo" data-admin>Usar la capa de ejemplo</button></label>
+          <div class="capas" id="c-capas"></div>
+          <p class="nota">URL de una página web con fondo transparente, pensada para 1920×1080. Encima: tapa el vídeo donde pinta. Debajo: solo se ve fuera del vídeo.</p>
+        </div>
+        <div class="grupo">
+          <label class="campo-f"><span>Calidad de la señal compuesta (kbps)</span><input type="number" id="c-kbps" min="1000" max="40000" step="500"></label>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn pri" id="c-guardar" data-admin>Guardar composición</button>
+          <span class="aviso" id="av-comp"></span>
+        </div>
+        <p class="nota">Los destinos eligen si llevan la señal limpia (en copia) o la compuesta, en su configuración.</p>
+      </form>
+    </div>
+  </div>
+
+  <div id="p-salidas" hidden>
+    <div class="panel">
+      <div class="cab" style="margin-bottom:8px"><div><h2 style="margin:0">Destinos</h2></div><div class="acc"><button class="btn pri" id="b-add" data-admin>Añadir destino</button></div></div>
+      <div class="scroll"><table class="tabla"><thead><tr><th>Tipo</th><th>Destino</th><th>Estado</th><th>Tasa</th><th></th></tr></thead><tbody id="t-sal"></tbody></table></div>
+      <p class="nota" style="margin-top:12px">La señal limpia va en copia: la misma calidad que la entrada, sin recodificar. La compuesta sale de la composición del flujo. Si un destino falla, solo ese se reintenta.</p>
+    </div>
+  </div>
+
+  <div id="p-registro" hidden>
+    <div class="panel"><div class="reg" id="reg"></div></div>
+  </div>
+</section>
+</main>
+
+<dialog id="dlg">
+  <h3 id="d-titulo">Añadir destino</h3>
+  <div class="tipos" role="group" aria-label="Tipo de destino">
+    <button type="button" data-tipo="srt" aria-pressed="true">SRT</button><button type="button" data-tipo="rtmp" aria-pressed="false">RTMP</button><button type="button" data-tipo="hls" aria-pressed="false">HLS</button>
+  </div>
+  <form id="f-dest" class="form">
+    <label class="campo-f"><span>Nombre</span><input id="d-nom" type="text" required maxlength="80" placeholder="Master control"></label>
+    <label class="campo-f"><span>Señal</span><select id="d-fuente"><option value="limpia">Limpia (en copia)</option><option value="compuesta">Compuesta (con capas)</option></select></label>
+    <div class="ancho form" data-t="srt" style="padding:0">
+      <label class="campo-f ancho"><span>URL</span><input id="d-srturl" type="text" placeholder="srt://destino.ejemplo.com:9000"></label>
+      <label class="campo-f"><span>Modo</span><select id="d-modo"><option value="caller">Caller (conectamos nosotros)</option><option value="listener">Listener (el destino se conecta)</option></select></label>
+      <label class="campo-f"><span>Latencia (ms)</span><input id="d-lat" type="number" min="20" max="8000" value="300"></label>
+      <label class="campo-f"><span>Passphrase (opcional)</span><input id="d-pass" type="password" autocomplete="new-password"></label>
+      <label class="campo-f"><span>Stream ID (opcional)</span><input id="d-sid" type="text"></label>
+    </div>
+    <div class="ancho form" data-t="rtmp" style="padding:0" hidden>
+      <label class="campo-f ancho"><span>Servidor</span><input id="d-rtmpurl" type="text" placeholder="rtmp://a.rtmp.youtube.com/live2"></label>
+      <label class="campo-f ancho"><span>Clave de emisión</span><input id="d-clave" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="ancho" data-t="hls" hidden><p class="nota">HLS bajo demanda: lo publica este servidor solo mientras este destino esté activo. Al detenerlo o borrarlo, la dirección deja de responder. La dirección (.m3u8) aparece en la tabla al guardarlo, con botón para copiarla.</p></div>
+  </form>
+  <p class="nota" id="d-nota" hidden>Deja la passphrase o la clave vacías para conservar las guardadas.</p>
+  <div class="aviso error" id="d-aviso"></div>
+  <div class="pie"><button class="btn" id="d-cancel" type="button">Cancelar</button><button class="btn pri" id="d-ok" type="button">Guardar</button></div>
+</dialog>
+
+<script src="static/app.js"></script>
+</body>
+</html>

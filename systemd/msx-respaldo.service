@@ -1,0 +1,10 @@
+[Unit]
+Description=MSX - respaldo semanal de configuración y bases de datos a Google Drive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/mediasat/respaldos/bin/respaldar.sh --drive semanal
+Nice=10
+IOSchedulingClass=idle
