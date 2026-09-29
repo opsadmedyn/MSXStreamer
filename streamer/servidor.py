@@ -559,12 +559,36 @@ def guardar_composicion(fid: str, d: Composicion):
             raise HTTPException(409, f"Ya hay {otras} composiciones activas y el máximo es {COMP_MAX} a la vez. "
                                      "Desactiva otra antes de activar esta.")
     x, y, w, _ = composicion.normalizar(d.model_dump())
-    capas = json.dumps([{"url": k.url.strip(), "activa": k.activa, "encima": k.encima} for k in d.capas])
+    # el contador de recarga de cada capa se conserva mientras no cambie su dirección
+    previas = composicion.capas_de(composicion.leer(c, fid))
+    capas = json.dumps([{"url": k.url.strip(), "activa": k.activa, "encima": k.encima,
+                         **({"recarga": previas[i].get("recarga", 0)}
+                            if i < len(previas) and previas[i]["url"] == k.url.strip() else {})}
+                        for i, k in enumerate(d.capas)])
     c.execute("""INSERT INTO composiciones(flujo,activa,x,y,ancho,fondo,capas,kbps) VALUES (?,?,?,?,?,?,?,?)
                  ON CONFLICT(flujo) DO UPDATE SET activa=excluded.activa,x=excluded.x,y=excluded.y,
                  ancho=excluded.ancho,fondo=excluded.fondo,capas=excluded.capas,kbps=excluded.kbps""",
               (fid, int(d.activa), x, y, w, d.fondo.lower(), capas, d.kbps))
     evento(c, "composición " + ("activada" if d.activa else "guardada (desactivada)"), flujo=fid)
+    return {"ok": True}
+
+
+@app.post("/api/flujos/{fid}/composicion/capas/{n}/recargar")
+def recargar_capa(fid: str, n: int):
+    """Vuelve a cargar la página de una capa sin cortar la señal compuesta: se abre aparte y
+    sustituye a la anterior al llegar su primera imagen."""
+    c = db.conectar()
+    k = c.execute("SELECT capas FROM composiciones WHERE flujo=?", (fid,)).fetchone()
+    try:
+        capas = json.loads(k["capas"] or "[]") if k else []
+    except ValueError:
+        capas = []
+    con_url = [x for x in capas if isinstance(x, dict) and x.get("url")]
+    if not 1 <= n <= len(con_url):
+        raise HTTPException(404, "Esa capa no existe; guarda la composición primero")
+    con_url[n - 1]["recarga"] = int(con_url[n - 1].get("recarga") or 0) + 1
+    c.execute("UPDATE composiciones SET capas=? WHERE flujo=?", (json.dumps(capas), fid))
+    evento(c, f"capa {n} recargada", flujo=fid)
     return {"ok": True}
 
 

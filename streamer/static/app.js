@@ -265,7 +265,8 @@ function formComp() {
     <div class="capa2" data-i="${i}">
       <div class="capa-cab"><span class="orden">${i + 1}</span><b style="flex:1">Capa ${i + 1}</b>
         <select data-k="encima" style="width:auto"><option value="1">Encima del vídeo</option><option value="0">Debajo del vídeo</option></select>
-        <span class="sw" title="Capa activa"><input type="checkbox" data-k="activa"><span></span></span></div>
+        <button type="button" class="btn peq" data-k="recargar" data-admin title="Vuelve a cargar la página sin cortar la señal">Recargar</button>
+        <span class="sw" title="Capa visible (mostrar y ocultar no corta la señal)"><input type="checkbox" data-k="activa"><span></span></span></div>
       <input type="text" data-k="url" placeholder="https://… (vacía: sin capa)">
     </div>`).join('');
   $$('#c-capas .capa2').forEach(el => {
@@ -276,6 +277,16 @@ function formComp() {
     el.querySelector('[data-k=url]').oninput = e => { c.url = e.target.value.trim(); lienzo(); };
     el.querySelector('[data-k=activa]').onchange = e => { c.activa = e.target.checked; lienzo(); };
     el.querySelector('[data-k=encima]').onchange = e => { c.encima = e.target.value === '1'; lienzo(); };
+    // recargar vale para la capa ya guardada (la n-ésima con dirección, como la numera el servidor)
+    const guardadas = (flujos.find(f => f.id === actual)?.composicion.capas || []).filter(x => x.url);
+    const n = guardadas.findIndex(x => x.url === c.url) + 1;
+    const b = el.querySelector('[data-k=recargar]');
+    b.hidden = !c.url || !n;
+    b.onclick = async () => {
+      const av = $('#av-comp');
+      try { await api('POST', `/api/flujos/${actual}/composicion/capas/${n}/recargar`); av.className = 'aviso ok'; av.textContent = `Capa ${i + 1}: recargando sin cortar la señal.`; }
+      catch (err) { av.className = 'aviso error'; av.textContent = err.message; }
+    };
   });
   lienzo();
 }

@@ -5,17 +5,26 @@ y le superpone hasta dos capas HTML5 (Chromium sin pantalla, con canal alfa). Re
 NVENC y publica el resultado en MediaMTX, en el path "comp_<flujo>", del que leen las salidas
 con fuente "compuesta". La señal limpia sigue disponible a la vez para las demás salidas.
 
-La superposición va por CPU: el ffmpeg del Z8 no trae overlay_cuda/scale_cuda. Es el mismo
-esquema que el PoC (19 h estable, ~4,4 núcleos, 29,95 fps).
+La superposición va por CPU: el ffmpeg del Z8 no trae overlay_cuda/scale_cuda.
+
+Capas como "última imagen" (0.4.0, el contrato del diseño): un proceso aparte por composición
+(compositor/capas.mjs, tarea "capas-<flujo>" del supervisor) deja la última imagen de cada capa en
+<capas_dir>/<flujo>/capaN.yuv (yuva420p 1920x1080, alfa recto, escrita entera y renombrada). El
+compositor relee ese archivo en cada fotograma (-f image2 -loop 1): el navegador nunca marca el ritmo
+del vídeo. Mostrar, ocultar, recargar o cambiar la dirección de una capa no relanza el compositor:
+lo aplica capas.mjs leyendo capas.json. Relanzan el compositor el encuadre, el fondo, la calidad,
+añadir o quitar una capa y pasarla de encima a debajo (eso irá en vivo con zmq, paso B).
 """
 
 import json
 import os
+import pathlib
 import re
 
 import mtx
 
 LIENZO_W, LIENZO_H = 1920, 1080
+TAM_CAPA = LIENZO_W * LIENZO_H * 5 // 2      # un fotograma yuva420p
 MAX_CAPAS = 2
 FONDO_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -55,12 +64,70 @@ def normalizar(d):
     return x, y, ancho, alto
 
 
+def id_capas(flujo_id):
+    """Clave del proceso de las capas (navegador) en estado_salidas."""
+    return "capas-" + flujo_id
+
+
 def capas_de(comp):
+    """Capas con dirección, visibles u ocultas: cada una es una entrada del compositor (ocultarla
+    solo cambia su imagen a transparente, no el comando)."""
     try:
         capas = json.loads(comp["capas"] or "[]")
     except ValueError:
         return []
-    return [c for c in capas if c.get("activa") and c.get("url")][:MAX_CAPAS]
+    return [c for c in capas if isinstance(c, dict) and c.get("url")][:MAX_CAPAS]
+
+
+def carpeta_capas(cfg, flujo_id):
+    """Carpeta de las imágenes de las capas de un flujo. Va en memoria (tmpfs): /run/msxs, que crea
+    systemd-tmpfiles (scripts/desplegar.sh); si no existe o no se puede escribir, /dev/shm/msxs."""
+    for base in (cfg.get("capas_dir") or "/run/msxs", "/dev/shm/msxs"):
+        d = pathlib.Path(base) / flujo_id
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            if os.access(d, os.W_OK):
+                return d
+        except OSError:
+            continue
+    raise OSError("no hay carpeta en memoria para las capas (/run/msxs ni /dev/shm/msxs)")
+
+
+def transparente():
+    y = LIENZO_W * LIENZO_H
+    return bytes([16]) * y + bytes([128]) * (y // 2) + bytes(y)
+
+
+def escribir(archivo, datos):
+    tmp = archivo.with_name(archivo.name + ".tmp")
+    tmp.write_bytes(datos)
+    os.replace(tmp, archivo)
+
+
+def preparar_capas(comp, carpeta):
+    """Antes de lanzar el compositor: cada capa tiene ya su archivo (transparente si es nuevo o está
+    mal), para que el compositor nunca arranque sin él. Nunca se borra mientras corre."""
+    for i in range(1, len(capas_de(comp)) + 1):
+        f = carpeta / f"capa{i}.yuv"
+        try:
+            if f.stat().st_size == TAM_CAPA:
+                continue
+        except OSError:
+            pass
+        escribir(f, transparente())
+
+
+def estado_capas(comp):
+    """Lo que lee capas.mjs (capas.json): dirección, visible y contador de recarga de cada capa."""
+    return json.dumps({"capas": [{"url": c["url"], "visible": bool(c.get("activa", True)),
+                                  "recarga": int(c.get("recarga") or 0)} for c in capas_de(comp)]},
+                      sort_keys=True)
+
+
+def comando_capas(carpeta, run, lanzar):
+    """Proceso de las capas de un flujo. No depende de las direcciones: no se relanza al editarlas."""
+    return [str(lanzar), str(carpeta), str(carpeta / "capas.json"),
+            str(run / f"{id_capas(carpeta.name)}.prog")]
 
 
 def leer(c, flujo_id):
@@ -75,10 +142,10 @@ def filtro(comp):
     """filter_complex: vídeo reencuadrado sobre el fondo, capas "debajo" entre el fondo y el
     vídeo, capas "encima" sobre todo. Las capas son las entradas 1, 2… (la 0 es la señal).
 
-    eof_action=endall (= shortest=1 del diseño): si se acaba la señal, ffmpeg termina y el
-    supervisor relanza la composición cuando vuelve la entrada. Con "repeat" seguía emitiendo para
-    siempre la última imagen, sin audio, aunque la señal volviera. Si se acaba una capa, termina el
-    vídeo pero no ffmpeg (el audio va en copia): lo relanza el supervisor al ver el vídeo parado."""
+    shortest=1 en todas las capas (OBLIGATORIO, lo comprueba tests/test_composicion.py): las capas
+    son archivos que se releen sin fin, así que sin él, si se corta la señal, la salida se desboca a
+    más de 3 veces el tiempo real. Con él, ffmpeg termina y el supervisor relanza la composición
+    cuando vuelve la entrada. Si falta el archivo de una capa, también termina y se relanza."""
     x, y, w, h = normalizar(comp)
     capas = capas_de(comp)
     debajo = [i + 1 for i, c in enumerate(capas) if not c.get("encima", True)]
@@ -93,29 +160,30 @@ def filtro(comp):
         partes.append(f"[0:v]setsar=1,scale={w}:{h},pad={LIENZO_W}:{LIENZO_H}:{x}:{y}:color={fondo}[b0]")
     n = 0
     for i in debajo:
-        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=endall[b{n + 1}]")
+        partes.append(f"[b{n}][{i}:v]overlay=0:0:format=yuv420:shortest=1[b{n + 1}]")
         n += 1
     if debajo:
-        partes.append(f"[b{n}][vb]overlay={x}:{y}[b{n + 1}]")
+        partes.append(f"[b{n}][vb]overlay={x}:{y}:shortest=1[b{n + 1}]")
         n += 1
     for i in encima:
-        partes.append(f"[b{n}][{i}:v]overlay=0:0:eof_action=endall[b{n + 1}]")
+        partes.append(f"[b{n}][{i}:v]overlay=0:0:format=yuv420:shortest=1[b{n + 1}]")
         n += 1
     partes.append(f"[b{n}]format=yuv420p[out]")
     return ";".join(partes)
 
 
-def comando(comp, path_entrada, ffmpeg, run, componer):
-    """Comando completo: componer.sh arranca las capturas y se convierte en este ffmpeg."""
+def comando(comp, path_entrada, ffmpeg, run, componer, carpeta):
+    """Comando completo: componer.sh baja la prioridad y se convierte en este ffmpeg. Las capas son
+    la última imagen de cada una (carpeta/capaN.yuv), releída en cada fotograma; la cola corta
+    (thread_queue_size 4) hace que el gráfico no llegue con retraso respecto a la página."""
     fid = comp["flujo"]
     prog = run / f"{id_tarea(fid)}.prog"
     capas = capas_de(comp)
-    previo, entradas_capas = [str(componer)], []
-    for i, c in enumerate(capas, start=1):
-        fifo = run / f"{id_tarea(fid)}-capa{i}.fifo"
-        previo += [str(fifo), c["url"]]
-        entradas_capas += ["-thread_queue_size", "4", "-f", "image2pipe", "-c:v", "png",
-                           "-framerate", "30000/1001", "-i", str(fifo)]
+    previo, entradas_capas = [str(componer), "--"], []
+    for i in range(1, len(capas) + 1):
+        entradas_capas += ["-thread_queue_size", "4", "-f", "image2", "-loop", "1",
+                           "-framerate", "30000/1001", "-c:v", "rawvideo", "-pixel_format", "yuva420p",
+                           "-video_size", f"{LIENZO_W}x{LIENZO_H}", "-i", str(carpeta / f"capa{i}.yuv")]
     kbps = max(1000, min(40000, int(comp["kbps"])))
     ff = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning",
           "-progress", str(prog), "-stats_period", "2",
@@ -124,9 +192,10 @@ def comando(comp, path_entrada, ffmpeg, run, componer):
           "-filter_complex", filtro(comp), "-map", "[out]", "-map", "0:a?",
           "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-rc", "cbr",
           "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k", "-bufsize", f"{kbps}k", "-g", "60", "-bf", "0",
+          "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
           "-c:a", "copy",
           "-f", "mpegts", mtx.url_publicacion(path_comp(fid)) + "&pkt_size=1316"]
-    return previo + ["--"] + ff
+    return previo + ff
 
 
 def validar_url_capa(url):

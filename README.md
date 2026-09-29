@@ -48,11 +48,31 @@ genera mientras alguien lo mira.
 
 ### Composición (fase 2)
 
-El supervisor mantiene, por cada flujo con la composición activa, un proceso `componer.sh`: una
-captura de Chromium sin pantalla por capa (`compositor/captura.mjs`, PNG con alfa a 29,97 fps por un
-FIFO) y un ffmpeg que reencuadra y superpone por CPU (el ffmpeg del Z8 no trae filtros CUDA), codifica
-con NVENC y publica en MediaMTX en `comp_<flujo>`. Las salidas con fuente "compuesta" leen de ahí; la
-señal limpia sigue igual para las demás. Todo va en un grupo de procesos: se para o relanza entero.
+Desde la 0.4.0, por cada flujo con la composición activa el supervisor mantiene dos procesos:
+
+- **Compositor** (`componer.sh` → ffmpeg): reencuadra y superpone por CPU (el ffmpeg del Z8 no trae
+  filtros CUDA), codifica con NVENC y publica en MediaMTX en `comp_<flujo>`. Cada capa entra como un
+  archivo `capaN.yuv` (yuva420p 1920×1080, alfa recto) que relee en cada fotograma (`-f image2 -loop 1`),
+  con `shortest=1` en todas las superposiciones.
+- **Capas** (`compositor/capas.sh` → `capas.mjs`, solo si hay capas): un Chromium sin pantalla con una
+  página por capa. Cada imagen nueva de la página (screencast PNG, alfa premultiplicado) se convierte
+  en un hilo aparte (`compositor/convertir.mjs`: alfa recto, BT.709 rango limitado) y se escribe entera
+  en un temporal que se renombra sobre `capaN.yuv`, en `/run/msxs/<flujo>/` (en memoria;
+  `/dev/shm/msxs` si no existe). No se usa un ffmpeg en tubería para esto: retiene 2–3 imágenes antes
+  de soltar la primera, y una página quieta no llegaría nunca al aire.
+
+**El navegador ya no marca el ritmo del vídeo:** si una página se cuelga o el proceso de las capas
+cae, la capa se queda en su última imagen y el vídeo sigue. **Sin corte:** mostrar u ocultar una capa,
+cambiar su dirección o recargarla (botón «Recargar») lo aplica el proceso de las capas en caliente
+(`capas.json`, que escribe el supervisor); la página nueva sustituye a la anterior al llegar su primera
+imagen. **Con corte de 1–2 s** en la señal compuesta, de momento: encuadre, fondo, calidad, añadir o
+quitar una capa, y pasarla de encima a debajo (irán en vivo con el ffmpeg con zmq, paso B).
+
+Vigilancia de las páginas: latido cada 1 s y sustitución tras 5 s sin respuesta o si la página cae;
+renovación diaria o al pasar de ~400 MB de memoria JS; si no carga, sigue la anterior y se reintenta
+de 2 a 30 s. El supervisor relanza el proceso de las capas si su latido (`frame=` del `.prog`) no
+avanza en 15 s. Las salidas limpias y el Recorder no dependen de nada de esto.
+
 Runtime (Node y Chromium): `scripts/instalar-compositor.sh <estación>`, una vez. Capa de ejemplo:
 `http://127.0.0.1:8095/static/capa-ejemplo.html` (L-bar con reloj, para el preajuste "L derecha").
 
@@ -60,19 +80,19 @@ Runtime (Node y Chromium): `scripts/instalar-compositor.sh <estación>`, una vez
 
 Una composición nunca debe afectar a la señal limpia ni al Recorder:
 
-- **Sin entrada, termina.** Si se corta la señal (o muere una captura), la composición termina en
+- **Sin entrada, termina.** Si se corta la señal la composición termina en
   vez de emitir una imagen congelada, y el supervisor la relanza cuando la entrada vuelve. Si sigue
   viva pero su vídeo lleva 15 s sin avanzar (`frame=` del `.prog`), el supervisor también la relanza.
 - **Como mucho 3 a la vez** (`composicion_max` en `config.json`, 3 si no está). El panel no deja
   activar una cuarta; si la base tiene más (un flujo que se inicia, una edición a mano), el
   supervisor arranca solo 3, primero las que ya corren, y las demás esperan con «Límite de…».
-- **Prioridad baja:** `componer.sh` se pone nice 10, ionice best-effort 7 y `oom_score_adj` 500, y
-  lo heredan Chromium y ffmpeg: si falta CPU, disco o memoria, cede y cae antes que lo demás.
+- **Prioridad baja:** el compositor va con nice 10, ionice best-effort 7 y `oom_score_adj` 500; el
+  proceso de las capas (Chromium y sus conversores), con nice 15, ionice idle y `oom_score_adj` 800:
+  si falta CPU, disco o memoria, ceden y caen antes que lo demás.
 - **Datos dañados:** una composición que no se puede construir queda como «Composición no válida»
   y el supervisor sigue vigilando y relanzando las demás salidas.
 - **Disco:** los `.prog` (más de 1 MB en disco) y los `.log` (más de 5 MB) se recortan también
-  mientras el proceso corre; si una composición no llega a abrir la entrada, el supervisor mata las
-  capturas que se quedaron esperando su FIFO.
+  mientras el proceso corre.
 
 ## Despliegue
 
@@ -85,6 +105,23 @@ scripts/desplegar.sh z8 --mediamtx   # además, mediamtx.yml y unidades nuevas (
 Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890 (UDP), API de
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
+
+### 0.4.0 (rama de la fase 2, sin instalar)
+
+Capas como "última imagen" (el contrato del diseño de la fase 2), con el ffmpeg de siempre:
+
+- **El navegador ya no marca el ritmo del vídeo.** Una página colgada o un Chromium caído dejan la
+  capa en su última imagen; el vídeo compuesto sigue.
+- **Transparencias correctas:** se quita el alfa premultiplicado del screencast (antes las barras
+  semitransparentes salían más oscuras) y el compositor ya no decodifica PNG en cada fotograma.
+- **Sin corte:** mostrar, ocultar, cambiar la dirección o recargar una capa (botón nuevo «Recargar»).
+- **Vigilancia de páginas:** latido, página caída, renovación diaria y por memoria; latido del
+  proceso de las capas al supervisor.
+- `shortest=1` en todas las superposiciones (con prueba en `tests/`), salida etiquetada BT.709.
+- `desplegar.sh` crea `/run/msxs` con systemd-tmpfiles (solo crea la carpeta, no reinicia nada).
+
+Al instalarla, las composiciones activas se relanzan una vez (cambia su comando); las salidas limpias
+no se tocan. Pruebas: `python3 -m unittest discover tests`.
 
 ### 0.3.4
 

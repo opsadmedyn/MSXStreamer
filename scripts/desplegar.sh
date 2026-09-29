@@ -51,6 +51,10 @@ COPYFILE_DISABLE=1 tar cz --no-xattrs streamer/*.py streamer/componer.sh streame
 # rsync sin --delete: el login.html de la clave del panel (hasta la 0.3.0) se quita aparte
 $SSH "$COMO bash -c 'rsync -a $DEST/releases/v$VERSION/streamer/ $DEST/streamer/ && rm -f $DEST/streamer/static/login.html && cp $DEST/releases/v$VERSION/VERSION $DEST/ && cd $DEST/streamer && python3 -m py_compile *.py'"
 
+# carpeta en memoria para las imágenes de las capas de la composición (0.4.0). Solo la crea: no
+# reinicia nada ni toca otros servicios. Sin ella, las capas van a /dev/shm/msxs.
+$SSH "echo 'd /run/msxs 0750 mediasat mediasat -' | sudo tee /etc/tmpfiles.d/msxs.conf >/dev/null && sudo systemd-tmpfiles --create /etc/tmpfiles.d/msxs.conf"
+
 if [ "$INSTALAR" = 1 ]; then
   echo "== $HOST: configuración y servicios"
   $SSH "$COMO bash -s" <<REMOTO
