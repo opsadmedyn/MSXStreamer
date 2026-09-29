@@ -105,16 +105,21 @@ MediaMTX 9997 (solo local). La configuración de la máquina está en `config.js
 - **Lienzo en directo.** En el paso Composición, el recuadro del vídeo muestra la entrada limpia en
   directo con las capas encima o debajo («Edición»), y el selector «Resultado» pasa el lienzo entero
   a la señal compuesta real (`comp_<flujo>`) si la composición está activa y en marcha (tras
-  «Guardar composición» se reconecta sola). Es un vídeo por el panel (HLS de baja latencia, a la tasa
-  de la señal) por cada pestaña con el paso Composición a la vista; se corta al salir del paso, del
-  flujo o de la pestaña.
+  «Guardar composición» se reconecta sola). Es un vídeo por el panel (HLS de baja latencia) por cada
+  pestaña con el lienzo a la vista: la tasa entera de la entrada (o de la compuesta) más unos
+  200 kb/s de listas de LL-HLS (unas 20 peticiones/s), por Tailscale y por el panel. Se corta al
+  salir del paso, del flujo o de la pestaña, a los 2 s de sacar el lienzo de la pantalla con el
+  scroll y tras 10 min sin tocar la página («En pausa por inactividad»: sigue al pulsar en el lienzo
+  o al mover el ratón). Si el navegador no deja arrancar el vídeo solo, no pide nada hasta que se
+  pulsa en el lienzo. «Lectores» del flujo cuenta también estas sesiones HLS del panel (lienzo y
+  vista previa), y MediaMTX las mantiene hasta 1 min después de cerrarlas.
 - **Foto de la entrada en el lienzo.** Queda de reserva: se ve mientras arranca el vídeo, si falla o
-  si el navegador no lo reproduce, renovada cada 5 s; con el vídeo en marcha no se piden fotos. La
-  saca el `ffmpeg` de `config.json`: un fotograma a 640 px, desentrelazado si llega entrelazado,
-  con `nice 19`, un hilo y como mucho 8 s (después se mata). Guarda la última 4 s por flujo, saca
-  una sola a la vez por flujo y como mucho 2 en total. Con el flujo parado o sin señal no lanza
-  ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT de 1 a 2 s en MediaMTX (tres
-  líneas en su registro); en el del panel no se anotan las que van bien.
+  si el navegador no lo reproduce, renovada cada 5 s y con los mismos cortes que el vídeo; con el
+  vídeo en marcha no se piden fotos. La saca el `ffmpeg` de `config.json`: un fotograma a 640 px,
+  desentrelazado si llega entrelazado, con `nice 19`, un hilo y como mucho 8 s (después se mata).
+  Guarda la última 4 s por flujo, saca una sola a la vez por flujo y como mucho 2 en total. Con el
+  flujo parado o sin señal no lanza ffmpeg y queda el recuadro «VÍDEO». Cada foto es un lector SRT
+  de 1 a 2 s en MediaMTX (tres líneas en su registro); en el del panel no se anotan las que van bien.
 
 Se despliega con `scripts/desplegar.sh <estación>`, sin `--mediamtx`: copia `streamer/` y reinicia
 solo `msxs-web` y `msxs-supervisor`. No cambian `supervisor.py`, `composicion.py`, `mtx.py`,

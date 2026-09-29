@@ -120,7 +120,7 @@ function pintarEditor() {
   const st = $('#e-stats'); st.hidden = false;
   st.innerHTML = `<div><small>Entrada</small><span class="num">${num(f.kbps)}</span></div>
     <div><small>Pistas</small><span>${esc(f.pistas.join(' · ') || '—')}</span></div>
-    <div><small>Lectores</small><span class="num">${f.lectores}</span></div>
+    <div title="Lo que lee la entrada en MediaMTX: destinos, composición y reproductores HLS, también el lienzo y la vista previa de este panel, que cuentan hasta 1 min después de cerrarlos"><small>Lectores</small><span class="num">${f.lectores}</span></div>
     <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Vista previa por el panel, con tu sesión" style="color:var(--acento2)">Abrir</a></span></div>`;
   $('#b-vista').onclick = async e => {
     e.preventDefault();
@@ -370,16 +370,32 @@ function abrirVista(w, url) {
 // entrada limpia en el recuadro del vídeo, con las capas encima o debajo como hasta ahora.
 // «Resultado»: la señal compuesta real (comp_<flujo>) en todo el lienzo, solo con la composición
 // activa. Un solo reproductor a la vez: al salir del paso, del flujo o de la pestaña, o al cambiar
-// de flujo o de modo, se destruye y se cierra su conexión. Si falla o se para, se reintenta con
-// espera creciente. HLS nativo donde lo hay (Safari); si no, hls.js, que sirve el propio MediaMTX
-// y se carga una sola vez.
+// de flujo o de modo, se destruye y se cierra su conexión. También con el lienzo fuera de la
+// pantalla (a los 2 s, para no rearrancar con cada vistazo) y tras INACTIVO_MAX sin tocar la página
+// (hasta que se vuelva a usar): cada lienzo es la señal entera por el panel. Si falla o se para, se
+// reintenta con espera creciente. HLS nativo donde lo hay (Safari); si no, hls.js, que sirve el
+// propio MediaMTX y se carga una sola vez.
 const MODO_LIENZO = 'msxs-lienzo';             // la elección se recuerda en cada navegador
 const ESPERA_VIVO_MAX = 10000;
+const INACTIVO_MAX = 10 * 60000;
 let modoLienzo = 'edicion', modoDe = null;     // modo a la vista y flujo al que se aplicó la elección
 let rp = null;                                 // reproductor en marcha: {video, hls, ctl, vigia, …}
-let rpClave = null, rpGen = 0, rpEspera = 0, rpReintento = null, rpSinCodec = false, rpSono = false;
+let rpClave = null, rpGen = 0, rpEspera = 0, rpReintento = null, rpSinCodec = false, rpSono = false, rpBloqueado = false;
 let sonando = false, nativoFallos = 0, cargaHls = null;
-const lienzoVisible = () => paso === 'comp' && !!actual && !$('#v-editor').hidden && document.visibilityState === 'visible';
+let enPantalla = true, fueraTimer = null, ultimoUso = Date.now(), dormido = false;
+const lienzoVisible = () => paso === 'comp' && !!actual && !$('#v-editor').hidden && document.visibilityState === 'visible' && enPantalla;
+function inactivo() {              // sin tocar la página INACTIVO_MAX: el lienzo se para hasta que se vuelva a usar
+  if (!dormido && Date.now() - ultimoUso > INACTIVO_MAX) dormido = true;
+  return dormido;
+}
+function usar() { ultimoUso = Date.now(); if (dormido) { dormido = false; seguirLienzo(); } }
+['pointerdown', 'pointermove', 'keydown', 'wheel'].forEach(t => document.addEventListener(t, usar, {capture: true, passive: true}));
+if (window.IntersectionObserver) new IntersectionObserver(es => {
+  const dentro = es[es.length - 1].isIntersecting;
+  clearTimeout(fueraTimer); fueraTimer = null;
+  if (dentro && !enPantalla) { enPantalla = true; seguirLienzo(); }
+  else if (!dentro && enPantalla) fueraTimer = setTimeout(() => { enPantalla = false; seguirLienzo(); }, 2000);
+}).observe($('#c-lienzo'));
 
 function leerModo() { try { return localStorage.getItem(MODO_LIENZO) === 'resultado' ? 'resultado' : 'edicion'; } catch { return 'edicion'; } }
 function guardarModo(m) { try { localStorage.setItem(MODO_LIENZO, m); } catch {} }
@@ -387,7 +403,9 @@ $$('#c-modos button').forEach(b => b.onclick = () => {
   if (b.disabled || b.dataset.modo === modoLienzo) return;
   modoLienzo = b.dataset.modo; guardarModo(modoLienzo); seguirLienzo();
 });
-$('#c-lienzo').addEventListener('click', () => { if (rp?.bloqueado) { rp.bloqueado = false; reproducir(rp.video); } });
+$('#c-lienzo').addEventListener('click', () => {    // el navegador no dejó arrancar solo: de cero, dentro del clic
+  if (rpBloqueado) { rpBloqueado = false; seguirVivo(); }
+});
 
 function seguirLienzo() { seguirVivo(); seguirFoto(); }
 
@@ -401,22 +419,29 @@ function seguirVivo() {            // arranca, mantiene o para el reproductor se
   if (k && k.estado === 'desactivada') modoLienzo = 'edicion';
   // Resultado se elige con la composición en marcha; ya elegido, aguanta sus rearranques (al guardar)
   const puede = !!k && (k.estado === 'componiendo' || (modoLienzo === 'resultado' && k.estado !== 'desactivada'));
-  const bRes = $('#c-modos [data-modo=resultado]');
+  const bRes = $('#c-modos [data-modo=resultado]'), admin = yo.rol === 'admin';
   bRes.disabled = !puede;
+  // «desactivada» también es un flujo detenido; el operador no puede activar ni iniciar nada
   bRes.title = puede ? 'La señal compuesta real, en directo'
-    : k?.estado === 'desactivada' ? 'Activa y guarda la composición para ver el resultado' : 'Se podrá ver cuando la composición esté en marcha';
+    : k?.estado !== 'desactivada' ? 'Se podrá ver cuando la composición esté en marcha'
+    : !f.activo ? (admin ? 'Inicia el flujo para ver el resultado' : 'Se podrá ver con el flujo en marcha')
+    : admin ? 'Activa y guarda la composición para ver el resultado' : 'La composición está desactivada';
   $('#c-modo-nota').textContent = f && !puede ? bRes.title : '';
   $$('#c-modos button').forEach(b => b.setAttribute('aria-pressed', b.dataset.modo === modoLienzo));
   $('#c-lienzo').classList.toggle('resultado', modoLienzo === 'resultado');
 
   const res = modoLienzo === 'resultado', base = f && (res ? k.vista_previa : f.vista_previa);
   const clave = f ? `${f.id} ${modoLienzo} ${base}` : null;
-  if (clave !== rpClave) { pararVivo(); rpClave = clave; rpEspera = 0; rpSinCodec = false; rpSono = false; }
+  if (clave !== rpClave) { pararVivo(); rpClave = clave; rpEspera = 0; rpSinCodec = false; rpSono = false; rpBloqueado = false; }
   if (!f) return;
   if (!(res ? k.estado === 'componiendo' : f.estado === 'en_el_aire')) {    // no hay qué ver: sin peticiones
     pararVivo();
-    return estadoVivo(res ? 'Reconectando…' : {detenido: 'Flujo detenido', sin_mediamtx: 'MediaMTX no responde'}[f.estado] || 'Sin señal en la entrada');
+    return estadoVivo(res ? {esperando: 'Sin señal en la entrada', reintentando: 'La composición no arranca: mira su estado'}[k.estado]
+        || (rpSono ? 'Reconectando…' : 'Conectando…')
+      : {detenido: 'Flujo detenido', sin_mediamtx: 'MediaMTX no responde'}[f.estado] || 'Sin señal en la entrada');
   }
+  if (inactivo()) { pararVivo(); return estadoVivo('En pausa por inactividad: pulsa en el lienzo para seguir en directo'); }
+  if (rpBloqueado) return estadoVivo('Pulsa en el lienzo para verlo en directo');
   if (rpSinCodec) return estadoVivo(res ? 'Este navegador no puede reproducir la señal compuesta'
     : 'Este navegador no puede reproducir la entrada: se ve una foto cada 5 s');
   if (rp || rpReintento) return;                        // ya va, o espera para reintentar
@@ -469,13 +494,14 @@ function cargarHls(base) {         // hls.js del propio MediaMTX (hls/<path>/hls
 
 function reproducir(v) {           // sin sonido se puede arrancar solo; si el navegador no deja, con un clic
   v.play()?.catch(err => {
-    if (err.name === 'NotAllowedError' && rp?.video === v) { rp.bloqueado = true; estadoVivo('Pulsa en el lienzo para verlo en directo'); }
+    // no se queda cargando a la espera del clic: se suelta todo (conexión y sesión HLS) y al pulsar se
+    // vuelve a empezar; la foto sigue de reserva en Edición
+    if (err.name === 'NotAllowedError' && rp?.video === v) { pararVivo(); rpBloqueado = true; seguirVivo(); }
   });
 }
 
 function vigilarVivo(r, fallo) {   // cada segundo: ¿avanza el vídeo?
   const v = r.video;
-  if (r.bloqueado) return;
   if (v.currentTime !== r.ultimo && v.readyState >= 2 && !v.paused) {
     r.ultimo = v.currentTime; r.quieto = 0; r.avances++;
     if (!sonando && r.avances >= 2) { ponerSonando(true); estadoVivo('En directo', true); }
@@ -522,7 +548,10 @@ function ponerSonando(s) {
   seguirFoto();                    // con el vídeo avanzando no hacen falta fotos; si se para, vuelven
 }
 function estadoVivo(txt, ok) { const n = $('#c-vivo-nota'); n.textContent = txt; n.classList.toggle('ok', !!ok); }
-document.addEventListener('visibilitychange', seguirLienzo);
+document.addEventListener('visibilitychange', () => {   // volver a la pestaña cuenta como usarla
+  if (document.visibilityState === 'visible') { ultimoUso = Date.now(); dormido = false; }
+  seguirLienzo();
+});
 
 // ---------------------------------------------------------------- foto de la entrada en el lienzo
 // En Edición, mientras el vídeo en directo no avanza (arrancando, sin señal, reconectando o un
@@ -530,7 +559,7 @@ document.addEventListener('visibilitychange', seguirLienzo);
 // 5 s. Con el vídeo avanzando no se piden fotos: cada una es otro lector de la señal. Sin foto (flujo
 // parado o sin señal) queda el recuadro "VÍDEO". Los fallos se ignoran: se reintenta en la siguiente vuelta.
 let fotoTimer = null, fotoDe = null, fotoPidiendo = false, fotoUrl = null;
-const fotoVisible = () => lienzoVisible() && modoLienzo === 'edicion' && !sonando;
+const fotoVisible = () => lienzoVisible() && modoLienzo === 'edicion' && !sonando && !inactivo();
 function ponerFoto(url) {
   const v = $('#c-video');
   v.style.backgroundImage = url ? `url("${url}")` : '';
