@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Sube un respaldo a Google Drive: "MSX Respaldos/<estación>/<archivo>" en Mi unidad de la cuenta
 del sistema (el mismo token.json que usan el Recorder y el Transcoder). Las carpetas se crean la
-primera vez y sus IDs se guardan en /home/mediasat/respaldos/drive.json. No se acumulan: cada
-respaldo semanal deja en la papelera los anteriores (ver limpiar()).
+primera vez y sus IDs se guardan en /home/mediasat/respaldos/drive.json. No se acumulan: el
+semanal es un único archivo que se reemplaza (con revisiones) y de los de cada versión se guardan
+los 3 últimos por programa; el resto va a la papelera de Drive (ver sobrantes()).
     respaldo_drive.py <archivo.tar.gz> <motivo>
 Se ejecuta con el Python del Recorder, que ya tiene las bibliotecas de Google."""
 
@@ -61,38 +62,79 @@ def estacion():
         return socket.gethostname()
 
 
+GUARDAR = 3   # respaldos de despliegue que se conservan por programa (recorder, streamer, otros)
+FECHADO = re.compile(r"^msx-\d{8}-\d{6}-(.+)\.tar\.gz$")
+
+
+def fijo(est):
+    return f"msx-{est}-semanal.tar.gz"
+
+
+def respaldos(d, destino):
+    """Los respaldos de la carpeta de la estación (solo los marcados msx_respaldo)."""
+    q = (f"'{destino}' in parents and trashed = false"
+         " and appProperties has { key='msx_respaldo' and value='1' }")
+    todos, tok = [], None
+    while True:
+        r = d.files().list(q=q, fields="nextPageToken,files(id,name,createdTime)",
+                           pageSize=1000, pageToken=tok).execute()
+        todos += r.get("files", [])
+        tok = r.get("nextPageToken")
+        if not tok:
+            return todos
+
+
+def sobrantes(archivos, est):
+    """Los que van a la papelera: los semanales antiguos con fecha en el nombre (el semanal es ahora
+    un único archivo fijo con revisiones) y, de los de despliegue, todo salvo los GUARDAR más
+    recientes de cada programa. El fijo y los nombres que no siguen el patrón no se tocan."""
+    grupos, fuera = {}, []
+    for f in archivos:
+        m = FECHADO.match(f["name"])
+        if f["name"] == fijo(est) or not m:
+            continue
+        etiqueta = m.group(1)
+        if etiqueta == "semanal":
+            fuera.append(f)
+            continue
+        prog = next((p for p in ("recorder", "streamer") if etiqueta.startswith(p)), "otros")
+        grupos.setdefault(prog, []).append(f)
+    for lista in grupos.values():
+        lista.sort(key=lambda f: f["createdTime"], reverse=True)
+        fuera += lista[GUARDAR:]
+    return fuera
+
+
 def main():
     archivo, motivo = pathlib.Path(sys.argv[1]), sys.argv[2]
     d = drive()
-    destino = carpeta_estacion(d, estacion())
+    est = estacion()
+    destino = carpeta_estacion(d, est)
     etiqueta = re.sub(r"[^a-z0-9.]+", "-", motivo.split(" · ")[0].lower()).strip("-")[:40]
-    nombre = archivo.name.replace(".tar.gz", f"-{etiqueta}.tar.gz") if etiqueta else archivo.name
-    meta = {"name": nombre, "parents": [destino], "description": motivo,
-            "appProperties": {"msx_respaldo": "1", "motivo": motivo[:100]}}
     media = MediaFileUpload(str(archivo), mimetype="application/gzip", resumable=True)
-    f = d.files().create(body=meta, media_body=media, fields="id,size,webViewLink").execute()
-    print(f"subido a Drive: {RAIZ}/{estacion()}/{nombre} ({int(f['size']) // 1024} KB) {f['webViewLink']}")
+    props = {"msx_respaldo": "1", "motivo": motivo[:100]}
     if etiqueta == "semanal":
-        limpiar(d, destino, f["id"])
-
-
-def limpiar(d, destino, nuevo):
-    """Tras subir bien el semanal, manda a la papelera los respaldos anteriores de la estación (el
-    semanal pasado y los de cada versión de la semana): queda una sola copia, que se reemplaza cada
-    domingo. Solo toca archivos marcados msx_respaldo; la papelera de Drive los guarda 30 días."""
-    q = (f"'{destino}' in parents and trashed = false"
-         " and appProperties has { key='msx_respaldo' and value='1' }")
-    viejos, tok = [], None
-    while True:
-        r = d.files().list(q=q, fields="nextPageToken,files(id,name)", pageSize=1000, pageToken=tok).execute()
-        viejos += [x for x in r.get("files", []) if x["id"] != nuevo]
-        tok = r.get("nextPageToken")
-        if not tok:
-            break
-    for x in viejos:
+        # un solo archivo que se reemplaza cada semana; Drive guarda unos 30 días las revisiones previas
+        nombre = fijo(est)
+        previo = [f for f in respaldos(d, destino) if f["name"] == nombre]
+        meta = {"description": motivo, "appProperties": props}
+        if previo:
+            f = d.files().update(fileId=previo[0]["id"], body=meta, media_body=media,
+                                 fields="id,size,webViewLink").execute()
+        else:
+            f = d.files().create(body={"name": nombre, "parents": [destino], **meta}, media_body=media,
+                                 fields="id,size,webViewLink").execute()
+    else:
+        nombre = archivo.name.replace(".tar.gz", f"-{etiqueta}.tar.gz") if etiqueta else archivo.name
+        meta = {"name": nombre, "parents": [destino], "description": motivo, "appProperties": props}
+        f = d.files().create(body=meta, media_body=media, fields="id,size,webViewLink").execute()
+    print(f"subido a Drive: {RAIZ}/{est}/{nombre} ({int(f['size']) // 1024} KB) {f['webViewLink']}")
+    # solo tras subir bien; a la papelera (30 días), nunca borrado definitivo
+    fuera = sobrantes(respaldos(d, destino), est)
+    for x in fuera:
         d.files().update(fileId=x["id"], body={"trashed": True}).execute()
-    if viejos:
-        print(f"a la papelera de Drive {len(viejos)} respaldos anteriores: " + ", ".join(x["name"] for x in viejos))
+    if fuera:
+        print(f"a la papelera de Drive {len(fuera)} respaldos: " + ", ".join(x["name"] for x in fuera))
 
 
 if __name__ == "__main__":
