@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Sube un respaldo a Google Drive: "MSX Respaldos/<estación>/<archivo>" en Mi unidad de la cuenta
 del sistema (el mismo token.json que usan el Recorder y el Transcoder). Las carpetas se crean la
-primera vez y sus IDs se guardan en /home/mediasat/respaldos/drive.json.
+primera vez y sus IDs se guardan en /home/mediasat/respaldos/drive.json. No se acumulan: cada
+respaldo semanal deja en la papelera los anteriores (ver limpiar()).
     respaldo_drive.py <archivo.tar.gz> <motivo>
 Se ejecuta con el Python del Recorder, que ya tiene las bibliotecas de Google."""
 
@@ -71,6 +72,27 @@ def main():
     media = MediaFileUpload(str(archivo), mimetype="application/gzip", resumable=True)
     f = d.files().create(body=meta, media_body=media, fields="id,size,webViewLink").execute()
     print(f"subido a Drive: {RAIZ}/{estacion()}/{nombre} ({int(f['size']) // 1024} KB) {f['webViewLink']}")
+    if etiqueta == "semanal":
+        limpiar(d, destino, f["id"])
+
+
+def limpiar(d, destino, nuevo):
+    """Tras subir bien el semanal, manda a la papelera los respaldos anteriores de la estación (el
+    semanal pasado y los de cada versión de la semana): queda una sola copia, que se reemplaza cada
+    domingo. Solo toca archivos marcados msx_respaldo; la papelera de Drive los guarda 30 días."""
+    q = (f"'{destino}' in parents and trashed = false"
+         " and appProperties has { key='msx_respaldo' and value='1' }")
+    viejos, tok = [], None
+    while True:
+        r = d.files().list(q=q, fields="nextPageToken,files(id,name)", pageSize=1000, pageToken=tok).execute()
+        viejos += [x for x in r.get("files", []) if x["id"] != nuevo]
+        tok = r.get("nextPageToken")
+        if not tok:
+            break
+    for x in viejos:
+        d.files().update(fileId=x["id"], body={"trashed": True}).execute()
+    if viejos:
+        print(f"a la papelera de Drive {len(viejos)} respaldos anteriores: " + ", ".join(x["name"] for x in viejos))
 
 
 if __name__ == "__main__":

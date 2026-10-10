@@ -10,7 +10,8 @@
 #
 # Con --drive "<motivo>" (así lo lanzan desplegar.sh tras cada versión y el timer semanal
 # msx-respaldo.timer, desde /home/mediasat/respaldos/bin), en vez de sacarlo por la salida estándar
-# lo sube a Google Drive: "MSX Respaldos/<estación>/" en Mi unidad de la cuenta del sistema.
+# lo sube a Google Drive: "MSX Respaldos/<estación>/" en Mi unidad de la cuenta del sistema. Allí
+# no se acumulan: el semanal del domingo reemplaza al anterior y a los de las versiones de la semana.
 set -euo pipefail
 DRIVE=""; [ "${1:-}" = "--drive" ] && DRIVE="${2:-manual}"
 FECHA=$(date +%Y%m%d-%H%M%S)
