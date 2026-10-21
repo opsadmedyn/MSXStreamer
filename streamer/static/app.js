@@ -27,6 +27,8 @@ const ESTADO_SALIDA = {
   esperando: ['av', 'Esperando entrada'], reintentando: ['er', 'Reintentando'], detenida: ['off', 'Detenida'],
 };
 const pill = ([tono, txt]) => `<span class="pill ${tono}">${esc(txt)}</span>`;
+// flujo 1080i directo: los destinos SRT/RTMP copian la entrada tal cual, sin pasar por MediaMTX
+const PILL_DIRECTO = `<span class="pill av" title="Feed entrelazado: se copia tal cual (1080i) a los destinos SRT y RTMP, sin HLS, vista previa ni composición">1080i directo</span>`;
 const punto = e => ({conectada: '', publicando: '', conectando: 'av', esperando: 'av', reintentando: 'er', detenida: 'off'}[e] ?? 'off');
 
 function describirEntrada(f) {
@@ -71,7 +73,7 @@ function pintarLista() {
     return `<article class="panel flujo" tabindex="0" data-id="${esc(f.id)}">
       <div class="mini ${f.estado === 'en_el_aire' ? 'aire' : ''}">${f.estado === 'en_el_aire' ? 'Señal' : 'Sin señal'}</div>
       <div class="meta">
-        <div class="fila"><h3>${esc(f.nombre)}</h3>${pill(ESTADO_FLUJO[f.estado])}</div>
+        <div class="fila"><h3>${esc(f.nombre)}</h3>${pill(ESTADO_FLUJO[f.estado])}${f.directo ? PILL_DIRECTO : ''}</div>
         <div class="fila"><span class="chip"><b>ENTRADA</b> ${esc(describirEntrada(f))}</span>${f.pistas.length ? `<span class="chip"><b>PISTAS</b> ${esc(f.pistas.join(' · '))}</span>` : ''}</div>
         <div class="fila">${f.salidas.map(s => `<span class="chip"><i class="${punto(s.estado)}"></i>${esc(s.tipo.toUpperCase())} · ${esc(s.nombre)}</span>`).join('') || '<span class="nota">Sin salidas</span>'}</div>
       </div>
@@ -117,7 +119,7 @@ function pintarEditor() {
   if (!f) return;
   $('#e-titulo').textContent = f.nombre;
   $('#e-sub').textContent = describirEntrada(f);
-  $('#e-acc').innerHTML = `${pill(ESTADO_FLUJO[f.estado])}
+  $('#e-acc').innerHTML = `${pill(ESTADO_FLUJO[f.estado])}${f.directo ? PILL_DIRECTO : ''}
     <button class="btn" id="b-onoff" data-admin>${f.activo ? 'Detener flujo' : 'Iniciar flujo'}</button>
     <button class="btn peligro" id="b-borrar" data-admin>Borrar</button>`;
   $('#b-onoff').onclick = () => accion(`/api/flujos/${f.id}/${f.activo ? 'detener' : 'iniciar'}`);
@@ -127,7 +129,8 @@ function pintarEditor() {
     <div><small>Pistas</small><span>${esc(f.pistas.join(' · ') || '—')}</span></div>
     <div title="Lo que lee la entrada en MediaMTX: destinos, composición y reproductores HLS, también el lienzo y la vista previa de este panel, que cuentan hasta 1 min después de cerrarlos"><small>Lectores</small><span class="num">${f.lectores}</span></div>
     <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Vista previa por el panel, con tu sesión" style="color:var(--acento2)">Abrir</a></span></div>`;
-  $('#b-vista').onclick = async e => {
+  if (f.directo) $('#b-vista').replaceWith('No (1080i directo)');
+  else $('#b-vista').onclick = async e => {
     e.preventDefault();
     const w = window.open('', '_blank');           // abrir ya: tras el await el navegador lo bloquearía
     try {
@@ -184,14 +187,14 @@ function pintarHubs() {
   // cada hub dice qué feeds recibe: los demás salen como «sin señal» en ese hub
   const grupos = activos.map(h => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
     `<option value="${esc(h.host)}|${esc(f.path)}"${f.activo ? '' : ' disabled'}>${esc(h.nombre)} · ${esc(f.nombre)}${
-      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.entrelazado ? ' · 720 (es 1080i)' : f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
+      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.entrelazado ? ' · 1080i directo' : f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
   const enLista = activos.some(h => hubs.feeds.some(f => `${h.host}|${f.path}` === elegido));
   sel.innerHTML = `<option value="">Elige hub y canal</option>` + (elegido && !enLista ? guardado() : '') + grupos;
   sel.value = elegido;
   nota.className = 'nota';
   nota.textContent = (activos.length ? '' : 'Ningún hub responde ahora. ') +
     (caidos.length ? `Fuera de servicio o sin comprobar (no se listan): ${caidos.map(h => h.nombre + (h.comprobado ? '' : ' (sin comprobar)')).join(', ')}. ` : '') +
-    'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen.';
+    'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen. «1080i directo»: feed entrelazado; se copia tal cual a los destinos SRT y RTMP, sin HLS, vista previa ni composición.';
 }
 $('#i-hub').onchange = () => {
   const sel = $('#i-hub'), opc = sel.selectedOptions[0];

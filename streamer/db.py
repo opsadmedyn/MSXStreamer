@@ -100,6 +100,11 @@ def migrar(c):
     for col in ("hub", "feed", "etiqueta"):   # 0.3.5, entrada 'hub': IP del hub, path del feed, «hub1 · 1BN INT»
         if col not in columnas:
             c.execute(f"ALTER TABLE flujos ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "directo" not in columnas:             # 0.3.8: 1080i del hub, los destinos leen la entrada sin MediaMTX
+        c.execute("ALTER TABLE flujos ADD COLUMN directo INTEGER NOT NULL DEFAULT 0")
+        # los guardados con la 0.3.5-0.3.7 que leen del repetidor del hub: el repetidor solo reparte
+        # feeds entrelazados («play/<feed>»), así que van directos
+        c.execute("UPDATE flujos SET directo=1 WHERE entrada='hub' AND url LIKE '%streamid=play/%'")
     if "respaldos" not in columnas:           # JSON: el mismo feed en los otros hubs y, al final, el origen
         c.execute("ALTER TABLE flujos ADD COLUMN respaldos TEXT NOT NULL DEFAULT '[]'")
 

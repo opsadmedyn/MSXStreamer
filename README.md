@@ -109,11 +109,13 @@ MediaMTX 9997 (solo local). La configuración de la máquina está en `config.js
 
 ### 0.3.8
 
-Feeds entrelazados (1080i: 1BN INT, 1BN MX). MediaMTX no sabe leerlos (el vídeo llega sin tamaño
-y los destinos no arrancan), así que «Hub channel» toma su Calidad MEDIA del hub (720 progresiva):
-la del hub elegido y, de respaldo, la de los otros hubs; el origen, también 1080i, no sirve de
-respaldo. El selector los marca «720 (es 1080i)». Un flujo ya guardado con uno de esos feeds se
-arregla volviendo a guardar su entrada.
+Feeds entrelazados (1080i: 1BN INT, 1BN MX) en «Hub channel». MediaMTX no sabe leerlos (el vídeo
+llega sin tamaño y los destinos no arrancan), así que esos flujos van **1080i directo**: no se
+declaran en MediaMTX y cada destino SRT o RTMP lee la entrada misma (el repetidor del hub, con el
+streamid aparte) y la copia tal cual. Respaldos como siempre: el mismo feed en los otros hubs y el
+origen; se cambia de dirección si ningún destino envía nada en 20 s. Sin HLS, vista previa ni
+composición: el panel no deja crearlos y marca el flujo con la etiqueta «1080i directo». Los flujos
+guardados antes que leen del repetidor (`streamid=play/…`) pasan solos a directos al arrancar.
 
 ### 0.3.7
 

@@ -74,11 +74,27 @@ def url_salida(s):
     return urllib.parse.urlunsplit(("srt", host, "", urllib.parse.urlencode(q), "")), opciones
 
 
-def comando(s, path):
+def entrada_directa(url):
+    """Opciones de ffmpeg y URL para leer la entrada sin MediaMTX (flujo 1080i directo). Como en
+    url_salida, el streamid va aparte: el de Castr lleva "#", "," y "="."""
+    partes = urllib.parse.urlsplit(url, allow_fragments=False)
+    q = dict(urllib.parse.parse_qsl(partes.query))
+    opciones = ["-srt_streamid", q.pop("streamid")] if q.get("streamid") else []
+    if q.get("passphrase"):
+        opciones += ["-passphrase", q.pop("passphrase")]
+    return opciones, urllib.parse.urlunsplit(partes._replace(query=urllib.parse.urlencode(q)))
+
+
+def comando(s, path, directa=None):
+    """ffmpeg de un destino: lee el path de MediaMTX o, en un flujo 1080i directo, la entrada misma."""
     prog = RUN / f"{s['id']}.prog"
+    if directa:
+        opciones, url = entrada_directa(directa)
+        entrada = [*opciones, "-i", url]
+    else:
+        entrada = ["-i", mtx.url_lectura(path)]
     cmd = [FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "warning",
-           "-progress", str(prog), "-stats_period", "2",
-           "-i", mtx.url_lectura(path)]
+           "-progress", str(prog), "-stats_period", "2", *entrada]
     if s["tipo"] == "rtmp":                 # FLV admite un vídeo y un audio
         cmd += ["-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-f", "flv"]
     else:
@@ -234,6 +250,7 @@ class Supervisor:
         self.video = {}                     # composición -> (pid, fotogramas, desde cuándo no cambian)
         self.sin_senal = {}                 # flujo de hub -> desde cuándo su entrada no tiene señal
         self.estado_paths = None            # estado de MediaMTX de la vuelta anterior
+        self.indices = {}                   # flujo de hub -> dirección de su entrada en esta vuelta
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -261,8 +278,16 @@ class Supervisor:
         ahora = time.time()
         if r and r["firma"] != huella:
             self.sin_senal.pop(f["id"], None)
-        if self.estado_paths is None or (self.estado_paths.get(f["id"]) or {}).get("ready"):
-            self.sin_senal.pop(f["id"], None)       # con señal (o sin saber de MediaMTX): no se juzga
+        if f.get("directo"):
+            # 1080i directo, sin MediaMTX: hay señal si algún destino envía; sin destinos activos no se juzga
+            kbps = [r["kbps"] for r in self.c.execute(
+                """SELECT e.kbps FROM salidas s LEFT JOIN estado_salidas e ON e.salida = s.id
+                   WHERE s.flujo=? AND s.activo=1 AND s.tipo IN ('srt','rtmp')""", (f["id"],))]
+            con_senal = None if not kbps else any(k for k in kbps)
+        else:
+            con_senal = None if self.estado_paths is None else bool((self.estado_paths.get(f["id"]) or {}).get("ready"))
+        if con_senal is None or con_senal:
+            self.sin_senal.pop(f["id"], None)       # con señal (o sin saber): no se juzga
         else:
             desde = self.sin_senal.setdefault(f["id"], ahora)
             if len(fuentes) > 1 and ahora - desde > CAMBIO_ENTRADA:
@@ -280,8 +305,13 @@ class Supervisor:
 
     def sincronizar_mediamtx(self, flujos):
         deseados, canales = {}, db.canales_recorder()
+        self.indices = {}
         for f in flujos:
-            conf = mtx.conf_de_flujo(f, canales, self.fuente_de(f) if f["entrada"] == "hub" else 0)
+            if f["entrada"] == "hub":
+                self.indices[f["id"]] = self.fuente_de(f)
+            if f.get("directo"):                    # 1080i: MediaMTX no sabe leerlo; no lleva path
+                continue
+            conf = mtx.conf_de_flujo(f, canales, self.indices.get(f["id"], 0))
             if conf:
                 deseados[path_de_flujo(f)] = conf
         for fid in self.comps:                      # la composición publica ahí (desde este equipo)
@@ -313,7 +343,7 @@ class Supervisor:
     def sincronizar_acceso(self, flujos):
         """HLS bajo demanda: solo se lee desde la red un flujo activo con un destino HLS activo o
         con la vista previa abierta. Las reglas quedan en MediaMTX y no dependen del panel."""
-        activos = {f["id"]: path_de_flujo(f) for f in flujos}
+        activos = {f["id"]: path_de_flujo(f) for f in flujos if not f.get("directo")}
         comps = self.comps
         paths = set()
         for r in self.c.execute("SELECT DISTINCT flujo, fuente FROM salidas WHERE activo=1 AND tipo='hls'"):
@@ -332,7 +362,8 @@ class Supervisor:
         """Composiciones activas de los flujos de esta vuelta, como mucho COMP_MAX: primero las que
         ya corren y después las de los flujos más antiguos. Devuelve (las que pueden correr,
         las que se quedan fuera por el tope)."""
-        todas = {fid: k for fid, k in composicion.activas(self.c).items() if fid in por_id}
+        todas = {fid: k for fid, k in composicion.activas(self.c).items()
+                 if fid in por_id and not por_id[fid].get("directo")}
 
         def corre(fid):
             tarea = composicion.id_tarea(fid)
@@ -377,6 +408,16 @@ class Supervisor:
             tareas[composicion.id_tarea(fid)] = (None, None, limite)
         for s in db.filas(self.c, "SELECT * FROM salidas WHERE activo=1 AND tipo IN ('srt','rtmp')"):
             if s["flujo"] not in por_id:
+                continue
+            f = por_id[s["flujo"]]
+            if f.get("directo"):                    # 1080i: el destino lee la entrada misma, sin MediaMTX
+                if s.get("fuente") == "compuesta":
+                    tareas[s["id"]] = (None, None, "Flujo 1080i directo: sin composición")
+                    continue
+                fuentes = db.fuentes(f)
+                directa = fuentes[self.indices.get(f["id"], 0) % len(fuentes)] if fuentes else ""
+                tareas[s["id"]] = (comando(s, None, directa), None, None) if directa else \
+                    (None, None, "El flujo no tiene entrada")
                 continue
             if s.get("fuente") == "compuesta":
                 if s["flujo"] not in comps:
@@ -446,7 +487,8 @@ class Supervisor:
                 continue
 
             # no corre: ¿hay entrada? sin entrada no tiene sentido lanzarlo
-            listo = estado_paths is not None and (estado_paths.get(path) or {}).get("ready")
+            # sin path (flujo 1080i directo): no hay a quién preguntar, se lanza y se reintenta si cae
+            listo = path is None or (estado_paths is not None and (estado_paths.get(path) or {}).get("ready"))
             if not listo:
                 esperando = "Esperando la composición" if path.startswith("comp_") else "Esperando la entrada"
                 self.guardar({**e, "pid": None, "desde": None, "kbps": None,

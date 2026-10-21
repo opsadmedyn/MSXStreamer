@@ -238,7 +238,7 @@ def _validar_flujo(f: Flujo, request: Request):
     de la lista de feeds del Recorder, no del navegador)."""
     if f.entrada == "hub":
         return _resolver_hub(request, f.hub, f.feed)
-    vacio = {"hub": "", "feed": "", "etiqueta": "", "respaldos": "[]"}
+    vacio = {"hub": "", "feed": "", "etiqueta": "", "respaldos": "[]", "directo": 0}
     if f.entrada == "pull":
         if not re.match(URL_SRT, f.url.strip()):
             raise HTTPException(422, "La URL del origen debe ser srt://host:puerto")
@@ -325,28 +325,35 @@ def _resolver_hub(request, host, path):
     f = next((x for x in feeds if x.get("path") == path), None)
     if i is None or f is None:
         raise HTTPException(422, "Elige un hub y un canal de la lista")
-    if f.get("entrelazado"):
-        # 1080i: MediaMTX no sabe leerlo (llega sin tamaño y los destinos no arrancan). Se toma la
-        # Calidad MEDIA del hub (720 progresiva), la del hub elegido y de respaldo la de los otros;
-        # el origen (también 1080i) no sirve de respaldo.
-        ligeras = [f["lectura_ligero"], *(f.get("lecturas_ligero_respaldo") or [])] if f.get("lectura_ligero") else []
-        if not ligeras:
-            raise HTTPException(422, "Ese canal es entrelazado (1080i) y el hub no da su Calidad MEDIA: el Streamer no puede tomarlo")
-        principal = ligeras[i] if i < len(ligeras) else ligeras[0]
-        otros = [u for u in ligeras if u != principal]
-        return _campos_hub(host, path, hubs[i], f, principal, otros, " (720)")
     altas = _lecturas(f)
     principal = altas[i] if i < len(altas) else (f.get("url") or "").replace("%23", "#")
     otros = [u for n, u in enumerate(altas) if n != i] + ([f["url"].replace("%23", "#")] if altas and f.get("url") else [])
-    return _campos_hub(host, path, hubs[i], f, principal, otros, "")
-
-
-def _campos_hub(host, path, hub, f, principal, otros, sufijo):
     if not principal.startswith("srt://"):
         raise HTTPException(422, "Ese canal no se puede tomar por SRT")
-    return {"url": principal, "canal": "", "hub": host, "feed": path,
-            "etiqueta": f"{hub.get('nombre') or host} · {f.get('nombre') or path}{sufijo}",
+    # 1080i (1BN INT, 1BN MX): MediaMTX no sabe leerlo (llega sin tamaño y los destinos no
+    # arrancan). El flujo va «directo»: cada destino SRT/RTMP lee la entrada (el repetidor del hub)
+    # y la copia tal cual, sin pasar por MediaMTX; sin HLS, vista previa ni composición.
+    directo = bool(f.get("entrelazado"))
+    return {"url": principal, "canal": "", "hub": host, "feed": path, "directo": int(directo),
+            "etiqueta": f"{hubs[i].get('nombre') or host} · {f.get('nombre') or path}",
             "respaldos": json.dumps([u for u in otros if u.startswith("srt://")])}
+
+
+DIRECTO_SIN = ("Flujo 1080i directo: la señal se copia tal cual a los destinos SRT y RTMP, "
+               "sin HLS, vista previa ni composición")
+
+
+def _salida_directa(s: Salida, directo):
+    if directo and (s.tipo == "hls" or s.fuente == "compuesta"):
+        raise HTTPException(422, DIRECTO_SIN)
+
+
+def _sin_extras_directo(c, fid):
+    """Un flujo que pasa a ser 1080i directo no puede tener HLS ni composición activos."""
+    if c.execute("""SELECT 1 FROM salidas WHERE flujo=? AND activo=1 AND (tipo='hls' OR fuente='compuesta')
+                    UNION SELECT 1 FROM composiciones WHERE flujo=? AND activa=1""", (fid, fid)).fetchone():
+        raise HTTPException(422, "Ese canal es 1080i y va directo, sin HLS ni composición: detén antes "
+                                 "los destinos HLS o con señal compuesta y desactiva la composición")
 
 
 def _validar_salida(s: Salida):
@@ -526,12 +533,17 @@ def _vista_flujo(f, salidas, estados, paths, request, secretos):
             v["url_m3u8"] = v["url"] + "index.m3u8"
             v["ver"] = _url_vista(path_s)           # el enlace "ver" del panel va por el panel
         vs.append(v)
+    kbps = _kbps_entrada(path, info)
+    if f["directo"] and f["activo"]:
+        # sin MediaMTX: hay señal si algún destino la está enviando; la tasa, la del más rápido
+        enviando = [v["kbps"] for v in vs if v["estado"] == "conectada"]
+        estado, kbps = ("en_el_aire", max(enviando)) if enviando else ("esperando", None)
     vf = {
         **{k: f[k] for k in ("id", "nombre", "entrada", "url", "streamid", "latencia_ms", "canal", "activo",
                              "hub", "feed", "etiqueta")},
-        "fuente": _fuente_activa(f),
+        "directo": bool(f["directo"]), "fuente": _fuente_activa(f),
         "tiene_passphrase": bool(f["passphrase"]), "path": path, "estado": estado,
-        "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
+        "kbps": kbps, "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
         "vista_previa": _url_vista(path),
@@ -613,10 +625,10 @@ def crear_flujo(d: Flujo, request: Request):
     c = db.conectar()
     fid = _nuevo_id(c, "flujos", d.nombre)
     c.execute("""INSERT INTO flujos(id,nombre,entrada,url,streamid,passphrase,latencia_ms,canal,
-                                    hub,feed,etiqueta,respaldos)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    hub,feed,etiqueta,respaldos,directo)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (fid, d.nombre.strip(), d.entrada, e["url"], d.streamid.strip(), d.passphrase,
-               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"]))
+               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"], e["directo"]))
     evento(c, f"flujo creado: {d.nombre}", flujo=fid)
     return {"id": fid}
 
@@ -630,10 +642,12 @@ def editar_flujo(fid: str, d: Flujo, request: Request):
         raise HTTPException(404, "Ese flujo no existe")
     # passphrase vacía = conservar la guardada (el panel nunca la recibe de vuelta)
     passphrase = d.passphrase or actual["passphrase"]
+    if e["directo"]:
+        _sin_extras_directo(c, fid)
     c.execute("""UPDATE flujos SET nombre=?,entrada=?,url=?,streamid=?,passphrase=?,latencia_ms=?,canal=?,
-                                   hub=?,feed=?,etiqueta=?,respaldos=? WHERE id=?""",
+                                   hub=?,feed=?,etiqueta=?,respaldos=?,directo=? WHERE id=?""",
               (d.nombre.strip(), d.entrada, e["url"], d.streamid.strip(), passphrase,
-               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"], fid))
+               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"], e["directo"], fid))
     evento(c, "flujo editado", flujo=fid)
     return {"ok": True}
 
@@ -642,8 +656,10 @@ def editar_flujo(fid: str, d: Flujo, request: Request):
 def crear_salida(fid: str, d: Salida):
     _validar_salida(d)
     c = db.conectar()
-    if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
+    f = c.execute("SELECT directo FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not f:
         raise HTTPException(404, "Ese flujo no existe")
+    _salida_directa(d, f["directo"])
     sid = _nuevo_id(c, "salidas", d.nombre)
     c.execute("""INSERT INTO salidas(id,flujo,nombre,tipo,url,modo,streamid,passphrase,latencia_ms,clave,fuente)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -677,6 +693,8 @@ def guardar_composicion(fid: str, d: Composicion):
     c = db.conectar()
     if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
         raise HTTPException(404, "Ese flujo no existe")
+    if d.activa and c.execute("SELECT directo FROM flujos WHERE id=?", (fid,)).fetchone()["directo"]:
+        raise HTTPException(422, DIRECTO_SIN)
     if not composicion.validar_fondo(d.fondo):
         raise HTTPException(422, "El color de fondo debe ser #RRGGBB")
     for i, capa in enumerate(d.capas, start=1):
@@ -722,6 +740,8 @@ def borrar_flujo(fid: str):
 def editar_salida(sid: str, d: Salida):
     _validar_salida(d)
     c = db.conectar()
+    f = c.execute("SELECT f.directo FROM salidas s JOIN flujos f ON f.id = s.flujo WHERE s.id=?", (sid,)).fetchone()
+    _salida_directa(d, f["directo"] if f else 0)
     actual = c.execute("SELECT passphrase, clave FROM salidas WHERE id=?", (sid,)).fetchone()
     if not actual:
         raise HTTPException(404, "Esa salida no existe")
