@@ -22,7 +22,6 @@ import urllib.parse
 import urllib.request
 from typing import Literal, Optional
 
-import socket
 from concurrent.futures import ThreadPoolExecutor
 
 import anyio
@@ -252,8 +251,12 @@ def _validar_flujo(f: Flujo, request: Request):
 # usa el panel): es la misma lista que el selector de origen de «Configurar canal», con los mismos
 # nombres de hub (config.json del Recorder → hub.nombres) y las mismas lecturas. Un feed entrelazado
 # en un hub con repetidor se lee del repetidor (su `lectura` ya apunta ahí); sin repetidor, del
-# origen. Un hub cuenta como activo si su API (puerto 8899) acepta la conexión.
+# origen. Un hub cuenta como activo si su API (puerto 8899) responde con el token de solo lectura
+# de los hubs (config.json → "hub_token_lectura", el mismo que usa el mapa de señal) y está
+# recibiendo algún feed: un hub fuera de servicio puede seguir aceptando conexiones en el 8899 sin
+# repartir nada. Sin ese token solo se puede saber del hub principal (su estado lo da el Recorder).
 HUB_API_PUERTO = int(CFG.get("hub_api_puerto", 8899))
+HUB_TOKEN_LECTURA = CFG.get("hub_token_lectura", "")
 
 
 def _feeds_recorder(request: Request):
@@ -278,12 +281,17 @@ def _feeds_recorder(request: Request):
     return hubs, feeds
 
 
-def _hub_responde(host):
+def _feeds_de_hub(host):
+    """{path: recibiendo} de un hub según su propia API, o None si no responde o no hay token."""
+    if not HUB_TOKEN_LECTURA:
+        return None
+    req = urllib.request.Request(f"http://{host}:{HUB_API_PUERTO}/api/feeds",
+                                 headers={"Authorization": f"Bearer {HUB_TOKEN_LECTURA}"})
     try:
-        socket.create_connection((host, HUB_API_PUERTO), timeout=1.5).close()
-        return True
-    except OSError:
-        return False
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return {f.get("path"): bool(f.get("recibiendo")) for f in json.loads(r.read()).get("feeds") or []}
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        return None
 
 
 def _lecturas(f):
@@ -985,17 +993,21 @@ async def foto_entrada(fid: str):
 # ---------------------------------------------------------------- recorder, sistema, eventos
 @app.get("/api/hubs")
 def hubs_feeds(request: Request):
-    """Hubs del Recorder (activo: su API responde) y sus feeds, para el selector «Hub · canal».
-    Sin las URL: el panel solo elige hub y feed; las direcciones las pone el servidor al guardar."""
+    """Hubs del Recorder y sus feeds, para el selector «Hub · canal». Por cada hub, si está activo
+    (responde y recibe algún feed) y qué feeds recibe. Sin las URL: el panel solo elige hub y feed;
+    las direcciones las pone el servidor al guardar."""
     hubs, feeds = _feeds_recorder(request)
     with ThreadPoolExecutor(max_workers=max(1, len(hubs))) as ex:
-        activos = list(ex.map(lambda h: bool(h.get("host")) and _hub_responde(h["host"]), hubs))
-    return {"hubs": [{"host": h.get("host", ""), "nombre": h.get("nombre") or h.get("host", ""), "activo": a}
-                     for h, a in zip(hubs, activos)],
+        propios = list(ex.map(lambda h: _feeds_de_hub(h["host"]) if h.get("host") else None, hubs))
+    if propios[0] is None:                  # el principal, al menos, con el estado que da el Recorder
+        propios[0] = {f.get("path"): bool(f.get("recibiendo")) for f in feeds}
+    return {"hubs": [{"host": h.get("host", ""), "nombre": h.get("nombre") or h.get("host", ""),
+                      "activo": bool(p) and any(p.values()), "comprobado": p is not None,
+                      "recibiendo": [k for k, v in (p or {}).items() if v]}
+                     for h, p in zip(hubs, propios)],
             "feeds": [{"path": f.get("path", ""), "nombre": f.get("nombre") or f.get("path", ""),
-                       "activo": f.get("activo", True), "recibiendo": bool(f.get("recibiendo")),
-                       "entrelazado": bool(f.get("entrelazado")), "repetidor": bool(f.get("repetidor")),
-                       "por_hub": bool(f.get("lectura"))}
+                       "activo": f.get("activo", True), "entrelazado": bool(f.get("entrelazado")),
+                       "repetidor": bool(f.get("repetidor")), "por_hub": bool(f.get("lectura"))}
                       for f in feeds if f.get("path")]}
 
 

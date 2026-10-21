@@ -179,17 +179,16 @@ function pintarHubs() {
     return;
   }
   const activos = hubs.hubs.filter(h => h.activo), caidos = hubs.hubs.filter(h => !h.activo);
-  const estado = f => !f.activo ? ' (desactivado)' : !f.recibiendo ? ' (sin señal)' : '';
-  const grupos = activos.map((h, n) => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
+  // cada hub dice qué feeds recibe: los demás salen como «sin señal» en ese hub
+  const grupos = activos.map(h => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
     `<option value="${esc(h.host)}|${esc(f.path)}"${f.activo ? '' : ' disabled'}>${esc(h.nombre)} · ${esc(f.nombre)}${
-      // el estado que da el Recorder es el del hub principal (el primero de su lista)
-      h.host === hubs.hubs[0].host ? estado(f) : ''}${f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
+      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
   const enLista = activos.some(h => hubs.feeds.some(f => `${h.host}|${f.path}` === elegido));
   sel.innerHTML = `<option value="">Elige hub y canal</option>` + (elegido && !enLista ? guardado() : '') + grupos;
   sel.value = elegido;
   nota.className = 'nota';
   nota.textContent = (activos.length ? '' : 'Ningún hub responde ahora. ') +
-    (caidos.length ? `No responden (no se listan): ${caidos.map(h => h.nombre).join(', ')}. ` : '') +
+    (caidos.length ? `Fuera de servicio o sin comprobar (no se listan): ${caidos.map(h => h.nombre + (h.comprobado ? '' : ' (sin token de lectura)')).join(', ')}. ` : '') +
     'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen.';
 }
 $('#i-hub').onchange = () => {
