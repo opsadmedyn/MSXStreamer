@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 from typing import Literal, Optional
 
+from concurrent.futures import ThreadPoolExecutor
+
 import anyio
 from anyio.streams.buffered import BufferedByteReceiveStream
 from fastapi import FastAPI, HTTPException, Request
@@ -129,7 +131,10 @@ async def exigir_sesion(request: Request, call_next):
               f"Host={h.get('host')!r} X-Forwarded-Host={h.get('x-forwarded-host')!r}", flush=True)
         return JSONResponse({"detail": "Petición rechazada: no viene de este panel"}, status_code=403)
     if ruta.startswith(PUBLICAS):
-        return await call_next(request)
+        r = await call_next(request)
+        if ruta.startswith("/static/"):     # tras desplegar, el navegador no debe quedarse con un app.js viejo
+            r.headers["Cache-Control"] = "no-cache"
+        return r
     if ruta.startswith("/hls/"):        # vista previa: muchas peticiones, con sus propios hilos (ver abajo)
         usuario, motivo = await anyio.to_thread.run_sync(_usuario, request, limiter=HILOS_VISTA)
     else:
@@ -185,8 +190,10 @@ URL_SRT = r"^srt://[^\s/?#]+(:\d+)?(\?[^\s]*)?$"
 
 class Flujo(BaseModel):
     nombre: str = Field(min_length=1, max_length=80)
-    entrada: Literal["pull", "recorder"]
+    entrada: Literal["hub", "pull", "recorder"]
     url: str = ""
+    hub: str = Field("", max_length=255)        # hub: IP del hub elegido (la de la lista del Recorder)
+    feed: str = Field("", max_length=64)        # hub: path del feed
     streamid: str = Field("", max_length=512)
     passphrase: str = ""
     latencia_ms: int = Field(400, ge=20, le=8000)
@@ -226,7 +233,12 @@ def _passphrase(p):
         raise HTTPException(422, "La passphrase SRT debe tener entre 10 y 79 caracteres")
 
 
-def _validar_flujo(f: Flujo):
+def _validar_flujo(f: Flujo, request: Request):
+    """Comprueba el flujo y devuelve los campos que dependen de la entrada (los de un hub salen
+    de la lista de feeds del Recorder, no del navegador)."""
+    if f.entrada == "hub":
+        return _resolver_hub(request, f.hub, f.feed)
+    vacio = {"hub": "", "feed": "", "etiqueta": "", "respaldos": "[]", "directo": 0}
     if f.entrada == "pull":
         if not re.match(URL_SRT, f.url.strip()):
             raise HTTPException(422, "La URL del origen debe ser srt://host:puerto")
@@ -234,6 +246,114 @@ def _validar_flujo(f: Flujo):
     else:
         if f.canal not in {c["id"] for c in db.canales_recorder()}:
             raise HTTPException(422, "Ese canal no existe en MSX Recorder")
+    return {**vacio, "url": f.url.strip(), "canal": f.canal if f.entrada == "recorder" else ""}
+
+
+# ---------------------------------------------------------------- hubs de feeds
+# Los feeds de los hubs se piden al Recorder de este equipo (/api/hub/feeds, con la sesión de quien
+# usa el panel): es la misma lista que el selector de origen de «Configurar canal», con los mismos
+# nombres de hub (config.json del Recorder → hub.nombres) y las mismas lecturas. Un feed entrelazado
+# en un hub con repetidor se lee del repetidor (su `lectura` ya apunta ahí); sin repetidor, del
+# origen. Un hub cuenta como activo si su API (puerto 8899) responde y está recibiendo algún feed:
+# un hub fuera de servicio puede seguir aceptando conexiones en el 8899 sin repartir nada. Cada hub
+# tiene su token: config.json → "hub_tokens" {"<ip>": "…"}, o "hub_token_lectura" si los hubs
+# comparten uno de solo lectura; el del hub principal se toma además del config.json del Recorder
+# (el mismo con el que él lo consulta). Un hub sin token no se puede comprobar y no se lista.
+HUB_API_PUERTO = int(CFG.get("hub_api_puerto", 8899))
+HUB_TOKEN_LECTURA = CFG.get("hub_token_lectura", "")
+
+
+def _token_hub(host):
+    if (CFG.get("hub_tokens") or {}).get(host):
+        return CFG["hub_tokens"][host]
+    if HUB_TOKEN_LECTURA:
+        return HUB_TOKEN_LECTURA
+    ruta = pathlib.Path(CFG.get("recorder_config", "/home/mediasat/recorder/config.json"))
+    try:
+        h = json.loads(ruta.read_text()).get("hub") or {}
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return h.get("token", "") if urllib.parse.urlsplit(h.get("url", "")).hostname == host else ""
+
+
+def _feeds_recorder(request: Request):
+    token = request.cookies.get(COOKIE_RECORDER, "")
+    req = urllib.request.Request(RECORDER_API + "/api/hub/feeds",
+                                 headers={"Cookie": f"{COOKIE_RECORDER}={token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            d = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detalle = json.loads(e.read()).get("detail")
+        except Exception:
+            detalle = None
+        if e.code in (401, 403):
+            raise HTTPException(403, "Tu usuario del Recorder no puede ver los hubs (hace falta admin o manager)")
+        raise HTTPException(502, f"Recorder: {detalle or f'error {e.code}'}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise HTTPException(502, f"El Recorder no responde ({getattr(e, 'reason', e)})")
+    feeds = d.get("feeds") or []
+    hubs = d.get("hubs") or [{"host": d.get("host") or "", "nombre": "Hub"}]
+    return hubs, feeds
+
+
+def _feeds_de_hub(host):
+    """{path: recibiendo} de un hub según su propia API, o None si no responde o no hay token."""
+    token = _token_hub(host)
+    if not token:
+        return None
+    req = urllib.request.Request(f"http://{host}:{HUB_API_PUERTO}/api/feeds",
+                                 headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return {f.get("path"): bool(f.get("recibiendo")) for f in json.loads(r.read()).get("feeds") or []}
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        return None
+
+
+def _lecturas(f):
+    """Lectura de la Calidad ALTA del feed en cada hub, en el orden de la lista de hubs."""
+    return [f["lectura"], *(f.get("lecturas_respaldo") or [])] if f.get("lectura") else []
+
+
+def _resolver_hub(request, host, path):
+    """Campos de un flujo con entrada de hub: la lectura del feed en el hub elegido y, de respaldo,
+    la del mismo feed en los otros hubs y al final el origen (como hace el Recorder)."""
+    hubs, feeds = _feeds_recorder(request)
+    i = next((n for n, h in enumerate(hubs) if h.get("host") == host), None)
+    f = next((x for x in feeds if x.get("path") == path), None)
+    if i is None or f is None:
+        raise HTTPException(422, "Elige un hub y un canal de la lista")
+    altas = _lecturas(f)
+    principal = altas[i] if i < len(altas) else (f.get("url") or "").replace("%23", "#")
+    otros = [u for n, u in enumerate(altas) if n != i] + ([f["url"].replace("%23", "#")] if altas and f.get("url") else [])
+    if not principal.startswith("srt://"):
+        raise HTTPException(422, "Ese canal no se puede tomar por SRT")
+    # 1080i (1BN INT, 1BN MX): MediaMTX no sabe leerlo (llega sin tamaño y los destinos no
+    # arrancan). El flujo va «directo»: cada destino SRT/RTMP lee la entrada (el repetidor del hub)
+    # y la copia tal cual, sin pasar por MediaMTX; sin HLS, vista previa ni composición.
+    directo = bool(f.get("entrelazado"))
+    return {"url": principal, "canal": "", "hub": host, "feed": path, "directo": int(directo),
+            "etiqueta": f"{hubs[i].get('nombre') or host} · {f.get('nombre') or path}",
+            "respaldos": json.dumps([u for u in otros if u.startswith("srt://")])}
+
+
+DIRECTO_SIN = ("Flujo 1080i directo: la señal se copia tal cual a los destinos SRT y RTMP, "
+               "sin HLS, vista previa ni composición")
+
+
+def _salida_directa(s: Salida, directo):
+    if directo and (s.tipo == "hls" or s.fuente == "compuesta"):
+        raise HTTPException(422, DIRECTO_SIN)
+
+
+def _sin_extras_directo(c, fid):
+    """Un flujo que pasa a ser 1080i directo no puede tener HLS ni composición activos."""
+    if c.execute("""SELECT 1 FROM salidas WHERE flujo=? AND activo=1 AND (tipo='hls' OR fuente='compuesta')
+                    UNION SELECT 1 FROM composiciones WHERE flujo=? AND activa=1""", (fid, fid)).fetchone():
+        raise HTTPException(422, "Ese canal es 1080i y va directo, sin HLS ni composición: detén antes "
+                                 "los destinos HLS o con señal compuesta y desactiva la composición")
 
 
 def _validar_salida(s: Salida):
@@ -315,7 +435,11 @@ def _secretos(flujos, salidas):
     """Valores guardados que no deben aparecer en un texto, también codificados como van en una
     URL (mtx.conf_de_flujo los codifica, y un error de MediaMTX puede repetir esa URL)."""
     valores = set()
-    for fila in [*flujos, *salidas]:
+    respaldos = []
+    for f in flujos:                        # hub: el origen de respaldo (Castr) lleva la clave en el streamid
+        respaldos += [{"url": u} for u in db.fuentes({"url": "", "respaldos": f.get("respaldos")})]
+    respaldos += [{"url": c["url"]} for c in db.canales_recorder() if c.get("url")]   # canal sin reenvío
+    for fila in [*flujos, *salidas, *respaldos]:
         valores.update(fila.get(k) or "" for k in ("streamid", "passphrase", "clave"))
         url = fila.get("url") or ""
         try:
@@ -409,10 +533,17 @@ def _vista_flujo(f, salidas, estados, paths, request, secretos):
             v["url_m3u8"] = v["url"] + "index.m3u8"
             v["ver"] = _url_vista(path_s)           # el enlace "ver" del panel va por el panel
         vs.append(v)
+    kbps = _kbps_entrada(path, info)
+    if f["directo"] and f["activo"]:
+        # sin MediaMTX: hay señal si algún destino la está enviando; la tasa, la del más rápido
+        enviando = [v["kbps"] for v in vs if v["estado"] == "conectada"]
+        estado, kbps = ("en_el_aire", max(enviando)) if enviando else ("esperando", None)
     vf = {
-        **{k: f[k] for k in ("id", "nombre", "entrada", "url", "streamid", "latencia_ms", "canal", "activo")},
+        **{k: f[k] for k in ("id", "nombre", "entrada", "url", "streamid", "latencia_ms", "canal", "activo",
+                             "hub", "feed", "etiqueta")},
+        "directo": bool(f["directo"]), "fuente": _fuente_activa(f),
         "tiene_passphrase": bool(f["passphrase"]), "path": path, "estado": estado,
-        "kbps": _kbps_entrada(path, info), "pistas": _pistas(info),
+        "kbps": kbps, "pistas": _pistas(info),
         "lectores": len((info or {}).get("readers") or []),
         "desde": (info or {}).get("readyTime"), "salidas": vs,
         "vista_previa": _url_vista(path),
@@ -421,6 +552,17 @@ def _vista_flujo(f, salidas, estados, paths, request, secretos):
     if not ve_claves:
         vf.update(streamid="", tiene_streamid=bool(f["streamid"]), url=_url_visible(f["url"], "srt", ""))
     return vf
+
+
+def _fuente_activa(f):
+    """Hub: qué dirección usa ahora la entrada (0: la del hub elegido) y cuántas hay."""
+    if f["entrada"] != "hub":
+        return None
+    fuentes = db.fuentes(f)
+    r = db.conectar().execute("SELECT indice FROM entradas_activas WHERE flujo=?", (f["id"],)).fetchone()
+    i = (r["indice"] if r else 0) % max(1, len(fuentes))
+    host = urllib.parse.urlsplit(fuentes[i].split("?")[0]).hostname if fuentes else ""
+    return {"indice": i, "total": len(fuentes), "host": host or ""}
 
 
 def _vista_composicion(f, estados, paths, request, secretos):
@@ -478,31 +620,34 @@ def ver(fid: str, request: Request):
 
 # ---------------------------------------------------------------- flujos
 @app.post("/api/flujos")
-def crear_flujo(d: Flujo):
-    _validar_flujo(d)
+def crear_flujo(d: Flujo, request: Request):
+    e = _validar_flujo(d, request)
     c = db.conectar()
     fid = _nuevo_id(c, "flujos", d.nombre)
-    c.execute("""INSERT INTO flujos(id,nombre,entrada,url,streamid,passphrase,latencia_ms,canal)
-                 VALUES (?,?,?,?,?,?,?,?)""",
-              (fid, d.nombre.strip(), d.entrada, d.url.strip(), d.streamid.strip(), d.passphrase,
-               d.latencia_ms, d.canal))
+    c.execute("""INSERT INTO flujos(id,nombre,entrada,url,streamid,passphrase,latencia_ms,canal,
+                                    hub,feed,etiqueta,respaldos,directo)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (fid, d.nombre.strip(), d.entrada, e["url"], d.streamid.strip(), d.passphrase,
+               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"], e["directo"]))
     evento(c, f"flujo creado: {d.nombre}", flujo=fid)
     return {"id": fid}
 
 
 @app.put("/api/flujos/{fid}")
-def editar_flujo(fid: str, d: Flujo):
-    _validar_flujo(d)
+def editar_flujo(fid: str, d: Flujo, request: Request):
+    e = _validar_flujo(d, request)
     c = db.conectar()
     actual = c.execute("SELECT passphrase FROM flujos WHERE id=?", (fid,)).fetchone()
     if not actual:
         raise HTTPException(404, "Ese flujo no existe")
     # passphrase vacía = conservar la guardada (el panel nunca la recibe de vuelta)
     passphrase = d.passphrase or actual["passphrase"]
-    c.execute("""UPDATE flujos SET nombre=?,entrada=?,url=?,streamid=?,passphrase=?,latencia_ms=?,canal=?
-                 WHERE id=?""",
-              (d.nombre.strip(), d.entrada, d.url.strip(), d.streamid.strip(), passphrase,
-               d.latencia_ms, d.canal, fid))
+    if e["directo"]:
+        _sin_extras_directo(c, fid)
+    c.execute("""UPDATE flujos SET nombre=?,entrada=?,url=?,streamid=?,passphrase=?,latencia_ms=?,canal=?,
+                                   hub=?,feed=?,etiqueta=?,respaldos=?,directo=? WHERE id=?""",
+              (d.nombre.strip(), d.entrada, e["url"], d.streamid.strip(), passphrase,
+               d.latencia_ms, e["canal"], e["hub"], e["feed"], e["etiqueta"], e["respaldos"], e["directo"], fid))
     evento(c, "flujo editado", flujo=fid)
     return {"ok": True}
 
@@ -511,8 +656,10 @@ def editar_flujo(fid: str, d: Flujo):
 def crear_salida(fid: str, d: Salida):
     _validar_salida(d)
     c = db.conectar()
-    if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
+    f = c.execute("SELECT directo FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not f:
         raise HTTPException(404, "Ese flujo no existe")
+    _salida_directa(d, f["directo"])
     sid = _nuevo_id(c, "salidas", d.nombre)
     c.execute("""INSERT INTO salidas(id,flujo,nombre,tipo,url,modo,streamid,passphrase,latencia_ms,clave,fuente)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -546,6 +693,8 @@ def guardar_composicion(fid: str, d: Composicion):
     c = db.conectar()
     if not c.execute("SELECT 1 FROM flujos WHERE id=?", (fid,)).fetchone():
         raise HTTPException(404, "Ese flujo no existe")
+    if d.activa and c.execute("SELECT directo FROM flujos WHERE id=?", (fid,)).fetchone()["directo"]:
+        raise HTTPException(422, DIRECTO_SIN)
     if not composicion.validar_fondo(d.fondo):
         raise HTTPException(422, "El color de fondo debe ser #RRGGBB")
     for i, capa in enumerate(d.capas, start=1):
@@ -591,6 +740,8 @@ def borrar_flujo(fid: str):
 def editar_salida(sid: str, d: Salida):
     _validar_salida(d)
     c = db.conectar()
+    f = c.execute("SELECT f.directo FROM salidas s JOIN flujos f ON f.id = s.flujo WHERE s.id=?", (sid,)).fetchone()
+    _salida_directa(d, f["directo"] if f else 0)
     actual = c.execute("SELECT passphrase, clave FROM salidas WHERE id=?", (sid,)).fetchone()
     if not actual:
         raise HTTPException(404, "Esa salida no existe")
@@ -893,14 +1044,55 @@ async def foto_entrada(fid: str):
 
 
 # ---------------------------------------------------------------- recorder, sistema, eventos
+@app.get("/api/hubs")
+def hubs_feeds(request: Request):
+    """Hubs del Recorder y sus feeds, para el selector «Hub · canal». Por cada hub, si está activo
+    (responde y recibe algún feed) y qué feeds recibe. Sin las URL: el panel solo elige hub y feed;
+    las direcciones las pone el servidor al guardar."""
+    hubs, feeds = _feeds_recorder(request)
+    with ThreadPoolExecutor(max_workers=max(1, len(hubs))) as ex:
+        propios = list(ex.map(lambda h: _feeds_de_hub(h["host"]) if h.get("host") else None, hubs))
+    if propios[0] is None:                  # el principal, al menos, con el estado que da el Recorder
+        propios[0] = {f.get("path"): bool(f.get("recibiendo")) for f in feeds}
+    return {"hubs": [{"host": h.get("host", ""), "nombre": h.get("nombre") or h.get("host", ""),
+                      "activo": bool(p) and any(p.values()), "comprobado": p is not None,
+                      "recibiendo": [k for k, v in (p or {}).items() if v]}
+                     for h, p in zip(hubs, propios)],
+            "feeds": [{"path": f.get("path", ""), "nombre": f.get("nombre") or f.get("path", ""),
+                       "activo": f.get("activo", True), "entrelazado": bool(f.get("entrelazado")),
+                       "repetidor": bool(f.get("repetidor")), "por_hub": bool(f.get("lectura"))}
+                      for f in feeds if f.get("path")]}
+
+
 @app.get("/api/recorder/canales")
-def recorder_canales():
+def recorder_canales(request: Request):
+    """Canales del Recorder de este equipo con sus nombres actuales y si están activos, según su
+    propia API (/api/canales, con la sesión de quien usa el panel). Si no responde, los de su
+    canales.json. `reenvio_udp` (el puerto por el que el canal reenvía al Streamer) sale siempre
+    de canales.json, que es lo que usa el supervisor."""
     try:
         paths = mtx.paths_estado()
     except mtx.ErrorMTX:
         paths = {}
-    return [{**c, "publicando": bool((paths.get("rec_" + c["id"]) or {}).get("ready"))}
-            for c in db.canales_recorder()]
+    locales = {c["id"]: c for c in db.canales_recorder()}
+    token = request.cookies.get(COOKIE_RECORDER, "")
+    try:
+        req = urllib.request.Request(RECORDER_API + "/api/canales",
+                                     headers={"Cookie": f"{COOKIE_RECORDER}={token}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            vivos = [c for c in json.loads(r.read()).get("canales") or [] if c.get("id")]
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        vivos = None
+    if vivos is None:
+        lista = [{**c, "activo": True, "grabando": None} for c in locales.values()]
+    else:
+        lista = [{"id": c["id"], "nombre": c.get("nombre") or c["id"], "activo": bool(c.get("activo", True)),
+                  "grabando": c.get("grabando"),
+                  "reenvio_udp": (locales.get(c["id"]) or {}).get("reenvio_udp"),
+                  "url": (locales.get(c["id"]) or {}).get("url", "")} for c in vivos]
+    return [{**{k: v for k, v in c.items() if k != "url"},     # la URL puede llevar claves: no se enseña
+             "por_origen": not c.get("reenvio_udp") and (c.get("url") or "").startswith("srt://"),
+             "publicando": bool((paths.get("rec_" + c["id"]) or {}).get("ready"))} for c in lista]
 
 
 @app.get("/api/sistema")
@@ -926,7 +1118,7 @@ def eventos(flujo: Optional[str] = None, limite: int = 50):
                                WHERE e.flujo=? OR s.flujo=? ORDER BY t DESC LIMIT ?""", flujo, flujo, limite)
     else:
         filas = db.filas(c, "SELECT * FROM eventos ORDER BY t DESC LIMIT ?", min(limite, 500))
-    secretos = _secretos(db.filas(c, "SELECT url, streamid, passphrase FROM flujos"),
+    secretos = _secretos(db.filas(c, "SELECT url, streamid, passphrase, respaldos FROM flujos"),
                          db.filas(c, "SELECT tipo, url, streamid, passphrase, clave FROM salidas"))
     for e in filas:
         e["texto"] = _limpiar(e["texto"], secretos)
@@ -940,7 +1132,12 @@ def version():
 
 @app.get("/")
 def inicio():
-    return FileResponse(ESTATICOS / "index.html")
+    """index.html con la versión en los enlaces a app.js y base.css: tras desplegar, el navegador
+    pide los nuevos en vez de usar los de su caché."""
+    html = (ESTATICOS / "index.html").read_text()
+    for f in ("app.js", "base.css"):
+        html = html.replace(f'"static/{f}"', f'"static/{f}?v={urllib.parse.quote(VERSION)}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=str(ESTATICOS)), name="static")

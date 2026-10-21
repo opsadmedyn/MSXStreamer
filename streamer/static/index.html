@@ -94,14 +94,21 @@
     <form id="f-flujo">
       <label class="campo-f" style="max-width:760px;margin-bottom:18px"><span>Nombre del flujo</span><input id="i-nombre" type="text" required maxlength="80" placeholder="Yankees vs Red Sox · Programa"></label>
       <div class="opciones" role="radiogroup" aria-label="Tipo de entrada">
-        <label class="opc"><input type="radio" name="entrada" value="recorder" checked><h3>Canal de MSX Recorder</h3><p>Usa el feed que ya graba el Recorder en este equipo, sin abrir otra conexión al origen.</p></label>
+        <label class="opc"><input type="radio" name="entrada" value="hub" checked><h3>Hub channel</h3><p>Un feed de los hubs activos, elegido como «Hub · canal». Si ese hub deja de dar señal, pasa solo al mismo feed en otro hub o al origen.</p></label>
         <label class="opc"><input type="radio" name="entrada" value="pull"><h3>SRT pull</h3><p>El Streamer se conecta a una URL SRT remota y reintenta si se cae.</p></label>
-        <label class="opc dis"><input type="radio" name="entrada" value="push" disabled><h3>SRT push</h3><p>El encoder envía al Streamer. Fase futura.</p></label>
+        <label class="opc"><input type="radio" name="entrada" value="recorder"><h3>Canal de MSX Recorder</h3><p>Usa el feed que ya graba el Recorder en este equipo, sin abrir otra conexión al origen.</p></label>
       </div>
-      <div class="panel" id="f-rec">
-        <h2>Canales del Recorder en este equipo</h2>
+      <div class="panel" id="f-hub">
+        <h2>Hub channel</h2>
+        <div class="form">
+          <label class="campo-f ancho"><span>Canal</span><select id="i-hub"><option value="">Cargando los hubs…</option></select></label>
+        </div>
+        <p class="nota" id="hub-nota" style="margin-top:12px">Solo se listan los hubs que responden. La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos los pone el Streamer al guardar, igual que «Configurar canal» del Recorder.</p>
+      </div>
+      <div class="panel" id="f-rec" hidden>
+        <h2>Canales activos del Recorder en este equipo</h2>
         <div class="canales" id="canales"></div>
-        <p class="nota" style="margin-top:12px">El canal tiene que tener activado el reenvío al Streamer (una vez por canal, en su configuración del Recorder). El reenvío no afecta a la grabación: si el Streamer se detiene, el Recorder sigue grabando igual.</p>
+        <p class="nota" style="margin-top:12px">Con el reenvío al Streamer activado en el canal (una vez por canal, en su configuración del Recorder), el Streamer toma exactamente lo que graba el Recorder, sin otra conexión. Sin reenvío, lee el mismo origen que el canal («Por su origen»: normalmente la lectura del hub). Nada de esto afecta a la grabación.</p>
       </div>
       <div class="panel" id="f-pull" hidden>
         <h2>Origen SRT</h2>

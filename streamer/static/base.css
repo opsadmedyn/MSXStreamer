@@ -80,6 +80,7 @@ input[readonly]{color:var(--suave)}
 .check input{accent-color:var(--acento);width:16px;height:16px}
 .dos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .nota{font-size:12px;color:var(--tenue);margin:0}
+.nota.error{color:var(--error)}
 .capas{display:grid;gap:6px}
 .capa2{display:grid;gap:10px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px}
 .capa-cab{display:flex;align-items:center;gap:10px}

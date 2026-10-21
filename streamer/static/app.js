@@ -3,7 +3,7 @@ const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAl
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const num = n => n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('.', ',') + ' Mb/s' : Math.round(n) + ' kb/s';
 
-let flujos = [], actual = null, paso = 'entrada', editandoSalida = null, canales = [];
+let flujos = [], actual = null, paso = 'entrada', editandoSalida = null, canales = [], hubs = null;
 
 async function api(metodo, ruta, cuerpo) {
   // rutas relativas: el panel funciona igual en :8095 que tras Caddy en /streamer/
@@ -27,10 +27,17 @@ const ESTADO_SALIDA = {
   esperando: ['av', 'Esperando entrada'], reintentando: ['er', 'Reintentando'], detenida: ['off', 'Detenida'],
 };
 const pill = ([tono, txt]) => `<span class="pill ${tono}">${esc(txt)}</span>`;
+// flujo 1080i directo: los destinos SRT/RTMP copian la entrada tal cual, sin pasar por MediaMTX
+const PILL_DIRECTO = `<span class="pill av" title="Feed entrelazado: se copia tal cual (1080i) a los destinos SRT y RTMP, sin HLS, vista previa ni composición">1080i directo</span>`;
 const punto = e => ({conectada: '', publicando: '', conectando: 'av', esperando: 'av', reintentando: 'er', detenida: 'off'}[e] ?? 'off');
 
 function describirEntrada(f) {
-  return f.entrada === 'recorder' ? `Recorder · ${f.canal}` : `SRT pull · ${f.url.replace(/^srt:\/\//, '')}`;
+  if (f.entrada === 'hub') {
+    const fu = f.fuente;
+    const resp = fu && fu.indice ? ` · por el respaldo ${fu.indice} de ${fu.total - 1} (${fu.host})` : '';
+    return `Hub channel · ${f.etiqueta || f.feed}${resp}`;
+  }
+  return f.entrada === 'recorder' ? `Recorder · ${(canales.find(c => c.id === f.canal) || {}).nombre || f.canal}` : `SRT pull · ${f.url.replace(/^srt:\/\//, '')}`;
 }
 
 // ---------------------------------------------------------------- navegación
@@ -66,7 +73,7 @@ function pintarLista() {
     return `<article class="panel flujo" tabindex="0" data-id="${esc(f.id)}">
       <div class="mini ${f.estado === 'en_el_aire' ? 'aire' : ''}">${f.estado === 'en_el_aire' ? 'Señal' : 'Sin señal'}</div>
       <div class="meta">
-        <div class="fila"><h3>${esc(f.nombre)}</h3>${pill(ESTADO_FLUJO[f.estado])}</div>
+        <div class="fila"><h3>${esc(f.nombre)}</h3>${pill(ESTADO_FLUJO[f.estado])}${f.directo ? PILL_DIRECTO : ''}</div>
         <div class="fila"><span class="chip"><b>ENTRADA</b> ${esc(describirEntrada(f))}</span>${f.pistas.length ? `<span class="chip"><b>PISTAS</b> ${esc(f.pistas.join(' · '))}</span>` : ''}</div>
         <div class="fila">${f.salidas.map(s => `<span class="chip"><i class="${punto(s.estado)}"></i>${esc(s.tipo.toUpperCase())} · ${esc(s.nombre)}</span>`).join('') || '<span class="nota">Sin salidas</span>'}</div>
       </div>
@@ -87,8 +94,8 @@ function nuevoFlujo() {
   $('#e-acc').innerHTML = ''; $('#e-stats').hidden = true;
   $('#f-flujo').reset(); $('#av-flujo').textContent = '';
   $('#b-guardar').textContent = 'Crear flujo';
-  tipoEntrada('recorder');
-  irPaso('entrada'); vista('editor'); cargarCanales();
+  tipoEntrada('hub', '', '');
+  irPaso('entrada'); vista('editor'); cargarCanales(); cargarHubs();
   $('#i-nombre').focus();
 }
 $('#b-nuevo').onclick = nuevoFlujo;
@@ -101,10 +108,10 @@ function abrirFlujo(id) {
   $('#i-nombre').value = f.nombre;
   $('#i-url').value = f.url; $('#i-sid').value = f.streamid; $('#i-lat').value = f.latencia_ms;
   $('#i-pass').placeholder = f.tiene_passphrase ? 'Guardada (vacío = conservar)' : '';
-  tipoEntrada(f.entrada, f.canal);
+  tipoEntrada(f.entrada, f.canal, f.entrada === 'hub' ? `${f.hub}|${f.feed}` : '', f.etiqueta);
   $('#b-guardar').textContent = 'Guardar entrada';
   irPaso('salidas');
-  vista('editor'); cargarCanales(); cargarComp(f); pintarEditor();
+  vista('editor'); cargarCanales(); cargarHubs(); cargarComp(f); pintarEditor();
 }
 
 function pintarEditor() {
@@ -112,7 +119,7 @@ function pintarEditor() {
   if (!f) return;
   $('#e-titulo').textContent = f.nombre;
   $('#e-sub').textContent = describirEntrada(f);
-  $('#e-acc').innerHTML = `${pill(ESTADO_FLUJO[f.estado])}
+  $('#e-acc').innerHTML = `${pill(ESTADO_FLUJO[f.estado])}${f.directo ? PILL_DIRECTO : ''}
     <button class="btn" id="b-onoff" data-admin>${f.activo ? 'Detener flujo' : 'Iniciar flujo'}</button>
     <button class="btn peligro" id="b-borrar" data-admin>Borrar</button>`;
   $('#b-onoff').onclick = () => accion(`/api/flujos/${f.id}/${f.activo ? 'detener' : 'iniciar'}`);
@@ -122,7 +129,8 @@ function pintarEditor() {
     <div><small>Pistas</small><span>${esc(f.pistas.join(' · ') || '—')}</span></div>
     <div title="Lo que lee la entrada en MediaMTX: destinos, composición y reproductores HLS, también el lienzo y la vista previa de este panel, que cuentan hasta 1 min después de cerrarlos"><small>Lectores</small><span class="num">${f.lectores}</span></div>
     <div><small>Vista previa</small><span><a href="${esc(f.vista_previa)}" id="b-vista" title="Vista previa por el panel, con tu sesión" style="color:var(--acento2)">Abrir</a></span></div>`;
-  $('#b-vista').onclick = async e => {
+  if (f.directo) $('#b-vista').replaceWith('No (1080i directo)');
+  else $('#b-vista').onclick = async e => {
     e.preventDefault();
     const w = window.open('', '_blank');           // abrir ya: tras el await el navegador lo bloquearía
     try {
@@ -135,25 +143,66 @@ function pintarEditor() {
   seguirLienzo();                    // el estado del flujo y de la composición decide qué se ve en el lienzo
 }
 
-function tipoEntrada(t, canal) {
+function tipoEntrada(t, canal, hub, etiqueta) {
   $$('input[name=entrada]').forEach(r => r.checked = r.value === t);
-  $('#f-rec').hidden = t !== 'recorder'; $('#f-pull').hidden = t !== 'pull';
+  $('#f-rec').hidden = t !== 'recorder'; $('#f-pull').hidden = t !== 'pull'; $('#f-hub').hidden = t !== 'hub';
   if (canal !== undefined) $('#canales').dataset.elegido = canal;
+  if (hub !== undefined) { $('#i-hub').dataset.elegido = hub; $('#i-hub').dataset.etiqueta = etiqueta || ''; pintarHubs(); }
 }
 $$('input[name=entrada]').forEach(r => r.onchange = () => tipoEntrada(r.value));
 
 async function cargarCanales() {
   try { canales = await api('GET', '/api/recorder/canales'); } catch { canales = []; }
   const elegido = $('#canales').dataset.elegido || '';
-  $('#canales').innerHTML = canales.length ? canales.map(c => `
+  // los canales activos del Recorder (y el ya elegido aunque esté en pausa), con su nombre actual
+  const lista = canales.filter(c => c.activo || c.id === elegido);
+  $('#canales').innerHTML = lista.length ? lista.map(c => `
     <button type="button" class="canal" data-id="${esc(c.id)}" aria-pressed="${c.id === elegido}">
-      <b>${esc(c.id)}</b><small>${esc(c.nombre)}</small>${pill(c.publicando ? ['ok', 'Recibiendo'] : c.reenvio_udp ? ['av', 'Reenvío activado'] : ['off', 'Sin reenvío'])}
-    </button>`).join('') : '<p class="nota">No se encontraron canales del Recorder en este equipo.</p>';
+      <b>${esc(c.nombre)}</b><small>${esc(c.id)}${c.activo ? '' : ' · en pausa'}</small>${pill(c.publicando ? ['ok', 'Recibiendo'] : c.reenvio_udp ? ['av', 'Reenvío activado'] : c.por_origen ? ['av', 'Por su origen'] : ['off', 'Sin reenvío'])}
+    </button>`).join('') : '<p class="nota">No hay canales activos en el Recorder de este equipo.</p>';
   $$('#canales .canal').forEach(b => b.onclick = () => {
     $('#canales').dataset.elegido = b.dataset.id;
     $$('#canales .canal').forEach(x => x.setAttribute('aria-pressed', x === b));
   });
 }
+
+// «Hub · canal»: los feeds de los hubs activos, agrupados por hub, como el selector de origen del
+// Recorder. El valor es «<IP del hub>|<path del feed>»; las direcciones las pone el servidor.
+async function cargarHubs() {
+  hubs = null; pintarHubs();
+  try { hubs = await api('GET', '/api/hubs'); } catch (err) { hubs = {error: err.message}; }
+  pintarHubs();
+}
+
+function pintarHubs() {
+  const sel = $('#i-hub'), elegido = sel.dataset.elegido || '', nota = $('#hub-nota');
+  if (!hubs) { sel.innerHTML = '<option value="">Cargando los hubs…</option>'; return; }
+  const guardado = () => elegido ? `<option value="${esc(elegido)}">${esc(sel.dataset.etiqueta || elegido)} (guardado)</option>` : '';
+  if (hubs.error) {
+    sel.innerHTML = guardado() || '<option value="">Sin lista de hubs</option>';
+    sel.value = elegido; nota.className = 'nota error'; nota.textContent = hubs.error;
+    return;
+  }
+  const activos = hubs.hubs.filter(h => h.activo), caidos = hubs.hubs.filter(h => !h.activo);
+  // cada hub dice qué feeds recibe: los demás salen como «sin señal» en ese hub
+  const grupos = activos.map(h => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
+    `<option value="${esc(h.host)}|${esc(f.path)}"${f.activo ? '' : ' disabled'}>${esc(h.nombre)} · ${esc(f.nombre)}${
+      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.entrelazado ? ' · 1080i directo' : f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
+  const enLista = activos.some(h => hubs.feeds.some(f => `${h.host}|${f.path}` === elegido));
+  sel.innerHTML = `<option value="">Elige hub y canal</option>` + (elegido && !enLista ? guardado() : '') + grupos;
+  sel.value = elegido;
+  nota.className = 'nota';
+  nota.textContent = (activos.length ? '' : 'Ningún hub responde ahora. ') +
+    (caidos.length ? `Fuera de servicio o sin comprobar (no se listan): ${caidos.map(h => h.nombre + (h.comprobado ? '' : ' (sin comprobar)')).join(', ')}. ` : '') +
+    'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen. «1080i directo»: feed entrelazado; se copia tal cual a los destinos SRT y RTMP, sin HLS, vista previa ni composición.';
+}
+$('#i-hub').onchange = () => {
+  const sel = $('#i-hub'), opc = sel.selectedOptions[0];
+  sel.dataset.elegido = sel.value;
+  sel.dataset.etiqueta = opc ? opc.textContent.replace(/ \(.*\)$/, '') : '';
+  const nombre = $('#i-nombre');
+  if (opc && sel.value && !nombre.value.trim()) nombre.value = opc.textContent.split(' · ')[1].replace(/ \(.*\)$/, '');
+};
 
 $('#f-flujo').onsubmit = async e => {
   e.preventDefault();
@@ -163,6 +212,10 @@ $('#f-flujo').onsubmit = async e => {
     streamid: $('#i-sid').value.trim(), passphrase: $('#i-pass').value,
     latencia_ms: +$('#i-lat').value || 400, canal: $('#canales').dataset.elegido || ''};
   if (entrada === 'recorder' && !d.canal) { av.className = 'aviso error'; av.textContent = 'Elige un canal del Recorder'; return; }
+  if (entrada === 'hub') {
+    [d.hub, d.feed] = ($('#i-hub').value || '|').split('|');
+    if (!d.feed) { av.className = 'aviso error'; av.textContent = 'Elige hub y canal'; return; }
+  }
   try {
     if (actual) { await api('PUT', `/api/flujos/${actual}`, d); av.className = 'aviso ok'; av.textContent = 'Guardado'; }
     else { const r = await api('POST', '/api/flujos', d); actual = r.id; await refrescar(); abrirFlujo(r.id); irPaso('salidas'); return; }
@@ -655,7 +708,7 @@ async function cargarYo() {
   if (yo.via === 'recorder') { $('#lnk-recorder').href = yo.recorder_url; $('#lnk-recorder').hidden = false; }
 }
 (async () => {
-  await cargarYo(); await refrescar(); sistema();
+  await cargarYo(); await cargarCanales(); await refrescar(); sistema();   // canales: nombres de la lista
   const h = location.hash.slice(1);
   if (h && flujos.some(f => f.id === h)) abrirFlujo(h);
   setInterval(refrescar, 2000);
