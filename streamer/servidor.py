@@ -251,12 +251,26 @@ def _validar_flujo(f: Flujo, request: Request):
 # usa el panel): es la misma lista que el selector de origen de «Configurar canal», con los mismos
 # nombres de hub (config.json del Recorder → hub.nombres) y las mismas lecturas. Un feed entrelazado
 # en un hub con repetidor se lee del repetidor (su `lectura` ya apunta ahí); sin repetidor, del
-# origen. Un hub cuenta como activo si su API (puerto 8899) responde con el token de solo lectura
-# de los hubs (config.json → "hub_token_lectura", el mismo que usa el mapa de señal) y está
-# recibiendo algún feed: un hub fuera de servicio puede seguir aceptando conexiones en el 8899 sin
-# repartir nada. Sin ese token solo se puede saber del hub principal (su estado lo da el Recorder).
+# origen. Un hub cuenta como activo si su API (puerto 8899) responde y está recibiendo algún feed:
+# un hub fuera de servicio puede seguir aceptando conexiones en el 8899 sin repartir nada. Cada hub
+# tiene su token: config.json → "hub_tokens" {"<ip>": "…"}, o "hub_token_lectura" si los hubs
+# comparten uno de solo lectura; el del hub principal se toma además del config.json del Recorder
+# (el mismo con el que él lo consulta). Un hub sin token no se puede comprobar y no se lista.
 HUB_API_PUERTO = int(CFG.get("hub_api_puerto", 8899))
 HUB_TOKEN_LECTURA = CFG.get("hub_token_lectura", "")
+
+
+def _token_hub(host):
+    if (CFG.get("hub_tokens") or {}).get(host):
+        return CFG["hub_tokens"][host]
+    if HUB_TOKEN_LECTURA:
+        return HUB_TOKEN_LECTURA
+    ruta = pathlib.Path(CFG.get("recorder_config", "/home/mediasat/recorder/config.json"))
+    try:
+        h = json.loads(ruta.read_text()).get("hub") or {}
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return h.get("token", "") if urllib.parse.urlsplit(h.get("url", "")).hostname == host else ""
 
 
 def _feeds_recorder(request: Request):
@@ -283,10 +297,11 @@ def _feeds_recorder(request: Request):
 
 def _feeds_de_hub(host):
     """{path: recibiendo} de un hub según su propia API, o None si no responde o no hay token."""
-    if not HUB_TOKEN_LECTURA:
+    token = _token_hub(host)
+    if not token:
         return None
     req = urllib.request.Request(f"http://{host}:{HUB_API_PUERTO}/api/feeds",
-                                 headers={"Authorization": f"Bearer {HUB_TOKEN_LECTURA}"})
+                                 headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=2) as r:
             return {f.get("path"): bool(f.get("recibiendo")) for f in json.loads(r.read()).get("feeds") or []}

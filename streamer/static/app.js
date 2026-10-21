@@ -188,7 +188,7 @@ function pintarHubs() {
   sel.value = elegido;
   nota.className = 'nota';
   nota.textContent = (activos.length ? '' : 'Ningún hub responde ahora. ') +
-    (caidos.length ? `Fuera de servicio o sin comprobar (no se listan): ${caidos.map(h => h.nombre + (h.comprobado ? '' : ' (sin token de lectura)')).join(', ')}. ` : '') +
+    (caidos.length ? `Fuera de servicio o sin comprobar (no se listan): ${caidos.map(h => h.nombre + (h.comprobado ? '' : ' (sin comprobar)')).join(', ')}. ` : '') +
     'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen.';
 }
 $('#i-hub').onchange = () => {
