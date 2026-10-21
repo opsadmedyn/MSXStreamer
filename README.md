@@ -107,6 +107,14 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
+### 0.3.8
+
+Feeds entrelazados (1080i: 1BN INT, 1BN MX). MediaMTX no sabe leerlos (el vídeo llega sin tamaño
+y los destinos no arrancan), así que «Hub channel» toma su Calidad MEDIA del hub (720 progresiva):
+la del hub elegido y, de respaldo, la de los otros hubs; el origen, también 1080i, no sirve de
+respaldo. El selector los marca «720 (es 1080i)». Un flujo ya guardado con uno de esos feeds se
+arregla volviendo a guardar su entrada.
+
 ### 0.3.7
 
 - «Canal de un hub» pasa a llamarse **Hub channel**.

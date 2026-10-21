@@ -325,13 +325,27 @@ def _resolver_hub(request, host, path):
     f = next((x for x in feeds if x.get("path") == path), None)
     if i is None or f is None:
         raise HTTPException(422, "Elige un hub y un canal de la lista")
+    if f.get("entrelazado"):
+        # 1080i: MediaMTX no sabe leerlo (llega sin tamaño y los destinos no arrancan). Se toma la
+        # Calidad MEDIA del hub (720 progresiva), la del hub elegido y de respaldo la de los otros;
+        # el origen (también 1080i) no sirve de respaldo.
+        ligeras = [f["lectura_ligero"], *(f.get("lecturas_ligero_respaldo") or [])] if f.get("lectura_ligero") else []
+        if not ligeras:
+            raise HTTPException(422, "Ese canal es entrelazado (1080i) y el hub no da su Calidad MEDIA: el Streamer no puede tomarlo")
+        principal = ligeras[i] if i < len(ligeras) else ligeras[0]
+        otros = [u for u in ligeras if u != principal]
+        return _campos_hub(host, path, hubs[i], f, principal, otros, " (720)")
     altas = _lecturas(f)
     principal = altas[i] if i < len(altas) else (f.get("url") or "").replace("%23", "#")
     otros = [u for n, u in enumerate(altas) if n != i] + ([f["url"].replace("%23", "#")] if altas and f.get("url") else [])
+    return _campos_hub(host, path, hubs[i], f, principal, otros, "")
+
+
+def _campos_hub(host, path, hub, f, principal, otros, sufijo):
     if not principal.startswith("srt://"):
         raise HTTPException(422, "Ese canal no se puede tomar por SRT")
     return {"url": principal, "canal": "", "hub": host, "feed": path,
-            "etiqueta": f"{hubs[i].get('nombre') or host} · {f.get('nombre') or path}",
+            "etiqueta": f"{hub.get('nombre') or host} · {f.get('nombre') or path}{sufijo}",
             "respaldos": json.dumps([u for u in otros if u.startswith("srt://")])}
 
 

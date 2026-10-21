@@ -184,7 +184,7 @@ function pintarHubs() {
   // cada hub dice qué feeds recibe: los demás salen como «sin señal» en ese hub
   const grupos = activos.map(h => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
     `<option value="${esc(h.host)}|${esc(f.path)}"${f.activo ? '' : ' disabled'}>${esc(h.nombre)} · ${esc(f.nombre)}${
-      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
+      !f.activo ? ' (desactivado)' : h.recibiendo.includes(f.path) ? '' : ' (sin señal)'}${f.entrelazado ? ' · 720 (es 1080i)' : f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
   const enLista = activos.some(h => hubs.feeds.some(f => `${h.host}|${f.path}` === elegido));
   sel.innerHTML = `<option value="">Elige hub y canal</option>` + (elegido && !enLista ? guardado() : '') + grupos;
   sel.value = elegido;
