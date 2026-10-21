@@ -107,6 +107,16 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
+### 0.3.7
+
+- «Canal de un hub» pasa a llamarse **Hub channel**.
+- «Canal de MSX Recorder» lista los canales **activos** del Recorder con su nombre actual (de su
+  API `/api/canales`; si no responde, de `canales.json`). Un canal sin reenvío UDP ya se puede usar:
+  el Streamer lee el mismo origen que el canal si es SRT (normalmente la lectura del hub), y el
+  panel lo marca «Por su origen».
+- El panel enlaza `app.js` y `base.css` con `?v=<versión>` y sin caché: tras la 0.3.5 el navegador
+  seguía con el `app.js` anterior y el desplegable de hubs no llegaba a cargar.
+
 ### 0.3.6
 
 «Hubs activos» de verdad: se pregunta a la API de cada hub qué feeds recibe en vez de mirar solo

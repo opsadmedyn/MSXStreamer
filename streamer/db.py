@@ -123,11 +123,13 @@ def config():
 
 def canales_recorder():
     """Canales de MSX Recorder en este equipo. `reenvio_udp` es el puerto local por el que el
-    grabador reenvía el feed mientras graba (vacío: el canal no reenvía)."""
+    grabador reenvía el feed mientras graba (vacío: el canal no reenvía). `url`: su origen
+    principal, que se usa si el canal no reenvía y es SRT (normalmente la lectura de un hub)."""
     ruta = pathlib.Path(config().get("recorder_canales", "/home/mediasat/recorder/canales.json"))
     try:
         return [{"id": c["id"], "nombre": c.get("nombre") or c["id"],
-                 "reenvio_udp": int(c["reenvio_udp"]) if c.get("reenvio_udp") else None}
+                 "reenvio_udp": int(c["reenvio_udp"]) if c.get("reenvio_udp") else None,
+                 "url": (c.get("url") or "").strip()}
                 for c in json.loads(ruta.read_text()) if c.get("id")]
     except (OSError, ValueError, TypeError, KeyError):
         return []

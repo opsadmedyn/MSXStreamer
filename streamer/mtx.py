@@ -74,8 +74,13 @@ def conf_de_flujo(f, canales, indice=0):
         return {"source": _url_srt(fuentes[indice % len(fuentes)]), "sourceOnDemand": False} if fuentes else None
     # recorder: el grabador del canal reenvía por UDP local lo mismo que graba. Es UDP a
     # propósito: si MediaMTX está parado, el grabador no se entera ni se bloquea.
-    puerto = next((c["reenvio_udp"] for c in canales if c["id"] == f["canal"]), None)
-    return {"source": f"udp+mpegts://127.0.0.1:{puerto}"} if puerto else None
+    # Sin reenvío, el Streamer lee el mismo origen que el canal (si es SRT: la lectura del hub).
+    c = next((c for c in canales if c["id"] == f["canal"]), None)
+    if c and c["reenvio_udp"]:
+        return {"source": f"udp+mpegts://127.0.0.1:{c['reenvio_udp']}"}
+    if c and c.get("url", "").startswith("srt://"):
+        return {"source": _url_srt(c["url"]), "sourceOnDemand": False}
+    return None
 
 
 def asegurar_path(nombre, conf, actuales):

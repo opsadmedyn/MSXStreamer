@@ -33,9 +33,9 @@ function describirEntrada(f) {
   if (f.entrada === 'hub') {
     const fu = f.fuente;
     const resp = fu && fu.indice ? ` · por el respaldo ${fu.indice} de ${fu.total - 1} (${fu.host})` : '';
-    return `Hub · ${f.etiqueta || f.feed}${resp}`;
+    return `Hub channel · ${f.etiqueta || f.feed}${resp}`;
   }
-  return f.entrada === 'recorder' ? `Recorder · ${f.canal}` : `SRT pull · ${f.url.replace(/^srt:\/\//, '')}`;
+  return f.entrada === 'recorder' ? `Recorder · ${(canales.find(c => c.id === f.canal) || {}).nombre || f.canal}` : `SRT pull · ${f.url.replace(/^srt:\/\//, '')}`;
 }
 
 // ---------------------------------------------------------------- navegación
@@ -151,10 +151,12 @@ $$('input[name=entrada]').forEach(r => r.onchange = () => tipoEntrada(r.value));
 async function cargarCanales() {
   try { canales = await api('GET', '/api/recorder/canales'); } catch { canales = []; }
   const elegido = $('#canales').dataset.elegido || '';
-  $('#canales').innerHTML = canales.length ? canales.map(c => `
+  // los canales activos del Recorder (y el ya elegido aunque esté en pausa), con su nombre actual
+  const lista = canales.filter(c => c.activo || c.id === elegido);
+  $('#canales').innerHTML = lista.length ? lista.map(c => `
     <button type="button" class="canal" data-id="${esc(c.id)}" aria-pressed="${c.id === elegido}">
-      <b>${esc(c.id)}</b><small>${esc(c.nombre)}</small>${pill(c.publicando ? ['ok', 'Recibiendo'] : c.reenvio_udp ? ['av', 'Reenvío activado'] : ['off', 'Sin reenvío'])}
-    </button>`).join('') : '<p class="nota">No se encontraron canales del Recorder en este equipo.</p>';
+      <b>${esc(c.nombre)}</b><small>${esc(c.id)}${c.activo ? '' : ' · en pausa'}</small>${pill(c.publicando ? ['ok', 'Recibiendo'] : c.reenvio_udp ? ['av', 'Reenvío activado'] : c.por_origen ? ['av', 'Por su origen'] : ['off', 'Sin reenvío'])}
+    </button>`).join('') : '<p class="nota">No hay canales activos en el Recorder de este equipo.</p>';
   $$('#canales .canal').forEach(b => b.onclick = () => {
     $('#canales').dataset.elegido = b.dataset.id;
     $$('#canales .canal').forEach(x => x.setAttribute('aria-pressed', x === b));
@@ -703,7 +705,7 @@ async function cargarYo() {
   if (yo.via === 'recorder') { $('#lnk-recorder').href = yo.recorder_url; $('#lnk-recorder').hidden = false; }
 }
 (async () => {
-  await cargarYo(); await refrescar(); sistema();
+  await cargarYo(); await cargarCanales(); await refrescar(); sistema();   // canales: nombres de la lista
   const h = location.hash.slice(1);
   if (h && flujos.some(f => f.id === h)) abrirFlujo(h);
   setInterval(refrescar, 2000);

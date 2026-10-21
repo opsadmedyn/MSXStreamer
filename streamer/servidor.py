@@ -131,7 +131,10 @@ async def exigir_sesion(request: Request, call_next):
               f"Host={h.get('host')!r} X-Forwarded-Host={h.get('x-forwarded-host')!r}", flush=True)
         return JSONResponse({"detail": "Petición rechazada: no viene de este panel"}, status_code=403)
     if ruta.startswith(PUBLICAS):
-        return await call_next(request)
+        r = await call_next(request)
+        if ruta.startswith("/static/"):     # tras desplegar, el navegador no debe quedarse con un app.js viejo
+            r.headers["Cache-Control"] = "no-cache"
+        return r
     if ruta.startswith("/hls/"):        # vista previa: muchas peticiones, con sus propios hilos (ver abajo)
         usuario, motivo = await anyio.to_thread.run_sync(_usuario, request, limiter=HILOS_VISTA)
     else:
@@ -414,6 +417,7 @@ def _secretos(flujos, salidas):
     respaldos = []
     for f in flujos:                        # hub: el origen de respaldo (Castr) lleva la clave en el streamid
         respaldos += [{"url": u} for u in db.fuentes({"url": "", "respaldos": f.get("respaldos")})]
+    respaldos += [{"url": c["url"]} for c in db.canales_recorder() if c.get("url")]   # canal sin reenvío
     for fila in [*flujos, *salidas, *respaldos]:
         valores.update(fila.get(k) or "" for k in ("streamid", "passphrase", "clave"))
         url = fila.get("url") or ""
@@ -1027,13 +1031,34 @@ def hubs_feeds(request: Request):
 
 
 @app.get("/api/recorder/canales")
-def recorder_canales():
+def recorder_canales(request: Request):
+    """Canales del Recorder de este equipo con sus nombres actuales y si están activos, según su
+    propia API (/api/canales, con la sesión de quien usa el panel). Si no responde, los de su
+    canales.json. `reenvio_udp` (el puerto por el que el canal reenvía al Streamer) sale siempre
+    de canales.json, que es lo que usa el supervisor."""
     try:
         paths = mtx.paths_estado()
     except mtx.ErrorMTX:
         paths = {}
-    return [{**c, "publicando": bool((paths.get("rec_" + c["id"]) or {}).get("ready"))}
-            for c in db.canales_recorder()]
+    locales = {c["id"]: c for c in db.canales_recorder()}
+    token = request.cookies.get(COOKIE_RECORDER, "")
+    try:
+        req = urllib.request.Request(RECORDER_API + "/api/canales",
+                                     headers={"Cookie": f"{COOKIE_RECORDER}={token}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            vivos = [c for c in json.loads(r.read()).get("canales") or [] if c.get("id")]
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        vivos = None
+    if vivos is None:
+        lista = [{**c, "activo": True, "grabando": None} for c in locales.values()]
+    else:
+        lista = [{"id": c["id"], "nombre": c.get("nombre") or c["id"], "activo": bool(c.get("activo", True)),
+                  "grabando": c.get("grabando"),
+                  "reenvio_udp": (locales.get(c["id"]) or {}).get("reenvio_udp"),
+                  "url": (locales.get(c["id"]) or {}).get("url", "")} for c in vivos]
+    return [{**{k: v for k, v in c.items() if k != "url"},     # la URL puede llevar claves: no se enseña
+             "por_origen": not c.get("reenvio_udp") and (c.get("url") or "").startswith("srt://"),
+             "publicando": bool((paths.get("rec_" + c["id"]) or {}).get("ready"))} for c in lista]
 
 
 @app.get("/api/sistema")
@@ -1073,7 +1098,12 @@ def version():
 
 @app.get("/")
 def inicio():
-    return FileResponse(ESTATICOS / "index.html")
+    """index.html con la versión en los enlaces a app.js y base.css: tras desplegar, el navegador
+    pide los nuevos en vez de usar los de su caché."""
+    html = (ESTATICOS / "index.html").read_text()
+    for f in ("app.js", "base.css"):
+        html = html.replace(f'"static/{f}"', f'"static/{f}?v={urllib.parse.quote(VERSION)}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=str(ESTATICOS)), name="static")
