@@ -3,7 +3,7 @@ const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAl
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const num = n => n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('.', ',') + ' Mb/s' : Math.round(n) + ' kb/s';
 
-let flujos = [], actual = null, paso = 'entrada', editandoSalida = null, canales = [];
+let flujos = [], actual = null, paso = 'entrada', editandoSalida = null, canales = [], hubs = null;
 
 async function api(metodo, ruta, cuerpo) {
   // rutas relativas: el panel funciona igual en :8095 que tras Caddy en /streamer/
@@ -30,6 +30,11 @@ const pill = ([tono, txt]) => `<span class="pill ${tono}">${esc(txt)}</span>`;
 const punto = e => ({conectada: '', publicando: '', conectando: 'av', esperando: 'av', reintentando: 'er', detenida: 'off'}[e] ?? 'off');
 
 function describirEntrada(f) {
+  if (f.entrada === 'hub') {
+    const fu = f.fuente;
+    const resp = fu && fu.indice ? ` · por el respaldo ${fu.indice} de ${fu.total - 1} (${fu.host})` : '';
+    return `Hub · ${f.etiqueta || f.feed}${resp}`;
+  }
   return f.entrada === 'recorder' ? `Recorder · ${f.canal}` : `SRT pull · ${f.url.replace(/^srt:\/\//, '')}`;
 }
 
@@ -87,8 +92,8 @@ function nuevoFlujo() {
   $('#e-acc').innerHTML = ''; $('#e-stats').hidden = true;
   $('#f-flujo').reset(); $('#av-flujo').textContent = '';
   $('#b-guardar').textContent = 'Crear flujo';
-  tipoEntrada('recorder');
-  irPaso('entrada'); vista('editor'); cargarCanales();
+  tipoEntrada('hub', '', '');
+  irPaso('entrada'); vista('editor'); cargarCanales(); cargarHubs();
   $('#i-nombre').focus();
 }
 $('#b-nuevo').onclick = nuevoFlujo;
@@ -101,10 +106,10 @@ function abrirFlujo(id) {
   $('#i-nombre').value = f.nombre;
   $('#i-url').value = f.url; $('#i-sid').value = f.streamid; $('#i-lat').value = f.latencia_ms;
   $('#i-pass').placeholder = f.tiene_passphrase ? 'Guardada (vacío = conservar)' : '';
-  tipoEntrada(f.entrada, f.canal);
+  tipoEntrada(f.entrada, f.canal, f.entrada === 'hub' ? `${f.hub}|${f.feed}` : '', f.etiqueta);
   $('#b-guardar').textContent = 'Guardar entrada';
   irPaso('salidas');
-  vista('editor'); cargarCanales(); cargarComp(f); pintarEditor();
+  vista('editor'); cargarCanales(); cargarHubs(); cargarComp(f); pintarEditor();
 }
 
 function pintarEditor() {
@@ -135,10 +140,11 @@ function pintarEditor() {
   seguirLienzo();                    // el estado del flujo y de la composición decide qué se ve en el lienzo
 }
 
-function tipoEntrada(t, canal) {
+function tipoEntrada(t, canal, hub, etiqueta) {
   $$('input[name=entrada]').forEach(r => r.checked = r.value === t);
-  $('#f-rec').hidden = t !== 'recorder'; $('#f-pull').hidden = t !== 'pull';
+  $('#f-rec').hidden = t !== 'recorder'; $('#f-pull').hidden = t !== 'pull'; $('#f-hub').hidden = t !== 'hub';
   if (canal !== undefined) $('#canales').dataset.elegido = canal;
+  if (hub !== undefined) { $('#i-hub').dataset.elegido = hub; $('#i-hub').dataset.etiqueta = etiqueta || ''; pintarHubs(); }
 }
 $$('input[name=entrada]').forEach(r => r.onchange = () => tipoEntrada(r.value));
 
@@ -155,6 +161,45 @@ async function cargarCanales() {
   });
 }
 
+// «Hub · canal»: los feeds de los hubs activos, agrupados por hub, como el selector de origen del
+// Recorder. El valor es «<IP del hub>|<path del feed>»; las direcciones las pone el servidor.
+async function cargarHubs() {
+  hubs = null; pintarHubs();
+  try { hubs = await api('GET', '/api/hubs'); } catch (err) { hubs = {error: err.message}; }
+  pintarHubs();
+}
+
+function pintarHubs() {
+  const sel = $('#i-hub'), elegido = sel.dataset.elegido || '', nota = $('#hub-nota');
+  if (!hubs) { sel.innerHTML = '<option value="">Cargando los hubs…</option>'; return; }
+  const guardado = () => elegido ? `<option value="${esc(elegido)}">${esc(sel.dataset.etiqueta || elegido)} (guardado)</option>` : '';
+  if (hubs.error) {
+    sel.innerHTML = guardado() || '<option value="">Sin lista de hubs</option>';
+    sel.value = elegido; nota.className = 'nota error'; nota.textContent = hubs.error;
+    return;
+  }
+  const activos = hubs.hubs.filter(h => h.activo), caidos = hubs.hubs.filter(h => !h.activo);
+  const estado = f => !f.activo ? ' (desactivado)' : !f.recibiendo ? ' (sin señal)' : '';
+  const grupos = activos.map((h, n) => `<optgroup label="${esc(h.nombre)}">` + hubs.feeds.map(f =>
+    `<option value="${esc(h.host)}|${esc(f.path)}"${f.activo ? '' : ' disabled'}>${esc(h.nombre)} · ${esc(f.nombre)}${
+      // el estado que da el Recorder es el del hub principal (el primero de su lista)
+      h.host === hubs.hubs[0].host ? estado(f) : ''}${f.por_hub ? '' : ' · por internet'}</option>`).join('') + '</optgroup>').join('');
+  const enLista = activos.some(h => hubs.feeds.some(f => `${h.host}|${f.path}` === elegido));
+  sel.innerHTML = `<option value="">Elige hub y canal</option>` + (elegido && !enLista ? guardado() : '') + grupos;
+  sel.value = elegido;
+  nota.className = 'nota';
+  nota.textContent = (activos.length ? '' : 'Ningún hub responde ahora. ') +
+    (caidos.length ? `No responden (no se listan): ${caidos.map(h => h.nombre).join(', ')}. ` : '') +
+    'La dirección buena (la del hub, o la de su repetidor en los feeds entrelazados) y los respaldos (el mismo feed en los otros hubs y, al final, el origen) los pone el Streamer al guardar, igual que «Configurar canal» del Recorder. «Por internet»: ese feed no se reparte por el hub y se toma del origen.';
+}
+$('#i-hub').onchange = () => {
+  const sel = $('#i-hub'), opc = sel.selectedOptions[0];
+  sel.dataset.elegido = sel.value;
+  sel.dataset.etiqueta = opc ? opc.textContent.replace(/ \(.*\)$/, '') : '';
+  const nombre = $('#i-nombre');
+  if (opc && sel.value && !nombre.value.trim()) nombre.value = opc.textContent.split(' · ')[1].replace(/ \(.*\)$/, '');
+};
+
 $('#f-flujo').onsubmit = async e => {
   e.preventDefault();
   const av = $('#av-flujo'); av.className = 'aviso'; av.textContent = '';
@@ -163,6 +208,10 @@ $('#f-flujo').onsubmit = async e => {
     streamid: $('#i-sid').value.trim(), passphrase: $('#i-pass').value,
     latencia_ms: +$('#i-lat').value || 400, canal: $('#canales').dataset.elegido || ''};
   if (entrada === 'recorder' && !d.canal) { av.className = 'aviso error'; av.textContent = 'Elige un canal del Recorder'; return; }
+  if (entrada === 'hub') {
+    [d.hub, d.feed] = ($('#i-hub').value || '|').split('|');
+    if (!d.feed) { av.className = 'aviso error'; av.textContent = 'Elige hub y canal'; return; }
+  }
   try {
     if (actual) { await api('PUT', `/api/flujos/${actual}`, d); av.className = 'aviso ok'; av.textContent = 'Guardado'; }
     else { const r = await api('POST', '/api/flujos', d); actual = r.id; await refrescar(); abrirFlujo(r.id); irPaso('salidas'); return; }

@@ -53,18 +53,25 @@ def paths_estado():
     return {p["name"]: p for p in _todos("/v3/paths/list")}
 
 
-def conf_de_flujo(f, canales):
-    """Configuración del path de MediaMTX que corresponde a un flujo (None: aún no hay entrada)."""
+def _url_srt(url, streamid="", passphrase=""):
+    """Se respetan los parámetros pegados en la URL; los campos del formulario mandan."""
+    base, _, consulta = url.partition("?")
+    q = dict(urllib.parse.parse_qsl(consulta))
+    if streamid:
+        q["streamid"] = streamid
+    if passphrase:
+        q["passphrase"] = passphrase
+    return base + ("?" + urllib.parse.urlencode(q) if q else "")
+
+
+def conf_de_flujo(f, canales, indice=0):
+    """Configuración del path de MediaMTX que corresponde a un flujo (None: aún no hay entrada).
+    hub: `indice` dice cuál de sus direcciones (db.fuentes) se usa; la elige el supervisor."""
     if f["entrada"] == "pull":
-        # se respetan los parámetros pegados en la URL; los campos del formulario mandan
-        base, _, consulta = f["url"].partition("?")
-        q = dict(urllib.parse.parse_qsl(consulta))
-        if f["streamid"]:
-            q["streamid"] = f["streamid"]
-        if f["passphrase"]:
-            q["passphrase"] = f["passphrase"]
-        url = base + ("?" + urllib.parse.urlencode(q) if q else "")
-        return {"source": url, "sourceOnDemand": False}
+        return {"source": _url_srt(f["url"], f["streamid"], f["passphrase"]), "sourceOnDemand": False}
+    if f["entrada"] == "hub":
+        fuentes = db.fuentes(f)
+        return {"source": _url_srt(fuentes[indice % len(fuentes)]), "sourceOnDemand": False} if fuentes else None
     # recorder: el grabador del canal reenvía por UDP local lo mismo que graba. Es UDP a
     # propósito: si MediaMTX está parado, el grabador no se entera ni se bloquea.
     puerto = next((c["reenvio_udp"] for c in canales if c["id"] == f["canal"]), None)

@@ -2,7 +2,8 @@
 
 Hub SRT de la suite Media Syntaxis: recibe feeds, los enruta y los distribuye a varios destinos.
 
-**Fase 1:** entradas desde un canal de MSX Recorder del mismo equipo o por SRT pull; salidas SRT
+**Fase 1:** entradas desde un canal de un hub de feeds («Hub · canal», 0.3.5), por SRT pull o desde
+un canal de MSX Recorder del mismo equipo; salidas SRT
 (caller o listener), RTMP y HLS en copia (sin recodificar).
 
 **Fase 2 (0.2.0):** composición por flujo: el vídeo reencuadrado en un lienzo 1920×1080 (preajustes
@@ -24,6 +25,22 @@ debajo del vídeo. Cada destino elige señal limpia (en copia) o compuesta.
   los paths en MediaMTX y mantiene un ffmpeg por salida SRT/RTMP, relanzándolo con espera
   creciente si cae. Los ffmpeg sobreviven a un reinicio del supervisor y este los vuelve a adoptar.
 - **Panel** (`msxs-web`, puerto 8095) solo escribe en la base de datos. Reiniciarlo no corta nada.
+
+### Entrada desde un hub (0.3.5)
+
+El panel lista los feeds de los hubs **activos** agrupados por hub («hub1 · 1BN INT»), igual que el
+selector de origen de «Configurar canal» del Recorder, y de hecho de él salen: el panel pide
+`/api/hub/feeds` al Recorder del equipo con la sesión de quien lo usa (hace falta admin o manager
+en el Recorder). Un hub cuenta como activo si su API (`config.json` → `hub_api_puerto`, 8899)
+acepta la conexión; los que no responden no se listan.
+
+Al guardar, el servidor (no el navegador) pone las direcciones con la misma regla que el Recorder:
+la lectura del feed en el hub elegido (en los feeds entrelazados con repetidor, la del repetidor;
+sin repetidor no hay lectura del hub y se toma del origen) y, de respaldo, el mismo feed en los
+otros hubs y al final el origen por internet. Si la dirección en uso pasa 20 s sin señal, el
+supervisor pasa a la siguiente y lo anota en el registro; tras la última vuelve a la del hub
+elegido. El panel muestra «por el respaldo N» mientras no se usa el hub elegido. Al editar el flujo
+se empieza otra vez por el hub elegido. Las claves del origen (streamid de Castr) no se enseñan.
 
 ### Entrada desde MSX Recorder
 
@@ -85,6 +102,13 @@ scripts/desplegar.sh z8 --mediamtx   # además, mediamtx.yml y unidades nuevas (
 Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890 (UDP), API de
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
+
+### 0.3.5
+
+Entrada «Hub · canal» (ver *Entrada desde un hub*). Siguen «SRT pull» y «Canal de MSX Recorder»;
+se quita el «SRT push» desactivado. La base gana columnas en `flujos` (`hub`, `feed`, `etiqueta`,
+`respaldos`) y la tabla `entradas_activas`; se añaden solas al arrancar. Sin cambios en MediaMTX:
+basta `scripts/desplegar.sh z8`.
 
 ### 0.3.4
 

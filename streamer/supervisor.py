@@ -37,10 +37,11 @@ ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
 COMP_MAX = composicion.maximo(db.config())
 VIDEO_PARADO = 15.0                         # composición viva con el vídeo quieto tanto tiempo: se relanza
+CAMBIO_ENTRADA = 20.0                       # entrada de hub sin señal tanto tiempo: pasa a la dirección siguiente
 
 
 def path_de_flujo(f):
-    return f["id"] if f["entrada"] == "pull" else "rec_" + f["canal"]
+    return "rec_" + f["canal"] if f["entrada"] == "recorder" else f["id"]
 
 
 def url_salida(s):
@@ -231,6 +232,8 @@ class Supervisor:
         self.comps = {}                     # composiciones de esta vuelta: {flujo: fila}
         self.comps_fuera = set()            # activas que se quedan paradas por el tope
         self.video = {}                     # composición -> (pid, fotogramas, desde cuándo no cambian)
+        self.sin_senal = {}                 # flujo de hub -> desde cuándo su entrada no tiene señal
+        self.estado_paths = None            # estado de MediaMTX de la vuelta anterior
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -243,10 +246,42 @@ class Supervisor:
                           error=:error,kbps=:kbps,firma=:firma,visto=:visto""",
                        {"error": "", "kbps": None, **e, "visto": time.time()})
 
+    def fuente_de(self, f):
+        """Entrada de hub: cuál de sus direcciones (db.fuentes) se usa. Si la que está puesta lleva
+        CAMBIO_ENTRADA s sin señal, pasa a la siguiente (el mismo feed en otro hub y, al final, el
+        origen por internet) y, tras la última, vuelve a la del hub elegido. Al editar el flujo
+        empieza otra vez por el hub elegido. Se guarda en la base para el panel y para que un
+        reinicio del supervisor no cambie de dirección."""
+        fuentes = db.fuentes(f)
+        if not fuentes:
+            return 0
+        huella = hashlib.sha256("\n".join(fuentes).encode()).hexdigest()[:16]
+        r = self.c.execute("SELECT indice, firma FROM entradas_activas WHERE flujo=?", (f["id"],)).fetchone()
+        indice = r["indice"] % len(fuentes) if r and r["firma"] == huella else 0
+        ahora = time.time()
+        if r and r["firma"] != huella:
+            self.sin_senal.pop(f["id"], None)
+        if self.estado_paths is None or (self.estado_paths.get(f["id"]) or {}).get("ready"):
+            self.sin_senal.pop(f["id"], None)       # con señal (o sin saber de MediaMTX): no se juzga
+        else:
+            desde = self.sin_senal.setdefault(f["id"], ahora)
+            if len(fuentes) > 1 and ahora - desde > CAMBIO_ENTRADA:
+                indice = (indice + 1) % len(fuentes)
+                self.sin_senal[f["id"]] = ahora
+                host = urllib.parse.urlsplit(fuentes[indice].split("?")[0]).hostname or "?"
+                destino = "vuelve al hub elegido" if indice == 0 else f"pasa al respaldo {indice} de {len(fuentes) - 1}"
+                db.evento(self.c, f"entrada sin señal {CAMBIO_ENTRADA:.0f} s: {destino} ({host})",
+                          flujo=f["id"])
+        if not r or (r["indice"], r["firma"]) != (indice, huella):
+            self.c.execute("""INSERT INTO entradas_activas(flujo, indice, firma, desde) VALUES (?,?,?,?)
+                              ON CONFLICT(flujo) DO UPDATE SET indice=excluded.indice,
+                              firma=excluded.firma, desde=excluded.desde""", (f["id"], indice, huella, ahora))
+        return indice
+
     def sincronizar_mediamtx(self, flujos):
         deseados, canales = {}, db.canales_recorder()
         for f in flujos:
-            conf = mtx.conf_de_flujo(f, canales)
+            conf = mtx.conf_de_flujo(f, canales, self.fuente_de(f) if f["entrada"] == "hub" else 0)
             if conf:
                 deseados[path_de_flujo(f)] = conf
         for fid in self.comps:                      # la composición publica ahí (desde este equipo)
@@ -361,7 +396,7 @@ class Supervisor:
         # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
         # las dos consultas ya no deja la vuelta a medias), con el tope de composiciones a la vez
         self.comps, self.comps_fuera = self.composiciones(por_id)
-        estado_paths = self.sincronizar_mediamtx(flujos)
+        estado_paths = self.estado_paths = self.sincronizar_mediamtx(flujos)
         deseadas = self.tareas(flujos, por_id)
 
         # procesos que ya no deben correr (borrados, desactivados o de un flujo detenido)

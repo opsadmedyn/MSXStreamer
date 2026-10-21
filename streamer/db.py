@@ -16,8 +16,8 @@ ESQUEMA = """
 CREATE TABLE IF NOT EXISTS flujos (
     id          TEXT PRIMARY KEY,          -- también es el nombre del path en MediaMTX
     nombre      TEXT NOT NULL,
-    entrada     TEXT NOT NULL,             -- 'pull' | 'recorder'
-    url         TEXT NOT NULL DEFAULT '',  -- pull: srt://host:puerto
+    entrada     TEXT NOT NULL,             -- 'hub' | 'pull' | 'recorder' (solo flujos anteriores a la 0.3.5)
+    url         TEXT NOT NULL DEFAULT '',  -- pull: srt://host:puerto; hub: la lectura del feed en el hub elegido
     streamid    TEXT NOT NULL DEFAULT '',
     passphrase  TEXT NOT NULL DEFAULT '',
     latencia_ms INTEGER NOT NULL DEFAULT 400,
@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS composiciones (  -- fase 2: una por flujo; publica en
     capas       TEXT NOT NULL DEFAULT '[]',      -- JSON: [{"url", "activa", "encima"}], hasta 2
     kbps        INTEGER NOT NULL DEFAULT 8000
 );
+CREATE TABLE IF NOT EXISTS entradas_activas (  -- hub: qué dirección de la entrada usa ahora el supervisor
+    flujo       TEXT PRIMARY KEY REFERENCES flujos(id) ON DELETE CASCADE,
+    indice      INTEGER NOT NULL DEFAULT 0,      -- 0: la del hub elegido; 1…: los respaldos, en orden
+    firma       TEXT NOT NULL DEFAULT '',        -- huella de las direcciones: si se editan, vuelve a 0
+    desde       REAL
+);
 CREATE TABLE IF NOT EXISTS paths_mtx (       -- paths de MediaMTX creados por el supervisor
     nombre      TEXT PRIMARY KEY
 );
@@ -90,6 +96,12 @@ def migrar(c):
     columnas = {r["name"] for r in c.execute("PRAGMA table_info(salidas)")}
     if "fuente" not in columnas:          # fase 2: 'limpia' (en copia) o 'compuesta'
         c.execute("ALTER TABLE salidas ADD COLUMN fuente TEXT NOT NULL DEFAULT 'limpia'")
+    columnas = {r["name"] for r in c.execute("PRAGMA table_info(flujos)")}
+    for col in ("hub", "feed", "etiqueta"):   # 0.3.5, entrada 'hub': IP del hub, path del feed, «hub1 · 1BN INT»
+        if col not in columnas:
+            c.execute(f"ALTER TABLE flujos ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "respaldos" not in columnas:           # JSON: el mismo feed en los otros hubs y, al final, el origen
+        c.execute("ALTER TABLE flujos ADD COLUMN respaldos TEXT NOT NULL DEFAULT '[]'")
 
 
 def filas(c, sql, *args):
@@ -119,3 +131,12 @@ def canales_recorder():
                 for c in json.loads(ruta.read_text()) if c.get("id")]
     except (OSError, ValueError, TypeError, KeyError):
         return []
+
+
+def fuentes(f):
+    """Direcciones de la entrada de un flujo 'hub', en orden: la del hub elegido y sus respaldos."""
+    try:
+        respaldos = [u for u in json.loads(f.get("respaldos") or "[]") if isinstance(u, str) and u]
+    except ValueError:
+        respaldos = []
+    return [f["url"], *respaldos] if f.get("url") else respaldos
