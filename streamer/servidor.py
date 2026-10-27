@@ -1105,7 +1105,7 @@ def sistema():
         mediamtx = True
     except mtx.ErrorMTX:
         mediamtx = False
-    return {"version": VERSION, "mediamtx": mediamtx,
+    return {"version": VERSION, "mediamtx": mediamtx, "reposo": db.en_reposo(),
             "supervisor_visto_s": round(time.time() - visto, 1) if visto else None,
             "supervisor_iniciado": ultimo}
 
