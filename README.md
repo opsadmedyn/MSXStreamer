@@ -107,6 +107,17 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
+### 0.3.9
+
+Se apaga con el Recorder. Cuando un admin pulsa «Apagar servicio» en el Recorder del mismo equipo
+(System Monitor › Sistema, Recorder 1.7.15), existe `reposo.json` junto a `canales.json` del Recorder
+(o la ruta de `recorder_reposo` en config.json). Mientras exista, el supervisor no deja correr nada:
+para todas las salidas y composiciones (con el error «Estación en reposo…» en cada destino) y borra de
+MediaMTX los paths que declaró, así que deja de leer los feeds. La base no cambia: al encender el
+Recorder, en la siguiente vuelta (2 s) vuelve todo lo que sigue activo. El registro anota la entrada
+y la salida del reposo, y el panel muestra una barra roja arriba (`/api/sistema` añade `reposo`).
+No hace falta sudo ni tocar las unidades: msxs-web, msxs-supervisor y msxs-mediamtx siguen vivos.
+
 ### 0.3.8
 
 Feeds entrelazados (1080i: 1BN INT, 1BN MX) en «Hub channel». MediaMTX no sabe leerlos (el vídeo

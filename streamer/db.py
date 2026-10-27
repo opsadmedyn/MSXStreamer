@@ -126,6 +126,15 @@ def config():
         return {}
 
 
+def en_reposo():
+    """True si el Recorder de este equipo está en reposo (servicio apagado desde su panel): existe su
+    reposo.json, junto a canales.json. Mientras tanto el Streamer tampoco emite nada."""
+    c = config()
+    ruta = c.get("recorder_reposo") or pathlib.Path(
+        c.get("recorder_canales", "/home/mediasat/recorder/canales.json")).parent / "reposo.json"
+    return pathlib.Path(ruta).exists()
+
+
 def canales_recorder():
     """Canales de MSX Recorder en este equipo. `reenvio_udp` es el puerto local por el que el
     grabador reenvía el feed mientras graba (vacío: el canal no reenvía). `url`: su origen

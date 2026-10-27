@@ -6,6 +6,9 @@ Cada 2 s compara lo que pide la base de datos con lo que está corriendo y lo co
   - mantiene un ffmpeg por cada salida SRT/RTMP activa, en copia, y lo relanza si cae,
     con espera creciente (2, 4, 8… hasta 30 s);
   - las salidas HLS no necesitan proceso: las sirve MediaMTX;
+  - con la estación en reposo (el servicio apagado desde el Recorder, ver db.en_reposo) no corre
+    nada: se paran las salidas y las composiciones y MediaMTX deja de leer los feeds; al encender
+    vuelve todo lo que sigue activo en la base;
   - fase 2: mantiene un proceso de composición por flujo con la composición activa (capturas de
     Chromium + ffmpeg con NVENC) que publica en "comp_<flujo>"; las salidas con fuente
     "compuesta" leen de ahí. Se vigila igual que una salida.
@@ -37,6 +40,7 @@ ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
 COMP_MAX = composicion.maximo(db.config())
 VIDEO_PARADO = 15.0                         # composición viva con el vídeo quieto tanto tiempo: se relanza
+REPOSO = "Estación en reposo: el servicio está apagado desde el Recorder"
 CAMBIO_ENTRADA = 20.0                       # entrada de hub sin señal tanto tiempo: pasa a la dirección siguiente
 
 
@@ -248,6 +252,7 @@ class Supervisor:
         self.comps = {}                     # composiciones de esta vuelta: {flujo: fila}
         self.comps_fuera = set()            # activas que se quedan paradas por el tope
         self.video = {}                     # composición -> (pid, fotogramas, desde cuándo no cambian)
+        self.reposo = False                 # estación en reposo (ver db.en_reposo)
         self.sin_senal = {}                 # flujo de hub -> desde cuándo su entrada no tiene señal
         self.estado_paths = None            # estado de MediaMTX de la vuelta anterior
         self.indices = {}                   # flujo de hub -> dirección de su entrada en esta vuelta
@@ -437,8 +442,21 @@ class Supervisor:
         # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
         # las dos consultas ya no deja la vuelta a medias), con el tope de composiciones a la vez
         self.comps, self.comps_fuera = self.composiciones(por_id)
-        estado_paths = self.estado_paths = self.sincronizar_mediamtx(flujos)
-        deseadas = self.tareas(flujos, por_id)
+        reposo = db.en_reposo()
+        if reposo != self.reposo:
+            db.evento(self.c, "Estación en reposo (servicio apagado desde el Recorder): se paran todas las "
+                              "salidas y composiciones" if reposo else
+                              "Estación encendida: las salidas y composiciones activas vuelven a arrancar")
+            self.reposo = reposo
+        if reposo:
+            # nada corre y MediaMTX deja de leer los feeds; la base no cambia, así que al encender
+            # vuelve todo lo que estaba activo
+            deseadas = {sid: (None, None, REPOSO) for sid in self.tareas(flujos, por_id)}
+            self.comps, self.comps_fuera = {}, set()
+            estado_paths = self.estado_paths = self.sincronizar_mediamtx([])
+        else:
+            estado_paths = self.estado_paths = self.sincronizar_mediamtx(flujos)
+            deseadas = self.tareas(flujos, por_id)
 
         # procesos que ya no deben correr (borrados, desactivados o de un flujo detenido)
         for e in db.filas(self.c, "SELECT * FROM estado_salidas"):

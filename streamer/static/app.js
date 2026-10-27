@@ -689,6 +689,16 @@ async function sistema() {
     const sup = s.supervisor_visto_s;
     $('#sis-sup').className = 'pill ' + (sup == null ? 'off' : sup < 10 ? 'ok' : 'er');
     $('#sis-sup').title = sup == null ? 'Sin datos del supervisor' : `Última revisión hace ${sup} s`;
+    // estación en reposo (servicio apagado desde el Recorder): no corre ninguna salida ni composición
+    let barra = $('#barraReposo');
+    if (s.reposo && !barra) {
+      barra = document.createElement('div');
+      barra.id = 'barraReposo';
+      barra.style.cssText = 'position:sticky;top:0;z-index:50;padding:8px 14px;font-size:13px;color:#fff;background:#a32020';
+      barra.textContent = 'Estación en reposo: el servicio está apagado desde el Recorder (System Monitor › Sistema). ' +
+        'No sale ningún flujo; al encenderlo vuelven solos los que están activos.';
+      document.body.prepend(barra);
+    } else if (!s.reposo && barra) barra.remove();
   } catch {}
 }
 
