@@ -689,6 +689,10 @@ async function sistema() {
     const sup = s.supervisor_visto_s;
     $('#sis-sup').className = 'pill ' + (sup == null ? 'off' : sup < 10 ? 'ok' : 'er');
     $('#sis-sup').title = sup == null ? 'Sin datos del supervisor' : `Última revisión hace ${sup} s`;
+    const av = $('#av-reposo');
+    av.hidden = !s.reposo;
+    if (s.reposo) av.textContent = 'El servicio de esta estación está apagado desde el System Monitor del Recorder' +
+      (s.reposo.por ? ` (${s.reposo.por})` : '') + ': no sale ningún flujo. Al encenderlo vuelven solos los flujos y destinos activos.';
   } catch {}
 }
 

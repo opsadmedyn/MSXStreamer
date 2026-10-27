@@ -140,6 +140,19 @@ def canales_recorder():
         return []
 
 
+def reposo_recorder():
+    """Estado del modo en reposo del Recorder de este equipo («Apagar servicio» en su System Monitor):
+    el contenido de su reposo.json, que existe solo mientras la estación está en reposo, o None."""
+    ruta = pathlib.Path(config().get("recorder_reposo", "/home/mediasat/recorder/reposo.json"))
+    try:
+        datos = json.loads(ruta.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        datos = {}                          # a medio escribir o ilegible: sigue en reposo
+    return datos if isinstance(datos, dict) else {}
+
+
 def fuentes(f):
     """Direcciones de la entrada de un flujo 'hub', en orden: la del hub elegido y sus respaldos."""
     try:

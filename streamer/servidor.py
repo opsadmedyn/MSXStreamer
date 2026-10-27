@@ -1105,7 +1105,9 @@ def sistema():
         mediamtx = True
     except mtx.ErrorMTX:
         mediamtx = False
+    reposo = db.reposo_recorder()
     return {"version": VERSION, "mediamtx": mediamtx,
+            "reposo": None if reposo is None else {"desde": reposo.get("desde"), "por": reposo.get("por")},
             "supervisor_visto_s": round(time.time() - visto, 1) if visto else None,
             "supervisor_iniciado": ultimo}
 

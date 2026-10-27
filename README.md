@@ -107,6 +107,15 @@ Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890
 MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
 (ver `config/config.ejemplo.json`).
 
+### 0.3.9
+
+«Apagar servicio» del Recorder (su System Monitor › Sistema, Recorder 1.7.15 o posterior) apaga
+también el Streamer de esa estación. Mientras existe el `reposo.json` del Recorder
+(`/home/mediasat/recorder/reposo.json`, o `recorder_reposo` en `config.json`), el supervisor para
+todas las salidas y composiciones y quita los paths de MediaMTX, sin cambiar qué flujos y destinos
+están activos. El panel lo avisa arriba y el registro anota la parada. Al encender el Recorder
+vuelve todo lo que estaba activo (o lo que se activó durante el reposo) en unos segundos.
+
 ### 0.3.8
 
 Feeds entrelazados (1080i: 1BN INT, 1BN MX) en «Hub channel». MediaMTX no sabe leerlos (el vídeo

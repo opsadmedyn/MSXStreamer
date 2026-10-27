@@ -10,6 +10,10 @@ Cada 2 s compara lo que pide la base de datos con lo que está corriendo y lo co
     Chromium + ffmpeg con NVENC) que publica en "comp_<flujo>"; las salidas con fuente
     "compuesta" leen de ahí. Se vigila igual que una salida.
 
+Mientras el Recorder del equipo está en reposo («Apagar servicio», su reposo.json existe) no corre
+nada: se paran las salidas y las composiciones y se quitan los paths de MediaMTX, sin tocar qué
+flujos y salidas están activos. Al encender el Recorder vuelve todo lo activo.
+
 Los ffmpeg corren en su propia sesión: si el supervisor se reinicia (por ejemplo al desplegar),
 las salidas siguen al aire y el supervisor las vuelve a adoptar por su PID.
 """
@@ -251,6 +255,7 @@ class Supervisor:
         self.sin_senal = {}                 # flujo de hub -> desde cuándo su entrada no tiene señal
         self.estado_paths = None            # estado de MediaMTX de la vuelta anterior
         self.indices = {}                   # flujo de hub -> dirección de su entrada en esta vuelta
+        self.reposo = None                  # estación en reposo en la vuelta anterior (None: sin saber)
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -433,6 +438,15 @@ class Supervisor:
     def vuelta(self):
         recoger_hijos()
         flujos = db.filas(self.c, "SELECT * FROM flujos WHERE activo=1")
+        reposo = db.reposo_recorder() is not None
+        if reposo != self.reposo:
+            if reposo:
+                db.evento(self.c, "Recorder en reposo (servicio apagado): se paran todas las salidas")
+            elif self.reposo:
+                db.evento(self.c, "Recorder encendido tras el reposo: vuelven las salidas activas")
+            self.reposo = reposo
+        if reposo:                          # como si no hubiera ningún flujo activo
+            flujos = []
         por_id = {f["id"]: f for f in flujos}
         # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
         # las dos consultas ya no deja la vuelta a medias), con el tope de composiciones a la vez
