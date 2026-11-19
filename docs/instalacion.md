@@ -130,7 +130,7 @@ Los tres servicios quedan habilitados en systemd (`systemctl enable`) y se reini
 Reiniciar solo el supervisor y el panel (lo que hace un despliegue normal) no corta ninguna salida:
 `KillMode=process` deja vivos los ffmpeg y el supervisor los adopta al volver. En el banco de
 pruebas, con tres salidas activas: 0 s sin señal al reiniciar los servicios, y tras un reinicio
-completo las rutas volvieron solas en 7,5 s (RTMP), 10,1 s (HLS) y 20,3 s (WebRTC, tras recargar la
+completo las rutas volvieron solas en unos 8 s (RTMP), 10 s (HLS) y 20 s (WebRTC, tras recargar la
 página del reproductor), sin duplicados ([aceptacion-banco.md](aceptacion-banco.md)).
 
 ## Puertos
@@ -194,9 +194,9 @@ Cómo se comporta, medido en el banco con MediaMTX 1.21.1 y señales en marcha:
 
 ## HLS y WebRTC fuera de la red local
 
-Comprobado en el banco de pruebas, con un proxy HTTPS y un servidor TURN de pruebas en el mismo
-equipo que el hub (casos `https` e `ice` de [combinaciones-banco.md](combinaciones-banco.md)).
-Pendiente en la red de la EZC80: el proxy, los nombres y el certificado de verdad, y un NAT real
+Comprobado en el banco de pruebas, con un Caddy y un servidor TURN (coturn) en el mismo equipo que
+el hub (casos `https` e `ice` de [combinaciones-banco.md](combinaciones-banco.md)). Pendiente en la
+red de la EZC80: el proxy de la estación con sus nombres y su certificado de verdad, y un NAT real
 entre el hub y quien mira.
 
 ### HTTPS por delante
@@ -213,10 +213,11 @@ webrtc.ejemplo.com {
 }
 ```
 
-Con un nombre propio para cada uno no hay que reescribir rutas en el proxy. En el banco, por un
-proxy así, un lector y un navegador reproducen la lista HLS, un navegador reproduce la página WebRTC
-que entrega el hub, otro publica por WHIP con su token, y Monitoreo enseña la dirección de quien
-mira, no la del proxy.
+Con un nombre propio para cada uno no hay que reescribir rutas en el proxy. En el banco, con un
+Caddy 2.6.2 puesto así delante (con un puerto para cada uno en vez de un nombre, y un certificado
+de pruebas), un lector y un navegador reproducen la lista HLS, un navegador reproduce la página
+WebRTC que entrega el hub, otro publica por WHIP con su token, y Monitoreo enseña la dirección de
+quien mira, no la del proxy.
 
 **El proxy tiene que decirle al hub de dónde viene cada petición.** Un proxy en la misma estación
 llega a MediaMTX desde `127.0.0.1`, que para MediaMTX es el propio hub y entra sin clave. Lo
@@ -226,26 +227,40 @@ por WebRTC sin token. Desde esta versión el hub le pide a MediaMTX que juzgue l
 (el panel y los ffmpeg del hub) sigue siendo del hub, y quien llama a MediaMTX directamente desde la
 red no gana nada poniéndola él.
 
-- Caddy la anota solo, con la dirección de quien conecta, y descarta la que traiga la petición. No
-  hay que hacer nada.
+- Caddy la anota solo, con la dirección de quien conecta, y descarta la que traiga la petición: no
+  hay que hacer nada. Medido en el banco con Caddy 2.6.2: quien entra sin token recibe un `401` por
+  HLS y por WebRTC, también si manda él una `X-Forwarded-For: 127.0.0.1`. La versión del Caddy de
+  la estación no se ha mirado; lo dice allí «Probar la conexión».
 - nginx no la anota si no se le dice. En cada `location` que lleve al hub hace falta
   `proxy_set_header X-Forwarded-For $remote_addr;` (también vale `$proxy_add_x_forwarded_for`).
-- Sin esa cabecera todo lo que entra por el proxy pasa por ser del hub. En el banco, por un proxy
-  que no la anota, la lista HLS de una fuente se lee sin clave, y un navegador sin token ve una
-  salida WebRTC protegida y publica en una fuente WHIP protegida. El hub no puede impedirlo desde
-  dentro, pero lo comprueba: «Probar la conexión» de una fuente o un destino HLS o WebRTC pide por
-  la dirección pública, sin clave, la página de una fuente, y dice si se entra. Pedirla no abre
-  ninguna señal.
+  **Con `X-Real-IP` sola no basta**: nginx deja pasar la `X-Forwarded-For` que traiga la petición,
+  y MediaMTX mira esa antes. Medido en el banco con nginx 1.24: con cualquiera de esas dos líneas
+  responde `401` a quien entra sin clave, mande la cabecera que mande; con `X-Real-IP` sola
+  responde `401` a quien pide sin más y deja entrar a quien manda `X-Forwarded-For: 127.0.0.1`; y
+  sin ninguna entra cualquiera.
+- Lo que queda abierto con un proxy mal puesto, medido en el banco. Por uno que no anota nada, la
+  lista HLS de una fuente se lee sin clave, y un navegador sin token ve una salida WebRTC protegida
+  y publica en una fuente WHIP protegida. Por uno que deja pasar la cabecera que trae la petición,
+  mandándola con `127.0.0.1`, un lector leyó por HLS una fuente y un navegador sin token vio una
+  salida WebRTC protegida; en Monitoreo aparecía como un receptor de `127.0.0.1`.
+- El hub no puede impedirlo desde dentro, pero lo comprueba: «Probar la conexión» de una fuente o
+  un destino HLS o WebRTC pide por la dirección pública, sin clave, la página de una fuente. La
+  pide dos veces, una sin más y otra diciendo venir de la propia estación, y dice si entra de
+  alguna de las dos formas. Pedirla no abre ninguna señal.
 - Si el hub no llega a su propia dirección pública (pasa detrás de algunos routers) o el nombre
   apunta a la propia estación, «Probar la conexión» dice que desde ahí no se puede comprobar.
   Entonces se mira desde otro equipo, con el identificador de cualquier fuente del hub:
 
   ```
   curl -s -o /dev/null -w '%{http_code}\n' https://hls.ejemplo.com/<id de la fuente>/
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 127.0.0.1' https://hls.ejemplo.com/<id de la fuente>/
   curl -s -o /dev/null -w '%{http_code}\n' https://webrtc.ejemplo.com/<id de la fuente>/
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 127.0.0.1' https://webrtc.ejemplo.com/<id de la fuente>/
   ```
 
-  Las dos tienen que responder `401`. Un `200` quiere decir que se entra sin clave.
+  Las cuatro tienen que responder `401`. Un `200` quiere decir que se entra sin clave. Se pide la
+  página (la dirección acabada en `/`) y no la lista `index.m3u8`, a la que MediaMTX responde
+  primero con una redirección, a cualquiera.
 - Vale lo mismo para cualquier programa de la estación que reenvíe conexiones de fuera hacia los
   puertos del hub (un túnel, un proxy TCP): MediaMTX las ve llegar de `127.0.0.1` y no les pide
   clave. SRT y RTMP no tienen dónde anotar el origen, así que delante de ellos no se pone nada así.

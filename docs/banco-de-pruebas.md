@@ -19,6 +19,7 @@ reales»; eso se anota aparte (ver [validacion.md](validacion.md)).
 - Salida a internet la primera vez: descarga MediaMTX v1.21.1 y comprueba su suma SHA-256.
 - Para algunos casos de la segunda prueba, `openssl` (certificados de usar y tirar) y `coturn` (el
   servidor TURN de pruebas). Sin ellos esos casos quedan «sin comprobar» y lo demás corre igual.
+  Si el equipo tiene Caddy, el caso `https` lo pone delante en vez de su proxy de pruebas.
 
 ## Arrancarlo
 
@@ -100,7 +101,7 @@ MediaMTX que el guion levanta para la ocasión. Son trece casos:
 | `reconexion` | Política de reconexión con tope de intentos: «reconectando» mientras lo intenta, «error» al agotarlos, y nada más hasta que alguien pulsa «Reintentar». |
 | `cambio` | Cambiar la fuente de un destino al aire: el hub dice cuál está al aire y pide confirmación, un operador no puede hacerlo y el cambio queda en el registro con quién lo hizo. |
 | `matriz` | Las 42 combinaciones entre SRT, RTMP, HLS y WebRTC: cada una de las seis formas de entrada conectada a la vez a las siete formas de salida, con audio y vídeo comprobados en cada una. Antes de activar se lee el plan de las siete. |
-| `https` | HLS y WebRTC con HTTPS por delante: un proxy con certificado en el mismo equipo (`tests/banco/https_delante.py`) y el hub entregando esas direcciones. Un lector y un navegador reproducen, otro navegador publica por WHIP, quien entra por el proxy sin token recibe un 401 y «Probar la conexión» lo confirma. Después, con un proxy que no anota de dónde viene cada petición, se entra sin clave y «Probar la conexión» lo dice. |
+| `https` | HLS y WebRTC con HTTPS por delante: un proxy con certificado en el mismo equipo (un Caddy de verdad si el equipo lo tiene; si no, `tests/banco/https_delante.py` haciendo de Caddy) y el hub entregando esas direcciones. Un lector y un navegador reproducen, otro navegador publica por WHIP, quien entra por el proxy sin token recibe un 401, también si dice venir del propio equipo, y «Probar la conexión» lo confirma. Después, con dos proxies mal puestos (uno que no anota de dónde viene cada petición y otro que deja pasar lo que la petición diga de sí misma), se entra sin clave y «Probar la conexión» lo dice. |
 | `ice` | WebRTC con una dirección anunciada y un servidor TURN (un coturn que el guion levanta). Cambiar esos ajustes con alguien mirando exige decir qué se corta, quien miraba vuelve solo y la salida SRT de la misma fuente no se corta. Un navegador que solo puede salir por el TURN reproduce y publica. |
 
 En el banco:
@@ -118,14 +119,24 @@ Para el caso `rtmps` hace falta `openssl`: el guion crea con él el certificado 
 pruebas, y `banco.sh` el del propio banco (firmado por él mismo), con el que el hub atiende RTMPS en
 el puerto 1946. Sin certificado en el hub, esa parte queda «sin comprobar».
 
-El caso `https` necesita también `openssl`, para el certificado de su proxy, y que el equipo tenga
-una dirección de red además de `127.0.0.1`: los clientes de la prueba entran por ella para que
-MediaMTX los vea llegar de fuera. El caso `ice` necesita `coturn` (`sudo apt-get install coturn`
-deja el programa `turnserver`; el guion lanza el suyo, en `127.0.0.1` y con puertos propios). En
-Ubuntu el paquete deja además un servicio habilitado en el puerto 3478, que la prueba no usa:
-`sudo systemctl disable --now coturn` lo apaga. Los dos casos cambian ajustes del hub (las
-direcciones públicas y los de WebRTC) y los dejan como estaban; en un hub que ya tiene los suyos no
-los tocan y quedan «sin comprobar».
+El caso `https` necesita también `openssl`, para el certificado de sus proxies de pruebas, y que el
+equipo tenga una dirección de red además de `127.0.0.1`: los clientes de la prueba entran por ella
+para que MediaMTX los vea llegar de fuera. Si el equipo tiene Caddy, el proxy principal del caso es
+un Caddy que el guion lanza aparte del que haya en el sistema: con su configuración, sus puertos y
+su almacén dentro de la carpeta de resultados, sin puerto de administración y sin instalar su
+certificado raíz en ningún sitio. El informe dice con qué versión se hizo. Sin Caddy, o si el que
+hay no arranca con esa configuración, hace su papel el proxy de pruebas y el informe lo dice. Los
+dos proxies mal puestos son siempre el de pruebas, con `--sin-origen` y con `--solo-real-ip`. Una
+estación con el Recorder ya tiene Caddy, y no hay que tocarlo. En otro equipo se instala con
+`sudo apt-get install caddy`; en Ubuntu el paquete deja además un servicio habilitado en el puerto
+80, que la prueba no usa y que en un equipo de pruebas se apaga con
+`sudo systemctl disable --now caddy`.
+
+El caso `ice` necesita `coturn` (`sudo apt-get install coturn` deja el programa `turnserver`; el
+guion lanza el suyo, en `127.0.0.1` y con puertos propios). En Ubuntu el paquete deja además un
+servicio habilitado en el puerto 3478, que la prueba no usa: `sudo systemctl disable --now coturn`
+lo apaga. Los dos casos cambian ajustes del hub (las direcciones públicas y los de WebRTC) y los
+dejan como estaban; en un hub que ya tiene los suyos no los tocan y quedan «sin comprobar».
 
 ## En una estación, sin tocar lo que está en producción
 
@@ -262,6 +273,23 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   (`streamer/mtx.py`). Un proxy que no anota esa cabecera lo deja todo abierto igual: por uno así,
   un navegador sin token vio una salida WebRTC protegida (30 fps, con audio) y publicó en una fuente
   WHIP protegida. Por uno que la anota, los dos intentos recibieron un 401.
+- De lo que le llega de un proxy de confianza, MediaMTX toma como origen la última dirección de
+  `X-Forwarded-For` que no sea de un proxy de confianza (varias líneas de esa cabecera valen como
+  una sola lista). Si la cabecera no viene, o lo último que trae no es una dirección, toma la de
+  `X-Real-IP`, y si tampoco viene, la del propio proxy, que es `127.0.0.1`. `Forwarded` no la mira.
+  Por eso un proxy que anota solo `X-Real-IP` y deja pasar la `X-Forwarded-For` que traiga la
+  petición responde 401 a quien pide sin más y abre a quien la manda con `127.0.0.1`: por uno así,
+  un lector de ffmpeg sin clave leyó por HLS una fuente (239 fotogramas en 8 s, con audio) y un
+  navegador sin token vio una salida WebRTC protegida (233 fotogramas en 7,8 s), que Monitoreo
+  enseñaba como un receptor de `127.0.0.1`. Publicar así no se probó con señal: la petición WHIP
+  pasa la puerta (406 a una oferta de pruebas, en vez de 401).
+- Con un Caddy 2.6.2 de verdad delante, quien entra sin token recibe un 401 por HLS y por WebRTC,
+  también mandando `X-Forwarded-For: 127.0.0.1`: Caddy descarta la que trae la petición y pone la
+  de quien conecta. Con un nginx 1.24 de verdad: sin decirle nada entra cualquiera; con
+  `proxy_set_header X-Forwarded-For $remote_addr;` o con `$proxy_add_x_forwarded_for`, 401 mande lo
+  que mande la petición; con `X-Real-IP` sola, 401 a quien pide sin más y dentro quien manda
+  `X-Forwarded-For: 127.0.0.1`. «Probar la conexión» acertó en todos esos montajes. Con nginx solo
+  se miró quién entra: no se reprodujo nada a través de él.
 - Pedírselo a un MediaMTX que no lo tiene reinicia sus servidores HLS y WebRTC, una vez: un
   navegador que miraba por HLS estuvo unos 10 s sin imagen, un lector HLS de ffmpeg se cortó y un
   lector SRT no notó nada (35 s seguidos, con 33 ms como mayor hueco). Después MediaMTX devuelve las
@@ -270,7 +298,9 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   por HLS y por WebRTC; a este equipo le da la página (200), y pedirla no arranca nada. Para una
   señal que no conoce responde 500 a cualquiera. Es lo que usa «Probar la conexión» para ver si por
   la dirección pública se entra sin clave: pide la página de una fuente y, si en vez de un 401
-  recibe la misma página que MediaMTX le da a él, lo dice.
+  recibe la misma página que MediaMTX le da a él, lo dice. La pide dos veces, una sin más y otra
+  con `X-Forwarded-For: 127.0.0.1`. La lista (`index.m3u8`) no sirve para esto: MediaMTX responde
+  primero con una redirección (302) a cualquiera, y el 401 o la lista llegan al seguirla.
 - Cambiar las direcciones que anuncia WebRTC o sus servidores ICE reinicia el servidor WebRTC de
   MediaMTX. Quien miraba se queda sin imagen un segundo después; su página da la conexión por
   cerrada a los 16 s y vuelve a conectar sola: entre 18 y 20 s sin imagen. La salida SRT de la misma
@@ -282,3 +312,15 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
 - Si el servidor TURN configurado no responde, WebRTC sigue funcionando por conexión directa, pero
   cada navegador nuevo tarda entre 9,5 y 10,8 s en empezar a ver, en vez de entre 1,5 y 2,5 s. Con
   un nombre que no existe, entre 2,5 y 3,5 s.
+- La página HLS de MediaMTX empieza a reproducir en un navegador casi siempre en torno a medio
+  segundo, y a veces tarda entre 4 y 7 s: 3 de 32 arranques medidos (2 de 16 sin proxy, 1 de 8 por
+  Caddy, ninguno de 8 por el proxy de pruebas). En ese rato el reproductor ya ha saltado al directo
+  y su reloj no avanza. Después de empezar no se paró en ninguno. Las dos pruebas dan la
+  reproducción por empezada cuando el reproductor reproduce de verdad, y dicen aparte lo que tardó:
+  antes contaban ese rato como una parada, y una pasada falló por eso.
+- De una señal de ritmo irregular, como la que publica un navegador por WHIP, ffprobe no siempre
+  declara bien los fotogramas por segundo: casi siempre 20, que es lo que hay, a veces nada, y una
+  vez 60. Con 60, una conversión de vídeo de esa fuente pondría un fotograma clave cada 6 s en vez
+  de cada 2 s. Los paquetes de vídeo que llegan en ese rato sí dan siempre 20 por segundo, así que
+  el hub se queda con esa cuenta cuando ffprobe no declara nada o declara bastante más de lo que
+  llega (`streamer/inspeccion.py`).
