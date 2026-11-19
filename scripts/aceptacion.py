@@ -154,6 +154,26 @@ def secretos_de(direccion):
     return {x for x in s if x and x != "***"}
 
 
+_de_red = []
+
+
+def direccion_de_red():
+    """Una dirección de este equipo que no sea la local, o "" si no tiene otra. Lo que llega desde ella
+    no es, para MediaMTX ni para un proxy, cosa del propio equipo: sirve para hacer de cliente de fuera."""
+    if _de_red:
+        return _de_red[0]
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))                     # no envía nada: solo pregunta por dónde saldría
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = ""
+    finally:
+        s.close()
+    _de_red.append("" if ip.startswith("127.") else ip)
+    return _de_red[0]
+
+
 # ---------------------------------------------------------------- programas que lanza la prueba
 class Proceso:
     """Un programa de la prueba, en su grupo de procesos. Lo que escribe va a su registro sin las claves."""
@@ -164,7 +184,9 @@ class Proceso:
 
     def lanzar(self):
         entorno = dict(os.environ)
-        entorno["no_proxy"] = entorno["NO_PROXY"] = ",".join(filter(None, [entorno.get("no_proxy"), "127.0.0.1,localhost"]))
+        # con este equipo se habla sin pasar por el proxy de salida que pueda tener el entorno
+        entorno["no_proxy"] = entorno["NO_PROXY"] = ",".join(filter(None, [entorno.get("no_proxy"), "127.0.0.1,localhost",
+                                                                           direccion_de_red()]))
         self.p = subprocess.Popen(self.orden, stdin=self.entrada, stdout=self.salida or subprocess.DEVNULL,
                                   stderr=subprocess.PIPE, start_new_session=True, env=entorno)
         threading.Thread(target=self._registrar, args=(self.p,), daemon=True).start()

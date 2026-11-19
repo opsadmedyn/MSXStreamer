@@ -505,6 +505,82 @@ def test_probar_no_emite_y_dice_que_comprobo(panel, c, mtx_falso, monkeypatch):
     assert r["pasos"][-1]["que"] == "Dirección pública" and r["pasos"][-1]["ok"] is None
 
 
+def test_probar_mira_que_por_la_direccion_publica_no_se_entre_sin_clave(panel, c, mtx_falso, monkeypatch):
+    """Con HLS o WebRTC entregados por una dirección pública propia (un proxy delante), «Probar» pide
+    por ella, sin clave, la página de una fuente. Lo que diga pesa también cuando la señal ya pasa."""
+    pedidas, respuesta = [], {}
+
+    def exige_clave(publica, local, donde, senal="", espera=4.0):
+        pedidas.append((publica, local, donde, senal))
+        return [sondas.paso(sondas.CLAVE_PUBLICA, respuesta["ok"], respuesta["detalle"], al_conectar=respuesta.get("no_cuenta", False))]
+    monkeypatch.setattr(sondas, "exige_clave", exige_clave)
+    monkeypatch.setattr(sondas, "hub_escucha", lambda puerto, tipo="tcp", que="": sondas.paso(
+        f"Puerto {puerto}/{tipo.upper()} del hub", True, f"{que} escucha en el puerto {puerto}"))
+    camara, otra = fuente_rtmp(panel, "Cámara 1"), fuente_rtmp(panel, "Cámara 2")
+    hls = panel["admin"].post("/api/destinos", json={"nombre": "Web", "protocolo": "hls", "inicia": "receptor"}).json()["id"]
+    web = panel["admin"].post("/api/destinos", json={"nombre": "Monitor", "protocolo": "webrtc", "inicia": "receptor"}).json()["id"]
+    srt = panel["admin"].post("/api/destinos", json={"nombre": "Enlace", "protocolo": "srt", "inicia": "receptor"}).json()["id"]
+    mtx_falso["paths"].update({camara: lista(camara, ready=False), otra: lista(otra, ready=False)})
+
+    # sin dirección pública propia MediaMTX ve a cada cual con su dirección: no hay nada que mirar
+    assert panel["admin"].put("/api/ajustes/red", json={"host_publico": "hub.ejemplo.com"}).status_code == 200
+    r = panel["operador"].post(f"/api/destinos/{hls}/probar").json()
+    assert r["ok"] is True and [p["que"] for p in r["pasos"]] == ["Puerto 8888/TCP del hub"] and pedidas == []
+
+    assert panel["admin"].put("/api/ajustes/red", json={"hls_url": "https://hls.ejemplo.com/",
+                                                         "webrtc_url": "https://webrtc.ejemplo.com"}).status_code == 200
+    respuesta.update(ok=True, detalle="Por la dirección pública no se entra sin clave")
+    # un destino sin ruta: se pregunta por una fuente cualquiera que MediaMTX conozca. El resumen sigue siendo el de la prueba
+    r = panel["operador"].post(f"/api/destinos/{hls}/probar").json()
+    assert pedidas[-1] == (f"https://hls.ejemplo.com/{camara}/", f"http://127.0.0.1:8888/{camara}/", "https://hls.ejemplo.com", "Cámara 1")
+    assert r["ok"] is True and r["resumen"] == "MediaMTX (HLS) escucha en el puerto 8888"
+    assert [p["que"] for p in r["pasos"]] == ["Puerto 8888/TCP del hub", sondas.CLAVE_PUBLICA]
+    # con ruta, por la fuente de esa ruta; y cada protocolo por su dirección y contra su puerto de MediaMTX
+    assert panel["admin"].put(f"/api/rutas/{web}", json={"fuente": otra}).status_code == 200
+    r = panel["operador"].post(f"/api/destinos/{web}/probar").json()
+    assert pedidas[-1] == (f"https://webrtc.ejemplo.com/{otra}/", f"http://127.0.0.1:8889/{otra}/", "https://webrtc.ejemplo.com", "Cámara 2")
+    assert r["ok"] is True
+    # SRT no pasa por esas direcciones
+    antes = len(pedidas)
+    assert panel["operador"].post(f"/api/destinos/{srt}/probar").json()["ok"] is True and len(pedidas) == antes
+
+    # se entra sin clave: la prueba falla y lo dice, aunque el hub escuche donde debe
+    respuesta.update(ok=False, detalle="Por https://webrtc.ejemplo.com se entra sin clave")
+    r = panel["operador"].post(f"/api/destinos/{web}/probar").json()
+    assert r["ok"] is False and r["resumen"] == "Por https://webrtc.ejemplo.com se entra sin clave"
+    # y también con la señal pasando: que un reproductor la vea no dice quién más puede verla
+    respuesta.update(ok=False, detalle="Por https://hls.ejemplo.com se entra sin clave")
+    assert panel["admin"].put(f"/api/rutas/{hls}", json={"fuente": camara}).status_code == 200
+    con_senal(c, mtx_falso, camara)
+    mtx_falso["paths"][hls] = lista(hls, readers=[{"type": "hlsMuxer", "id": ""}])
+    mtx_falso["hls"][hls] = {"creado": "", "ultima_peticion": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "enviados": 0}
+    e = {d["id"]: d for d in panel["operador"].get("/api/destinos").json()}[hls]["ruta"]["estado"]
+    assert e["estado"] == estados.ENVIANDO
+    r = panel["operador"].post(f"/api/destinos/{hls}/probar").json()
+    assert [p["que"] for p in r["pasos"]] == ["Señal", sondas.CLAVE_PUBLICA] and r["ok"] is False
+    assert r["resumen"] == "Por https://hls.ejemplo.com se entra sin clave" and pedidas[-1][0] == f"https://hls.ejemplo.com/{camara}/"
+    respuesta.update(ok=True, detalle="Por la dirección pública no se entra sin clave")
+    r = panel["operador"].post(f"/api/destinos/{hls}/probar").json()
+    assert r["ok"] is True and r["resumen"].startswith("La ruta está enviando ahora mismo")
+    # lo que el hub no puede ver de su propia dirección pública no quita el visto bueno
+    respuesta.update(ok=None, detalle="Este equipo no llega a https://hls.ejemplo.com", no_cuenta=True)
+    r = panel["operador"].post(f"/api/destinos/{hls}/probar").json()
+    assert r["ok"] is True and r["pasos"][-1]["al_conectar"] and r["resumen"].startswith("La ruta está enviando ahora mismo")
+    # una fuente con señal no pasa por esas direcciones si entra por RTMP
+    antes = len(pedidas)
+    assert panel["operador"].post(f"/api/fuentes/{camara}/probar").json()["resumen"].startswith("Ya llega señal de esta fuente")
+    assert len(pedidas) == antes
+
+    # antes de guardar también, y sin fuentes que MediaMTX conozca no hay con qué preguntar
+    respuesta.update(ok=True, detalle="Por la dirección pública no se entra sin clave", no_cuenta=False)
+    antes = len(pedidas)
+    r = panel["manager"].post("/api/probar", json={"lado": "destino", "protocolo": "hls", "inicia": "receptor"}).json()
+    assert r["ok"] is True and len(pedidas) == antes + 1 and pedidas[-1][0] == f"https://hls.ejemplo.com/{camara}/"
+    mtx_falso["paths"].clear()
+    r = panel["manager"].post("/api/probar", json={"lado": "destino", "protocolo": "hls", "inicia": "receptor"}).json()
+    assert r["ok"] is True and len(pedidas) == antes + 1 and [p["que"] for p in r["pasos"]] == ["Puerto 8888/TCP del hub"]
+
+
 def test_niveles_solo_con_senal_y_audio_que_el_hub_pueda_medir(panel, c, mtx_falso, monkeypatch):
     pedidos = []
     monkeypatch.setattr(api_hub.medidores, "niveles", lambda path, pistas=1: pedidos.append((path, pistas)) or {
@@ -557,6 +633,64 @@ def test_ajustes_de_red_y_de_webrtc(panel, c):
     assert db.ajuste(c, "webrtc")["ice"][0]["clave"] == "credencial-turn"
     assert panel["admin"].put("/api/ajustes/webrtc", json={"hosts": [], "ice": [{"url": "http://x"}]}).status_code == 422
     assert "credencial-turn" not in json.dumps(cambios(c)) and "credencial-turn" not in panel["operador"].get("/api/ajustes").text
+
+
+def test_un_ajuste_que_corta_lo_que_esta_al_aire_pide_el_permiso_y_decir_que_se_corta(panel, c, mtx_falso, monkeypatch):
+    """Lo encontró el banco: cambiar las direcciones anunciadas o los servidores ICE reinicia el servidor
+    WebRTC de MediaMTX, y quien miraba por WebRTC se quedó unos 18 s sin imagen. Bastaba con poder
+    cambiar ajustes y no se avisaba de nada."""
+    monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: {"rtmp": True, "webrtc": True})
+    fid = fuente_rtmp(panel)
+    web = panel["admin"].post("/api/destinos", json={"nombre": "Monitor", "protocolo": "webrtc", "inicia": "receptor"}).json()["id"]
+    srt = destino_srt(panel, "YouTube")
+    ice = {"hosts": ["203.0.113.5"], "ice": [{"url": "turn:turn.ejemplo.com:3478", "usuario": "hub", "clave": "credencial-turn"}]}
+    assert panel["admin"].put("/api/ajustes/webrtc", json=ice).status_code == 200            # nada al aire: nada que confirmar
+    assert cambios(c)[-1][:3] == ("Cambió los ajustes de WebRTC", "", "1 dirección anunciada, 1 servidor ICE")
+    con_senal(c, mtx_falso, fid)
+    inspeccionar(c, fid, {"video": H264_AAC["video"], "audio": [{"codec": "opus", "canales": 2, "hz": 48000}]})
+    for d in (web, srt):
+        assert panel["admin"].put(f"/api/rutas/{d}", json={"fuente": fid}).status_code == 200
+    mtx_falso["paths"][web] = lista(web, source={"type": "srtSource", "id": ""})
+    c.execute("INSERT INTO estado_salidas(salida, pid, desde, kbps, visto) VALUES (?,?,?,?,?)",
+              ("ruta_" + srt, 4242, time.time() - 60, 6200.0, time.time()))
+    rutas = {d["id"]: d["ruta"] for d in panel["admin"].get("/api/destinos").json()}
+    assert rutas[web]["estado"]["estado"] == "esperando_receptor" and rutas[web]["al_aire"] and rutas[srt]["al_aire"]
+    # lo mismo que ya hay no reinicia nada: pasa sin más (la credencial, sin reescribirla)
+    igual = {"hosts": ["203.0.113.5"], "ice": [{"url": "turn:turn.ejemplo.com:3478", "usuario": "hub"}]}
+    assert panel["admin"].put("/api/ajustes/webrtc", json=igual).status_code == 200
+    # otra cosa corta el monitor (no la ruta SRT) y hay que decir cuál
+    nada = {"hosts": [], "ice": []}
+    r = panel["admin"].put("/api/ajustes/webrtc", json=nada)
+    assert r.status_code == 409 and r.json()["detail"]["corta"] == [web]
+    assert r.json()["detail"]["al_aire"] == [{"destino": web, "destino_nombre": "Monitor", "fuente": fid, "fuente_nombre": "Estudio A",
+                                               "estado": "esperando_receptor", "estado_nombre": "Esperando receptor"}]
+    assert r.json()["detail"]["mensaje"] == (
+        "Cambiar las direcciones que anuncia el hub o sus servidores ICE reinicia su servidor WebRTC y corta lo que está al aire "
+        "por ahí: «Estudio A» → «Monitor» (esperando receptor). Quien esté conectado tendrá que volver a conectar. Confirma el "
+        "cambio diciendo qué destinos se cortan.")
+    assert panel["admin"].put("/api/ajustes/webrtc", json={**nada, "corta": [srt]}).status_code == 409      # eso no es lo que se corta
+    assert db.ajuste(c, "webrtc")["hosts"] == ["203.0.113.5"]                                                 # sigue como estaba
+    # quien puede cambiar ajustes pero no tocar lo que está al aire no puede, aunque lo diga
+    panel["admin"].put("/api/ajustes/permisos", json={"operador": ["ver", "conectar_libre"], "manager": ["ver", "ajustes"]})
+    r = panel["manager"].put("/api/ajustes/webrtc", json={**nada, "corta": [web]})
+    assert r.status_code == 403 and r.json()["detail"] == "Tu rol (manager) no puede modificar una ruta al aire: WebRTC está al aire hacia «Monitor»"
+    r = panel["admin"].put("/api/ajustes/webrtc", json={**nada, "corta": [web]})
+    assert r.status_code == 200 and db.ajuste(c, "webrtc") == nada
+    assert cambios(c)[-1][:3] == ("Cambió los ajustes de WebRTC", "", "0 direcciones anunciadas, 0 servidores ICE; corta 1 ruta al aire")
+    # con un puerto, igual: el de WebRTC corta el monitor
+    libre = socket.socket()
+    libre.bind(("0.0.0.0", 0))
+    puerto = libre.getsockname()[1]
+    libre.close()
+    r = panel["admin"].put("/api/ajustes/red", json={"webrtc_puerto": puerto})
+    assert r.status_code == 409 and r.json()["detail"]["corta"] == [web]
+    assert r.json()["detail"]["mensaje"].startswith("Cambiar ese puerto corta lo que está al aire por ahí: «Estudio A» → «Monitor»")
+    assert panel["manager"].put("/api/ajustes/red", json={"webrtc_puerto": puerto, "corta": [web]}).status_code == 403
+    assert matriz.ajustes_red(c, {})["webrtc_puerto"] != puerto
+    assert panel["admin"].put("/api/ajustes/red", json={"webrtc_puerto": puerto, "corta": [web]}).status_code == 200
+    assert cambios(c)[-1][:3] == ("Cambió los ajustes de red", "", f"webrtc puerto {puerto}; corta 1 ruta al aire")
+    # lo que no reinicia ningún servidor (una dirección pública) no pide nada
+    assert panel["manager"].put("/api/ajustes/red", json={"webrtc_url": "https://webrtc.ejemplo.com"}).status_code == 200
 
 
 def test_rtmps_en_ajustes_en_las_direcciones_y_en_la_prueba(panel, c, monkeypatch):

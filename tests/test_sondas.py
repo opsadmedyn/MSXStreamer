@@ -270,6 +270,141 @@ def test_whip_solo_admite_direcciones_http():
     assert r["ok"] is False and "https://" in r["resumen"]
 
 
+# ---------------------------------------------------------------- la dirección pública del hub
+PAGINA = b"<html>la pagina que MediaMTX da de una senal</html>"
+
+
+def _web(responder):
+    """Un servidor web de mentira: responder(ruta) -> (código, cuerpo). Devuelve (servidor, base, pedidas)."""
+    pedidas = []
+
+    class Web(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            pedidas.append((self.path, self.headers.get("Authorization")))
+            codigo, cuerpo = responder(self.path)
+            self.send_response(codigo)
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
+
+        def log_message(self, *args):
+            pass
+    servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Web)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    return servidor, f"http://127.0.0.1:{servidor.server_address[1]}", pedidas
+
+
+@pytest.fixture
+def publica(monkeypatch):
+    """La dirección pública del hub (lo que haya delante) y MediaMTX, los dos de mentira y en este
+    equipo. Para la sonda la pública está fuera: se le dice que su nombre es de otra máquina."""
+    monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.setattr(sondas, "resolver", lambda host, puerto, tipo=None: (sondas.paso("Resolver el nombre", True, ""),
+                                                                              [(socket.AF_INET, ("198.51.100.7", puerto))]))
+    respuestas = {"codigo": 401, "cuerpo": b""}
+    delante, base, pedidas = _web(lambda ruta: (respuestas["codigo"], respuestas["cuerpo"]))
+    mediamtx, local, _ = _web(lambda ruta: (200, PAGINA))
+
+    def probar(**cambios):
+        respuestas.update(cambios)
+        return sondas.exige_clave(f"{base}/camara/", f"{local}/camara/", "https://hls.ejemplo.tv", "Cámara 1", espera=2)
+    probar.pedidas, probar.base = pedidas, base
+    yield probar
+    for s in (delante, mediamtx):
+        s.shutdown()
+        s.server_close()
+
+
+def test_la_direccion_publica_que_responde_401_a_quien_no_trae_clave_esta_bien(publica):
+    (paso,) = publica(codigo=401)
+    assert paso["que"] == sondas.CLAVE_PUBLICA and paso["ok"] is True and not paso["al_conectar"]
+    assert paso["detalle"] == "Por https://hls.ejemplo.tv no se entra sin clave a lo que el hub no entrega abierto"
+    assert publica.pedidas == [("/camara/", None)]              # una sola petición, y sin credenciales
+
+
+def test_si_la_direccion_publica_da_sin_clave_la_pagina_del_hub_se_dice_que_esta_abierta(publica):
+    """Lo que pasa con un proxy en el mismo equipo que no anota de dónde viene cada petición."""
+    (paso,) = publica(codigo=200, cuerpo=PAGINA)
+    assert paso["ok"] is False and not paso["al_conectar"]
+    assert paso["detalle"].startswith("Por https://hls.ejemplo.tv se entra sin clave: al pedir sin credenciales la "
+                                      "página de «Cámara 1»")
+    assert "X-Forwarded-For" in paso["detalle"] and "Se corrige en el proxy" in paso["detalle"]
+    assert sondas.resultado([sondas.paso("Puerto", True, "escucha"), paso])["ok"] is False
+
+
+def test_otra_web_en_la_direccion_publica_no_se_toma_por_el_hub_abierto(publica):
+    """Un 200 solo vale como «se entra sin clave» si es la página que da MediaMTX."""
+    (paso,) = publica(codigo=200, cuerpo=b"<html>la portada de otra web</html>")
+    assert paso["ok"] is None and not paso["al_conectar"] and "no con lo que da el hub" in paso["detalle"]
+
+    (paso,) = publica(codigo=404, cuerpo=b"")
+    assert paso["ok"] is None and "respondió 404 al pedir la página de «Cámara 1»" in paso["detalle"]
+
+
+def test_un_proxy_que_no_llega_al_hub_es_un_fallo_y_una_senal_que_mediamtx_aun_no_conoce_no_cuenta(publica):
+    (paso,) = publica(codigo=502, cuerpo=b"")
+    assert paso["ok"] is False and "el proxy que hay delante no llega al hub" in paso["detalle"]
+
+    (paso,) = publica(codigo=500, cuerpo=b"")
+    assert paso["ok"] is None and paso["al_conectar"] and "Vuelve a probar en unos segundos" in paso["detalle"]
+    assert sondas.resultado([sondas.paso("Puerto", True, "escucha"), paso])["ok"] is True
+
+
+def test_lo_que_el_hub_no_puede_ver_de_su_direccion_publica_no_cuenta(monkeypatch):
+    monkeypatch.setenv("no_proxy", "*")
+    # el nombre apunta a este mismo equipo: lo que se pida desde aquí entra como del propio hub, así que ni se pide
+    servidor, base, pedidas = _web(lambda ruta: (200, PAGINA))
+    try:
+        (paso,) = sondas.exige_clave(f"{base}/camara/", f"{base}/camara/", base, "Cámara 1", espera=2)
+    finally:
+        servidor.shutdown()
+        servidor.server_close()
+    assert paso["ok"] is None and paso["al_conectar"] and "apunta a este mismo equipo" in paso["detalle"]
+    assert "hay que mirarlo desde otro equipo" in paso["detalle"] and pedidas == []
+
+    # el nombre no existe para este equipo
+    (paso,) = sondas.exige_clave("https://no-existe.invalid/camara/", f"{base}/camara/", "https://no-existe.invalid")
+    assert paso["ok"] is None and paso["al_conectar"] and "no encuentra «no-existe.invalid»" in paso["detalle"]
+
+    # el nombre es de otra máquina, pero desde aquí no se llega
+    monkeypatch.setattr(sondas, "resolver", lambda host, puerto, tipo=None: (sondas.paso("Resolver el nombre", True, ""),
+                                                                              [(socket.AF_INET, ("198.51.100.7", puerto))]))
+    cerrado = f"http://127.0.0.1:{puerto_libre()}"
+    (paso,) = sondas.exige_clave(f"{cerrado}/camara/", f"{base}/camara/", "https://hls.ejemplo.tv", espera=2)
+    assert paso["ok"] is None and paso["al_conectar"]
+    assert paso["detalle"].startswith("Este equipo no llega a https://hls.ejemplo.tv (el equipo responde que ese puerto está cerrado")
+
+    (paso,) = sondas.exige_clave("rtmp://hls.ejemplo.tv/camara/", f"{base}/camara/", "rtmp://hls.ejemplo.tv")
+    assert paso["ok"] is None and not paso["al_conectar"] and "no se puede usar" in paso["detalle"]
+
+
+@pytest.mark.skipif(not shutil.which("openssl"), reason="hace falta openssl para crear el certificado de la prueba")
+def test_un_certificado_que_este_equipo_no_da_por_bueno_se_dice_y_se_sigue_preguntando(monkeypatch, tmp_path):
+    """Con el certificado de usar y tirar de un proxy de pruebas: se avisa del certificado y, sin
+    comprobarlo, se mira igualmente lo que importa aquí, que es si pide clave."""
+    import ssl
+    monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.setattr(sondas, "resolver", lambda host, puerto, tipo=None: (sondas.paso("Resolver el nombre", True, ""),
+                                                                              [(socket.AF_INET, ("198.51.100.7", puerto))]))
+    clave, cert = tmp_path / "clave.pem", tmp_path / "cert.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(clave), "-out", str(cert),
+                    "-days", "2", "-subj", "/CN=proxy-de-pruebas"], check=True, capture_output=True, timeout=60)
+    servidor, _, pedidas = _web(lambda ruta: (401, b""))
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(str(cert), str(clave))
+    servidor.socket = tls.wrap_socket(servidor.socket, server_side=True)
+    try:
+        pasos = sondas.exige_clave(f"https://127.0.0.1:{servidor.server_address[1]}/camara/", "http://127.0.0.1:9/camara/",
+                                   "https://hls.ejemplo.tv", espera=3)
+    finally:
+        servidor.shutdown()
+        servidor.server_close()
+    assert [p["que"] for p in pasos] == [sondas.CERTIFICADO_PUBLICO, sondas.CLAVE_PUBLICA]
+    assert pasos[0]["ok"] is None and not pasos[0]["al_conectar"] and "no es válido para este equipo" in pasos[0]["detalle"]
+    assert pasos[1]["ok"] is True and pedidas == [("/camara/", None)]
+    assert sondas.resultado(pasos)["ok"] is None                # ni «todo bien» ni «abierta»
+
+
 # ---------------------------------------------------------------- lo que escucha el hub
 def test_lo_que_el_hub_entrega_se_prueba_mirando_que_este_escuchando():
     s, puerto = servidor_tcp(lambda c: None)

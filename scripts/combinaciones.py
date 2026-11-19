@@ -23,6 +23,14 @@ comprueba, por la misma API del panel y con señales reales, lo que aquella no t
   cambio       cambiar la fuente de un destino al aire exige decir cuál se sustituye
   matriz       cada una de las seis formas de entrada, conectada a la vez a las siete formas de salida:
                las 42 combinaciones de SRT, RTMP, HLS y WebRTC, con audio y vídeo comprobados en cada una
+  https        HLS y WebRTC con HTTPS por delante, como se sirven fuera de la red local: un proxy con
+               certificado en el mismo equipo y el hub entregando esas direcciones porque se le dicen en
+               Ajustes. Un lector y un navegador reproducen por HTTPS, un navegador publica por WHIP y
+               quien entra por el proxy sin token no pasa. Con otro proxy que no anota de dónde viene
+               cada petición sí se entra sin clave, y «Probar la conexión» lo dice
+  ice          WebRTC con una dirección anunciada y un servidor TURN (un coturn de pruebas): cambiar esos
+               ajustes con alguien mirando exige decir qué se corta y no corta lo que va por SRT, y un
+               navegador que solo puede salir por el TURN reproduce y publica
 
 Como en la prueba de aceptación, la cámara y los receptores son programas: lo que pasa queda
 anotado en el hub como «verificado en el banco de pruebas», nunca con equipos reales.
@@ -41,11 +49,14 @@ import pathlib
 import re
 import secrets
 import shutil
+import ssl
 import subprocess
 import sys
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
+import urllib.request
 
 import aceptacion as A
 from aceptacion import NOMBRES, PREFIJO, ErrorHub, campo, decir, esperar
@@ -412,6 +423,28 @@ def reproduce(nav, pagina, segundos, fps, espera=45):
     return ok, (f"{video['avance']:.0f} fotogramas en {video['segundos']:.1f} s ({ritmo:.1f} fps), mayor parada {video['parada_max_s']} s; "
                 f"{campo(u, 'video', 'ancho')}×{campo(u, 'video', 'alto')} {campo(u, 'video', 'codec')}; audio {campo(u, 'audio', 'codec')} "
                 f"que suena, mayor silencio {sonido['parada_max_s']} s")
+
+
+def reproduce_hls(nav, pagina, segundos, espera=45):
+    """¿El navegador reproduce la página HLS que entrega el hub? (ok, texto), midiendo `segundos` desde que arranca."""
+    def arranco():
+        v = nav.ultima(pagina).get("video") or {}
+        return (v.get("tiempo") or 0) > 0.5 and (v.get("bytes_video") or 0) > 0
+    if not esperar(arranco, espera, cada=0.5):
+        u = nav.ultima(pagina)
+        return False, "el navegador no llega a reproducir: " + json.dumps({k: u.get(k) for k in ("video", "errores", "error", "texto")},
+                                                                         ensure_ascii=False)[:300]
+    t0 = time.time()
+    time.sleep(segundos)
+    t1 = time.time()
+    avance = A.continuidad(A.tramo(nav.serie(pagina, "video", "tiempo"), t0, t1), 0.05)
+    video = A.continuidad(A.tramo(nav.serie(pagina, "video", "bytes_video"), t0, t1))["avance"]
+    sonido = A.continuidad(A.tramo(nav.serie(pagina, "video", "bytes_audio"), t0, t1))["avance"]
+    u = nav.ultima(pagina).get("video") or {}
+    ok = avance["segundos"] > 0 and avance["avance"] >= A.HLS_AVANCE_MIN * avance["segundos"] \
+        and (avance["parada_max_s"] or 0) <= A.HLS_PARADA_MAX and video > 0 and sonido > 0
+    return ok, (f"reprodujo {avance['avance']:.1f} s de {avance['segundos']:.1f} s; mayor parada {avance['parada_max_s']} s; "
+                f"{u.get('ancho')}×{u.get('alto')}; decodificó {video / 1e6:.1f} MB de vídeo y {sonido / 1e3:.0f} kB de audio")
 
 
 def pagina_whep(nombre, direccion):
@@ -1042,6 +1075,301 @@ def matriz(b, c):
             time.sleep(2)
 
 
+def codigo_https(url, metodo="GET", cuerpo=None, tipo=""):
+    """Con qué código responde, sin credenciales, una dirección https de pruebas (su certificado no se comprueba)."""
+    contexto = ssl.create_default_context()
+    contexto.check_hostname, contexto.verify_mode = False, ssl.CERT_NONE
+    abrir = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=contexto))
+    try:
+        return abrir.open(urllib.request.Request(url, data=cuerpo, method=metodo, headers={"Content-Type": tipo} if tipo else {}),
+                          timeout=15).status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, OSError) as e:
+        return f"sin respuesta ({e})"[:80]
+
+
+CLAVE_PUBLICA, CERTIFICADO_PUBLICO = "Clave en la dirección pública", "Certificado de la dirección pública"
+
+
+def paso_de(prueba, que):
+    """De lo que devuelve «Probar la conexión», el paso de ese nombre ({} si no está)."""
+    return next((p for p in prueba.get("pasos") or [] if p.get("que") == que), {})
+
+
+def https_delante(b, c):
+    """HLS y WebRTC con HTTPS por delante, como se sirven fuera de la red local: un proxy con certificado
+    delante de MediaMTX (aquí uno de pruebas, tests/banco/https_delante.py) y el hub entregando esas
+    direcciones porque se le dicen en Ajustes (hls_url y webrtc_url). El proxy está en el mismo equipo
+    que el hub, como el Caddy de una estación, y quien mira y quien publica entran por la dirección de
+    red del equipo: para MediaMTX vienen de fuera, y sin su token no deben pasar.
+
+    Al final se cambia ese proxy por otro que no anota de dónde viene cada petición: por ahí se entra
+    sin clave, que el hub no puede impedir, y «Probar la conexión» tiene que decirlo."""
+    titulo = "HLS y WebRTC con HTTPS por delante"
+    red = b.hub.pedir("GET", "/api/ajustes")["red"]
+    if red.get("hls_url_propia") or red.get("webrtc_url_propia"):
+        c.comprobar(titulo, None, "este hub ya entrega HLS o WebRTC con una dirección propia, y la prueba no la cambia")
+        return
+    if not shutil.which("openssl"):
+        c.comprobar(titulo, None, "falta openssl para crear el certificado del proxy de pruebas")
+        return
+    de_red = A.direccion_de_red()
+    if not de_red:
+        c.comprobar(titulo, None, "este equipo no tiene más dirección que la local: no se puede hacer de cliente de fuera")
+        return
+    dentro = {k: urllib.parse.urlsplit(red[f"{k}_url"]).port for k in ("hls", "webrtc")}     # donde atiende MediaMTX
+    fid, _, fps = b.principal()
+    carpeta = b.sub("proxy HTTPS")
+    hecho = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", carpeta / "clave.pem", "-out",
+                            carpeta / "cert.pem", "-days", "2", "-subj", "/CN=proxy-de-pruebas"], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=60)
+    if hecho.returncode:
+        c.comprobar(titulo, None, "openssl no pudo crear el certificado: " + hecho.stderr.decode("utf-8", "replace")[-160:])
+        return
+    programa = pathlib.Path(__file__).resolve().parent.parent / "tests" / "banco" / "https_delante.py"
+
+    def proxy_delante(nombre, *opciones):
+        """Lanza el proxy de pruebas y devuelve las direcciones públicas que atiende, o None si no arranca."""
+        puertos = {k: b.puerto("rtmp") for k in dentro}
+        proxy = A.Proceso(nombre, [sys.executable, programa, *opciones, carpeta / "cert.pem", carpeta / "clave.pem", de_red,
+                                   *(f"{puertos[k]}={dentro[k]}" for k in dentro)], carpeta, b.secretos).lanzar()
+        b.abierto_caso.append(proxy.parar)
+        if not esperar(lambda: not any(A.puerto_libre(p, udp=False) for p in puertos.values()), 12, cada=0.25) or not proxy.vivo():
+            return None
+        return {f"{k}_url": f"https://{de_red}:{puertos[k]}" for k in dentro}
+    publicas = proxy_delante("proxy")
+    if not publicas:
+        c.comprobar(titulo, None, f"el proxy de pruebas no arranca (ver {carpeta / 'proxy.log'})")
+        return
+    b.hub.pedir("PUT", "/api/ajustes/red", publicas)
+    b.abierto_caso.append(lambda: b.hub.pedir("PUT", "/api/ajustes/red", {k: "" for k in publicas}))     # como estaba
+
+    d_hls = b.nuevo("destinos", "HTTPS → HLS", protocolo="hls", inicia="receptor")
+    d_rtc = b.nuevo("destinos", "HTTPS → WebRTC que abre un navegador", protocolo="webrtc", inicia="receptor")
+    f_whip = b.nuevo("fuentes", "HTTPS, navegador que publica (WHIP)", protocolo="webrtc", inicia="origen")
+    dir_hls, dir_rtc, dir_whip = b.direccion("destinos", d_hls), b.direccion("destinos", d_rtc), b.direccion("fuentes", f_whip)
+    entregadas = {"la lista HLS": (dir_hls["url"], "hls"), "la página del reproductor WebRTC": (dir_rtc["pagina"], "webrtc"),
+                  "la dirección WHIP": (dir_whip["url"], "webrtc")}
+    sitio = lambda u: (lambda p: f"{p.scheme}://{p.hostname}:{p.port}")(urllib.parse.urlsplit(u))     # sin la ruta ni la clave
+    c.comprobar("Con hls_url y webrtc_url en Ajustes, el hub entrega direcciones https://",
+                all(sitio(u) == publicas[f"{k}_url"] for u, k in entregadas.values()),
+                " · ".join(f"{nombre}: {sitio(u)}" for nombre, (u, _) in entregadas.items()))
+
+    b.conectar(fid, d_hls)
+    b.conectar(fid, d_rtc)
+    esperar(lambda: all(b.ruta(d).get("estado") in ("esperando_receptor", "enviando") for d in (d_hls, d_rtc)), 45)
+    # el proxy llega a MediaMTX desde 127.0.0.1, que para MediaMTX es el propio hub y entra sin clave:
+    # lo que pasa por el proxy tiene que juzgarse por la dirección de quien conecta
+    oferta = {"cuerpo": b"v=0\r\n", "tipo": "application/sdp"}
+    sin_token = {"mirar por WebRTC": codigo_https(dir_rtc["pagina"].rstrip("/") + "/whep", "POST", **oferta),
+                 "publicar por WebRTC": codigo_https(dir_whip["url"], "POST", **oferta),
+                 "leer por HLS la cámara, que no se entrega por HLS": codigo_https(f"{publicas['hls_url']}/{fid}/index.m3u8")}
+    c.comprobar("Quien entra por el proxy sin token no mira ni publica por WebRTC, ni lee por HLS una señal que no se entrega así",
+                all(x == 401 for x in sin_token.values()), " · ".join(f"{k}: responde {v}" for k, v in sin_token.items()))
+    # «Probar la conexión» pide por la dirección pública, sin clave, la página de una fuente: con este
+    # proxy tiene que ver que no se entra. El certificado es de usar y tirar, y eso también lo dice
+    pruebas = {k: b.hub.pedir("POST", f"/api/destinos/{d}/probar") for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
+    c.comprobar("«Probar la conexión» ve que por la dirección pública no se entra sin clave, y avisa del certificado de pruebas",
+                all(paso_de(p, CLAVE_PUBLICA).get("ok") is True and paso_de(p, CERTIFICADO_PUBLICO).get("ok") is None
+                    and p.get("ok") is None for p in pruebas.values()),
+                " · ".join(f"{k}: {paso_de(p, CLAVE_PUBLICA).get('detalle') or p.get('resumen')}" for k, p in pruebas.items()))
+    archivo, estado = b.capturar(b.lector("HTTPS → lector HLS", dir_hls["url"]), did=d_hls)
+    b.senal(c, "HLS por HTTPS: un lector recibe audio y vídeo de la lista", archivo, fps, estado)
+    if not b.node:
+        c.comprobar("HTTPS: un navegador reproduce HLS y WebRTC y publica por WHIP", None, "sin Node con Playwright no hay navegador")
+        return
+    mira = b.navegador("HTTPS → navegador que mira", [
+        {"nombre": "hls", "url": dir_hls["url"].rsplit("/", 1)[0] + "/", "usuario": credencial(dir_hls, "Usuario"),
+         "clave": credencial(dir_hls, "Contraseña"), "sin_verificar": True},
+        dict(pagina_whep("webrtc", dir_rtc), sin_verificar=True)])
+    c.comprobar("HLS por HTTPS: un navegador reproduce audio y vídeo en la página que entrega el hub", *reproduce_hls(mira, "hls", 10))
+    c.comprobar("WebRTC por HTTPS: un navegador reproduce audio y vídeo en la página que entrega el hub (WHEP)",
+                *reproduce(mira, "webrtc", 10, fps))
+    estados = {k: b.ruta(d) for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
+    c.comprobar("Con el proxy delante, el hub enseña «enviando» y la dirección de quien mira, no la del proxy",
+                all(e.get("estado") == "enviando" and f"({de_red})" in evidencia(e) for e in estados.values()),
+                " · ".join(f"{k}: «{e.get('estado')}», {evidencia(e)}" for k, e in estados.items()))
+
+    origen = dir_whip["url"].rsplit("/", 2)[0]
+    publica = b.navegador("HTTPS → navegador que publica", [{"nombre": "publica", "url": f"{origen}/__camara_de_pruebas", "sin_verificar": True,
+                          "publicar": {"whip": dir_whip["url"], "token": credencial(dir_whip, "Token"), "codec": "H264",
+                                       "audio_wav": str(b.tono()), "ancho": 640, "alto": 360}}])
+    f = b.fuente_lista(f_whip, 60)
+    u = publica.ultima("publica")
+    c.comprobar("WHIP por HTTPS: el hub recibe lo que publica un navegador con su token", bool(f),
+                trae(f) if f else f"el hub dice: {campo(b.hub.fuente(f_whip), 'estado', 'detalle')}; el navegador: "
+                + json.dumps({k: u.get(k) for k in ("rtc", "errores", "error")}, ensure_ascii=False)[:300])
+
+    # Un proxy que no anota de dónde viene cada petición (nginx no lo hace si no se le dice): a MediaMTX
+    # todo le llega de 127.0.0.1 y lo toma por suyo. El hub no puede impedirlo: tiene que avisar
+    mudas = proxy_delante("proxy-sin-origen", "--sin-origen")
+    if not mudas:
+        c.comprobar("Un proxy que no anota de dónde viene cada petición", None,
+                    f"el segundo proxy de pruebas no arranca (ver {carpeta / 'proxy-sin-origen.log'})")
+        return
+    b.hub.pedir("PUT", "/api/ajustes/red", mudas)
+    abierta = codigo_https(f"{mudas['hls_url']}/{fid}/index.m3u8")
+    pruebas = {k: b.hub.pedir("POST", f"/api/destinos/{d}/probar") for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
+    c.comprobar("Con un proxy que no anota de dónde viene cada petición se entra sin clave, y «Probar la conexión» lo dice",
+                abierta == 200 and all(p.get("ok") is False and paso_de(p, CLAVE_PUBLICA).get("ok") is False for p in pruebas.values()),
+                f"sin clave, la lista HLS de la cámara responde {abierta} · "
+                + " · ".join(f"{k}: {(paso_de(p, CLAVE_PUBLICA).get('detalle') or p.get('resumen') or '').split('. ')[0]}"
+                             for k, p in pruebas.items()))
+
+
+ANUNCIADA = "203.0.113.7"           # una dirección de documentación (RFC 5737): no es de nadie ni lleva a ningún sitio
+TURN_RELES = (49160, 49259)         # puertos UDP entre los que el servidor TURN de pruebas reparte sus relés
+
+
+def corte_visto(nav, pagina, t0, espera=60):
+    """Lo que le pasa desde t0 a quien miraba por WebRTC: (se cortó, volvió, segundos sin imagen). Se
+    queda sin imagen cuando dejan de subir los fotogramas decodificados y vuelve cuando suben otra vez."""
+    def muestras():
+        return [(t, v) for t, v in nav.serie(pagina, "rtc", "video", "fotogramas") if t >= t0 - 2]
+
+    def avanza(a, b):
+        return a[1] is not None and b[1] is not None and b[1] > a[1]
+
+    def parado():
+        m = muestras()
+        return len(m) >= 2 and m[-1][0] > t0 and not avanza(m[-2], m[-1])
+    if not esperar(parado, 12, cada=0.5):
+        return False, True, 0.0
+    volvio = esperar(lambda: (lambda m: len(m) >= 2 and avanza(m[-2], m[-1]))(muestras()), espera, cada=0.5)
+    m = muestras()
+    paro = next(i for i in range(1, len(m)) if m[i][0] > t0 and not avanza(m[i - 1], m[i]))
+    vuelta = next((i for i in range(paro + 1, len(m)) if avanza(m[i - 1], m[i])), None)
+    return True, volvio, (m[vuelta][0] if vuelta else m[-1][0]) - m[paro - 1][0]
+
+
+def ajustes_webrtc(b, cuerpo):
+    """Deja los ajustes de WebRTC del hub como dice `cuerpo`, confirmando lo que el hub diga que se corta
+    (para deshacer lo que hizo la prueba, que entonces solo tiene al aire lo suyo)."""
+    try:
+        b.hub.pedir("PUT", "/api/ajustes/webrtc", cuerpo)
+    except ErrorHub as e:
+        if e.codigo != 409 or not isinstance(e.detalle, dict):
+            raise
+        b.hub.pedir("PUT", "/api/ajustes/webrtc", {**cuerpo, "corta": e.detalle.get("corta") or []})
+
+
+def ice(b, c):
+    """WebRTC para fuera de la red local, lo que se puede ver en un banco sin un NAT de por medio: qué pasa
+    al cambiar esos ajustes con alguien mirando, que la dirección anunciada llega a quien conecta y que un
+    navegador que solo puede salir por un servidor TURN reproduce y publica. El TURN es un coturn de pruebas
+    en este equipo, con secreto compartido: al navegador le llega una credencial temporal, no el secreto."""
+    titulo = "WebRTC con una dirección anunciada y un servidor TURN"
+    ajustes = b.hub.pedir("GET", "/api/ajustes")["webrtc"]
+    if ajustes.get("hosts") or ajustes.get("ice"):
+        c.comprobar(titulo, None, "este hub ya tiene direcciones anunciadas o servidores ICE en Ajustes, y la prueba no los cambia")
+        return
+    if not shutil.which("turnserver"):
+        c.comprobar(titulo, None, "falta coturn (turnserver) para hacer de servidor TURN de pruebas")
+        return
+    if not b.node:
+        c.comprobar(titulo, None, "sin Node con Playwright no hay navegador")
+        return
+    fid, _, fps = b.principal()
+    puerto, secreto, carpeta = b.puerto("srt"), secrets.token_hex(12), b.sub("servidor TURN")
+    b.secretos.add(secreto)
+    # coturn escribe su registro por la salida normal: se le pasa a la de errores, que es la que se guarda sin las claves
+    turn = A.Proceso("turn", ["sh", "-c", 'exec "$@" >&2', "sh", shutil.which("turnserver"), "-n", "--listening-ip", "127.0.0.1",
+                              "--listening-port", puerto, "--relay-ip", "127.0.0.1", "--min-port", TURN_RELES[0], "--max-port", TURN_RELES[1],
+                              "--use-auth-secret", "--static-auth-secret", secreto, "--realm", "banco", "--no-tls", "--no-dtls",
+                              "--no-cli", "--allow-loopback-peers", "--log-file", "stdout", "--simple-log", "--pidfile", carpeta / "turn.pid"],
+                     carpeta, b.secretos).lanzar()
+    b.abierto_caso.append(turn.parar)
+    if not esperar(lambda: not A.puerto_libre(puerto, udp=True), 12, cada=0.25) or not turn.vivo():
+        c.comprobar(titulo, None, f"el servidor TURN de pruebas no arranca (ver {carpeta / 'turn.log'})")
+        return
+
+    d_rtc = b.nuevo("destinos", "TURN → WebRTC que abre un navegador", protocolo="webrtc", inicia="receptor")
+    b.conectar(fid, d_rtc)
+    esperar(lambda: b.ruta(d_rtc).get("estado") in ("esperando_receptor", "enviando"), 45)
+    direccion = b.direccion("destinos", d_rtc)
+    directo = b.navegador("TURN → navegador que ya miraba", [pagina_whep("mira", direccion)])
+    if not c.comprobar("Antes de tocar los ajustes, un navegador mira la salida WebRTC", *reproduce(directo, "mira", 5, fps)):
+        return
+    d_srt = b.nuevo("destinos", "TURN → SRT que lee otro equipo", protocolo="srt", inicia="receptor")       # lo que no debe cortarse
+    b.conectar(fid, d_srt)
+    esperar(lambda: b.ruta(d_srt).get("estado") in ("esperando_receptor", "enviando"), 40)
+    por_srt = b.lector("TURN → lector SRT", b.direccion("destinos", d_srt)["url"])
+    b.esperar_senal([por_srt])
+    t_srt = time.time()
+    nuevos = {"hosts": [ANUNCIADA], "ice": [{"url": f"turn:127.0.0.1:{puerto}", "usuario": "AUTH_SECRET", "clave": secreto}]}
+    que = "Cambiar la dirección anunciada y los servidores ICE con alguien mirando no hace nada sin decir qué se corta"
+    try:
+        b.hub.pedir("PUT", "/api/ajustes/webrtc", nuevos)
+        b.abierto_caso.append(lambda: ajustes_webrtc(b, {"hosts": [], "ice": []}))
+        c.comprobar(que, False, "el hub aceptó el cambio sin confirmación")
+        return
+    except ErrorHub as e:
+        detalle = e.detalle if isinstance(e.detalle, dict) else {}
+        corta = detalle.get("corta") or []
+        if e.codigo == 409 and set(corta) - {d_rtc}:
+            c.comprobar(titulo, None, "en este hub hay otras rutas al aire por WebRTC, y la prueba las cortaría")
+            return
+        sigue = b.hub.pedir("GET", "/api/ajustes")["webrtc"]
+        if not c.comprobar(que + ", y el hub dice qué está al aire", e.codigo == 409 and corta == [d_rtc]
+                           and not sigue.get("hosts") and not sigue.get("ice"), str(detalle.get("mensaje") or e)):
+            return
+    t0 = time.time()
+    b.hub.pedir("PUT", "/api/ajustes/webrtc", {**nuevos, "corta": corta})
+    b.abierto_caso.append(lambda: ajustes_webrtc(b, {"hosts": [], "ice": []}))        # como estaba
+    cortado, volvio, segundos = corte_visto(directo, "mira", t0)
+    c.comprobar("Diciéndolo se aplica, y quien miraba vuelve a tener imagen sin tocar nada", volvio,
+                (f"MediaMTX reinicia su servidor WebRTC: el navegador que miraba estuvo {segundos:.0f} s sin imagen"
+                 + (" y su página volvió a conectar sola" if volvio else " y no ha vuelto")) if cortado else "no se quedó sin imagen")
+    time.sleep(2)
+    por_srt.cerrar()
+    time.sleep(0.3)
+    lapso, v = time.time() - t_srt, A.tramo_de_video(por_srt.archivo)
+    c.comprobar("Mientras tanto, la salida SRT de la misma fuente sigue sin ninguna parada",
+                bool(v) and v["dura"] >= lapso - 4 and v["salto_max"] <= 0.5,
+                f"llegaron {v['dura']:.0f} s de vídeo seguidos, con {v['salto_max'] * 1000:.0f} ms como mayor hueco entre dos fotogramas"
+                if v else "no se pudo medir lo que llegó por SRT")
+
+    rele = b.navegador("TURN → navegador que solo sale por el relé", [dict(pagina_whep("mira", direccion), solo_rele=True)])
+    ok, texto = reproduce(rele, "mira", 10, fps)
+    visto = campo(rele.ultima("mira"), "rtc", "ice") or {}
+    por = campo(visto, "elegido", "propio") or {}
+    c.comprobar("Un navegador que solo puede salir por el servidor TURN reproduce audio y vídeo de la salida WebRTC",
+                ok and por.get("tipo") == "relay", f"{texto}; sus medios van por un candidato «{por.get('tipo')}» de {por.get('servidor')}")
+    servidores = visto.get("servidores") or []
+    c.comprobar("Al navegador le llega el servidor TURN con una credencial temporal, no el secreto guardado en el hub",
+                bool(servidores) and all(s.get("con_credencial") and s.get("usuario_temporal") for s in servidores),
+                " · ".join(f"{s.get('url')}: " + ("usuario temporal" if s.get("usuario_temporal") else "usuario fijo")
+                           + (" con credencial" if s.get("con_credencial") else " sin credencial") for s in servidores) or "ninguno")
+    # cada candidato viene una vez por pista (audio y vídeo): se cuenta una
+    anunciados = [dict(x) for x in dict.fromkeys(tuple(sorted(x.items())) for x in visto.get("anunciados") or [])]
+    c.comprobar("La dirección anunciada en Ajustes llega a quien conecta, entre las del hub",
+                any(x.get("donde", "").startswith(ANUNCIADA + ":") for x in anunciados),
+                "el hub ofrece " + (", ".join(f"{x.get('donde')} ({x.get('tipo')})" for x in anunciados) or "nada"))
+    c.comprobar("MediaMTX pide además su propio relé al servidor TURN y lo ofrece",
+                any(x.get("tipo") == "relay" for x in anunciados),
+                "; ".join(f"{x.get('donde')}" for x in anunciados if x.get("tipo") == "relay") + ": por ahí puede llegar al hub quien no "
+                "alcanza sus direcciones" if any(x.get("tipo") == "relay" for x in anunciados) else "no ofrece ningún candidato de relé")
+    estado = b.ruta(d_rtc)
+    c.comprobar("El hub ve a quien mira por el relé y enseña «enviando»", estado.get("estado") == "enviando",
+                f"«{estado.get('estado')}»: {evidencia(estado)}")
+
+    f_whip = b.nuevo("fuentes", "TURN, navegador que publica (WHIP)", protocolo="webrtc", inicia="origen")
+    dir_whip = b.direccion("fuentes", f_whip)
+    publica = b.navegador("TURN → navegador que publica por el relé", [{
+        "nombre": "publica", "url": dir_whip["url"].rsplit("/", 2)[0] + "/__camara_de_pruebas", "solo_rele": True,
+        "publicar": {"whip": dir_whip["url"], "token": credencial(dir_whip, "Token"), "codec": "H264", "audio_wav": str(b.tono()),
+                     "ancho": 640, "alto": 360, "ice_del_servidor": True}}])
+    recibida = b.fuente_lista(f_whip, 60)
+    u = publica.ultima("publica")
+    por = campo(u, "rtc", "ice", "elegido", "propio") or {}
+    c.comprobar("Un navegador que solo puede salir por el servidor TURN publica por WHIP y el hub lo recibe",
+                bool(recibida) and por.get("tipo") == "relay",
+                (f"{trae(recibida)}; sus medios van por un candidato «{por.get('tipo')}» de {por.get('servidor')}") if recibida
+                else f"el hub dice: {campo(b.hub.fuente(f_whip), 'estado', 'detalle')}; el navegador: "
+                + json.dumps({k: u.get(k) for k in ("rtc", "errores", "error")}, ensure_ascii=False)[:300])
+
+
 CASOS = {"entregas": ("Lo que el hub entrega para que otro equipo lo abra (SRT y RTMP)", entregas),
          "llamadas": ("Otras formas de recibir la fuente: el hub va a buscarla (SRT, RTMP, HLS) o la espera en un puerto propio", llamadas),
          "rtmps": ("RTMPS: el hub recibe y entrega cifrado, publica en una plataforma y lee de un servidor", rtmps),
@@ -1052,7 +1380,9 @@ CASOS = {"entregas": ("Lo que el hub entrega para que otro equipo lo abra (SRT y
          "fuente": ("Corte de la fuente durante 20 s con tres rutas activas", corte_de_fuente),
          "reconexion": ("Política de reconexión con tope de intentos", reconexion),
          "cambio": ("Cambiar la fuente de un destino al aire", cambio),
-         "matriz": ("Cada forma de entrada hacia las siete formas de salida a la vez", matriz)}
+         "matriz": ("Cada forma de entrada hacia las siete formas de salida a la vez", matriz),
+         "https": ("HLS y WebRTC con HTTPS por delante, como se sirven fuera de la red local", https_delante),
+         "ice": ("WebRTC con una dirección anunciada y un servidor TURN", ice)}
 
 
 # ---------------------------------------------------------------- el informe
@@ -1065,8 +1395,9 @@ def informe(datos):
          f"FFmpeg {campo(motor, 'ffmpeg', 'version') or '?'} · conversiones de vídeo con {campo(motor, 'ffmpeg', 'codificador') or '?'}",
          "- **Con qué se comprobó:** la cámara y los receptores son programas (ffmpeg y un Chromium sin ventana). Donde hace falta "
          "«otro equipo» que sirva o reciba la señal (otro hub, un servidor RTMP, una lista HLS, un servidor WHIP) lo hace este mismo "
-         "hub por otra de sus salidas o entradas; la plataforma RTMPS es un segundo MediaMTX con un certificado de pruebas. Es una "
-         "verificación de banco de pruebas, no con equipos reales.",
+         "hub por otra de sus salidas o entradas; la plataforma RTMPS es un segundo MediaMTX con un certificado de pruebas, y el "
+         "proxy HTTPS, un programa del banco con otro; el servidor TURN, un coturn en este mismo equipo. Es una verificación de banco "
+         "de pruebas, no con equipos reales.",
          f"- **Cómo se manejó el hub:** por la API del panel, con una sesión de administrador ({datos['hub']}).", "",
          "Complementa a la prueba de aceptación ([aceptacion-banco.md](aceptacion-banco.md)), que cubre la entrada RTMP y la entrada "
          "SRT con sus salidas SRT, RTMP, HLS y WebRTC, el corte de 60 s y los reinicios.", "",

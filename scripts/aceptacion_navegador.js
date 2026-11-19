@@ -10,6 +10,10 @@
 //   node aceptacion_navegador.js '{"paginas": [{"nombre": "hls", "url": "http://…", "usuario": "", "clave": ""}]}'
 //   node aceptacion_navegador.js paginas.json        (lo mismo en un archivo: así la clave no va en la línea de órdenes)
 //
+// Una página con «sin_verificar» se abre aunque su certificado https no se pueda comprobar (el del banco).
+// Una página con «solo_rele» solo deja a WebRTC salir por un servidor TURN, como un navegador en una red
+// que no deja pasar otra cosa: si el servidor no le da uno que funcione, no conecta.
+//
 // Necesita Playwright (playwright o playwright-core) con su Chromium; CHROMIUM=/ruta usa otro
 // navegador. Termina al cerrarle la entrada o con SIGTERM.
 // Si por la entrada le llega una línea «recargar», vuelve a cargar las páginas (como quien pulsa F5).
@@ -17,19 +21,20 @@
 // Una página con «publicar» ({"whip": "http://…/whip", "token": "…", "codec": "H264", "audio_wav": "/ruta.wav"})
 // no reproduce: publica por WHIP la cámara y el micrófono de mentira de Chromium, como haría un navegador
 // de verdad, y lo que se apunta es lo que envía (fotogramas codificados y bytes). Con «audio_wav», el
-// micrófono de mentira suena como ese archivo en vez de con el pitido de Chromium.
+// micrófono de mentira suena como ese archivo en vez de con el pitido de Chromium. Con «ice_del_servidor»
+// pregunta antes al servidor WHIP por sus servidores STUN y TURN (OPTIONS), como la página de MediaMTX.
 
 const fs = require('fs');
 let chromium;
 try { ({ chromium } = require('playwright')); } catch (e) { ({ chromium } = require('playwright-core')); }   // el de las estaciones
 
-function vigilarConexiones() {
+function vigilarConexiones(opciones) {
   // La página de MediaMTX no deja a la vista su RTCPeerConnection: se guarda al crearla.
   const Original = window.RTCPeerConnection;
   if (!Original) return;
   window.__conexiones = [];
-  function Vigilada(...args) {
-    const pc = new Original(...args);
+  function Vigilada(config, ...resto) {
+    const pc = new Original(opciones.solo_rele ? { ...(config || {}), iceTransportPolicy: 'relay' } : config, ...resto);
     window.__conexiones.push(pc);
     return pc;
   }
@@ -44,7 +49,19 @@ async function publicar(cfg) {
   const medios = await navigator.mediaDevices.getUserMedia({
     video: { width: cfg.ancho || 1280, height: cfg.alto || 720, frameRate: cfg.fps || 30 },
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  const pc = new RTCPeerConnection();
+  const cabeceras = { 'Content-Type': 'application/sdp' };
+  if (cfg.token) cabeceras.Authorization = 'Bearer ' + cfg.token;
+  const servidores = [];
+  if (cfg.ice_del_servidor) {                         // Link: <turn:…>; rel="ice-server"; username="…"; credential="…"
+    const r = await fetch(cfg.whip, { method: 'OPTIONS', headers: cfg.token ? { Authorization: cabeceras.Authorization } : {} });
+    for (const trozo of (r.headers.get('Link') || '').split(/,\s*(?=<)/)) {
+      const m = trozo.match(/^<([^>]+)>;\s*rel="ice-server"(.*)$/i);
+      if (!m) continue;
+      const dato = (nombre) => { const x = m[2].match(new RegExp(nombre + '="((?:[^"\\\\]|\\\\.)*)"', 'i')); return x ? JSON.parse('"' + x[1] + '"') : undefined; };
+      servidores.push({ urls: [m[1]], username: dato('username'), credential: dato('credential') });
+    }
+  }
+  const pc = new RTCPeerConnection({ iceServers: servidores });
   for (const pista of medios.getTracks()) {
     const t = pc.addTransceiver(pista, { direction: 'sendonly' });
     if (pista.kind === 'video' && cfg.codec) {
@@ -60,8 +77,6 @@ async function publicar(cfg) {
     pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') listo(); });
     setTimeout(listo, 3000);
   });
-  const cabeceras = { 'Content-Type': 'application/sdp' };
-  if (cfg.token) cabeceras.Authorization = 'Bearer ' + cfg.token;
   const r = await fetch(cfg.whip, { method: 'POST', headers: cabeceras, body: pc.localDescription.sdp });
   if (!r.ok) throw new Error('el servidor WHIP respondió ' + r.status);
   await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
@@ -82,6 +97,21 @@ async function medir() {
   if (pc) {
     r.rtc = { estado: pc.connectionState };
     const stats = await pc.getStats();
+    // por dónde van los medios: el par de candidatos elegido y lo que se ofreció. Nunca las credenciales
+    const candidato = (s) => (s ? { tipo: s.candidateType, donde: `${s.address || '?'}:${s.port}/${s.protocol}`,
+                                    ...(s.url ? { servidor: s.url } : {}) } : null);
+    const transporte = Array.from(stats.values()).find((s) => s.type === 'transport') || {};
+    const par = stats.get(transporte.selectedCandidatePairId);
+    // lo que el servidor ofrece en su respuesta: «a=candidate:1 1 udp 2130706431 192.0.2.10 8189 typ host»
+    const anunciados = ((pc.remoteDescription || {}).sdp || '').split(/\r?\n/).filter((l) => l.startsWith('a=candidate:'))
+      .map((l) => l.split(' ')).map((x) => ({ tipo: x[7], donde: `${x[4]}:${x[5]}/${String(x[2]).toLowerCase()}` }));
+    r.rtc.ice = {
+      servidores: (pc.getConfiguration().iceServers || []).map((s) => ({
+        url: [].concat(s.urls || []).join(' '), con_credencial: Boolean(s.credential),
+        usuario_temporal: /^\d{9,}:/.test(s.username || '') })),
+      solo_rele: pc.getConfiguration().iceTransportPolicy === 'relay',
+      elegido: par ? { propio: candidato(stats.get(par.localCandidateId)), remoto: candidato(stats.get(par.remoteCandidateId)) } : null,
+      anunciados };
     stats.forEach((s) => {
       const codec = stats.get(s.codecId) || {};
       if (s.type === 'inbound-rtp') {
@@ -115,8 +145,10 @@ async function medir() {
   const navegador = await chromium.launch(opciones);
   const paginas = [];
   for (const p of config.paginas || []) {
-    const contexto = await navegador.newContext(p.usuario ? { httpCredentials: { username: p.usuario, password: p.clave || '' } } : {});
-    await contexto.addInitScript(vigilarConexiones);
+    const contexto = await navegador.newContext({
+      ...(p.usuario ? { httpCredentials: { username: p.usuario, password: p.clave || '' } } : {}),
+      ...(p.sin_verificar ? { ignoreHTTPSErrors: true } : {}) });    // un https con certificado de pruebas, firmado por nadie
+    await contexto.addInitScript(vigilarConexiones, { solo_rele: Boolean(p.solo_rele) });
     const pagina = await contexto.newPage();
     const errores = [];
     pagina.on('pageerror', (e) => errores.push(String(e.message || e).slice(0, 200)));

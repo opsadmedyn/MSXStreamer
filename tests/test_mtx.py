@@ -24,6 +24,27 @@ def test_un_puerto_que_se_acaba_de_cerrar_esta_libre_y_uno_con_alguien_escuchand
     assert mtx.puerto_libre(puerto, "udp")
 
 
+def test_lo_que_llega_por_un_proxy_de_este_equipo_se_juzga_por_su_direccion_de_origen(monkeypatch):
+    """Lo encontró el banco: con un proxy HTTPS en el mismo equipo, MediaMTX tomaba como local (sin clave)
+    todo lo que entraba por él. Se le pide que se fíe del X-Forwarded-For que le llega de este equipo."""
+    deseado = mtx.acceso_deseado({"flujo1"})
+    assert deseado["hlsTrustedProxies"] == deseado["webrtcTrustedProxies"] == ["127.0.0.1/32", "::1/128"]
+    pedidos = []
+    monkeypatch.setattr(mtx, "_pedir", lambda metodo, ruta, cuerpo=None, **_: pedidos.append((metodo, ruta, cuerpo)))
+    monkeypatch.setattr(mtx, "_aplicado", None)
+    # un MediaMTX que aún no las tiene (el de la 0.3.9, o recién arrancado): se le piden, una vez
+    como_antes = {"authMethod": "internal", "hlsAlwaysRemux": False, "hlsTrustedProxies": [], "webrtcTrustedProxies": [],
+                  "authInternalUsers": [dict(mtx.LOCAL, ips=["127.0.0.1/32", "::1/128"]),
+                                        {"user": "any", "pass": "", "ips": [], "permissions": [{"action": "read", "path": "~^(flujo1)$"}]}]}
+    assert mtx._aplicar(deseado, como_antes)
+    assert pedidos[0][:2] == ("PATCH", "/v3/config/global/patch") and pedidos[0][2]["webrtcTrustedProxies"] == ["127.0.0.1/32", "::1/128"]
+    # y con ellas puestas, tal como MediaMTX las devuelve, no se le vuelve a pedir nada (reiniciaría HLS y WebRTC)
+    del pedidos[:]
+    assert not mtx._aplicar(deseado, dict(como_antes, hlsTrustedProxies=["127.0.0.1/32", "::1/128"],
+                                          webrtcTrustedProxies=["127.0.0.1/32", "::1/128"]))
+    assert pedidos == []
+
+
 def test_servidores_que_pide_el_hub():
     apagado = {"rtmp": False, "webrtc": False}
     pide = {"rtmp": {"puerto": 1945}, "webrtc": None}

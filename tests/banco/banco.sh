@@ -37,6 +37,15 @@ MTX_VERSION=v1.21.1
 MTX_SHA256=653abc672a3e693f8d3b2717752492fdcfb8072291ec108d03d3dd857411b0ee    # mediamtx_v1.21.1_linux_amd64.tar.gz
 BASE="$BANCO/base"
 export MSXS_BASE="$BASE"
+# Con este equipo se habla sin pasar por el proxy de salida que pueda tener el entorno: «Probar la
+# conexión» pregunta a la dirección pública del hub, que en el banco es este mismo equipo
+PROPIA="$("$PYTHON" -c 'import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.connect(("192.0.2.1", 9))
+print(s.getsockname()[0])' 2>/dev/null || true)"
+if [ -n "$PROPIA" ]; then
+  export no_proxy="${no_proxy:+$no_proxy,}$PROPIA" NO_PROXY="${NO_PROXY:+$NO_PROXY,}$PROPIA"
+fi
 
 vivo() { [ -f "$BANCO/$1.pid" ] && kill -0 "$(cat "$BANCO/$1.pid")" 2>/dev/null; }
 

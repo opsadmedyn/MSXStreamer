@@ -8,11 +8,15 @@ señal: una prueba no puede sacar nada al aire ni tumbar lo que ya está conecta
          envía la clave de emisión: se comprueba al conectar la ruta.
   HLS    se pide la lista y se leen sus variantes y pistas de audio.
   WHIP   petición OPTIONS con el token: el servidor dice si existe y si lo acepta.
-Lo que el hub entrega (el receptor viene a por ello) se prueba mirando que el hub esté escuchando.
+Lo que el hub entrega (el receptor viene a por ello) se prueba mirando que el hub esté escuchando
+y, si HLS o WebRTC se entregan por una dirección pública propia (un proxy con certificado delante),
+que por esa dirección no se entre sin clave.
 
 Cada prueba devuelve sus pasos, con lo que se comprobó en cada uno, y nunca una clave.
 """
 
+import http.client
+import ipaddress
 import os
 import socket
 import ssl
@@ -30,7 +34,8 @@ SRT_MAGIA = 0x4A17              # lo que pone un listener SRT (HSv5) en su respu
 
 def _paso(que, ok, detalle="", ms=None, al_conectar=False):
     """Un paso de la prueba. ok: True, False o None (no se pudo saber). al_conectar: lo que una prueba
-    no puede comprobar sin abrir la conexión de verdad (una clave, una passphrase); no cuenta."""
+    no puede comprobar desde aquí (una clave o una passphrase, que solo se ven al abrir la conexión de
+    verdad; la dirección pública del hub, si el propio hub no llega a ella); no cuenta."""
     return {"que": que, "ok": ok, "detalle": secretos.ocultar(detalle), "ms": None if ms is None else round(ms),
             "al_conectar": al_conectar}
 
@@ -250,6 +255,103 @@ def whip_responde(url, token="", espera=ESPERA):
     else:
         pasos.append(_paso("Dirección WHIP", False, f"El servidor respondió {codigo}"))
     return _resultado(pasos)
+
+
+# ---------------------------------------------------------------- la dirección pública del hub
+CLAVE_PUBLICA = "Clave en la dirección pública"
+CERTIFICADO_PUBLICO = "Certificado de la dirección pública"
+_SIN_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))       # para hablar con este equipo
+
+
+def _pagina(url, espera, abrir):
+    """(código, cuerpo) de pedir una página sin credenciales. El cuerpo, solo si respondió 2xx."""
+    try:
+        with abrir(urllib.request.Request(url, headers={"User-Agent": "msx-hub"}), timeout=espera) as r:
+            return r.status, r.read(1 << 18) if 200 <= r.status < 300 else b""
+    except urllib.error.HTTPError as err:
+        return err.code, b""
+
+
+def exige_clave(publica, local, donde, senal="", espera=ESPERA):
+    """¿Pide clave la dirección pública del hub a quien entra por ella sin traerla?
+
+    `publica` es la página de una señal que MediaMTX no enseña sin clave a nadie de la red (la de una
+    fuente), pedida por la dirección pública; `local`, la misma página pedida a MediaMTX desde este
+    equipo; `donde`, la dirección pública como está en Ajustes y `senal`, el nombre de esa fuente,
+    para decirlos. Se pide como la pediría un desconocido, sin credenciales: lo correcto es un 401.
+
+    Hace falta porque un proxy inverso en este mismo equipo llega a MediaMTX desde 127.0.0.1, y
+    MediaMTX solo sabe de quién es cada petición si el proxy lo anota en X-Forwarded-For (ver
+    mtx.PROXIES_LOCALES). Si no lo anota, todo lo que entra por él pasa por ser del propio hub, que
+    lee y publica sin clave. Pedir la página no abre ninguna señal ni arranca nada en MediaMTX.
+
+    Si en vez de un 401 llega una página, se compara con la que MediaMTX da a este equipo: solo si es
+    la misma se dice que se entra sin clave (otra web en esa dirección también respondería 200).
+
+    Devuelve los pasos. Lo que no se puede saber desde el propio hub (no llega a su dirección pública,
+    o el nombre apunta a este mismo equipo y la petición sería suya de verdad) no cuenta."""
+    def desde_aqui_no(motivo, ms=None):
+        return [_paso(CLAVE_PUBLICA, None, f"{motivo}. Desde aquí no se puede comprobar que esa dirección pida clave: "
+                                           "hay que mirarlo desde otro equipo", ms, al_conectar=True)]
+    try:
+        esquema, host, puerto = partes_url(publica, 443 if publica.lower().startswith("https") else 80)
+        if esquema not in ("http", "https"):
+            raise ValueError("Tiene que empezar por https:// (o http://)")
+    except ValueError as err:
+        return [_paso(CLAVE_PUBLICA, None, f"La dirección pública {donde} no se puede usar. {err}")]
+    paso, dirs = resolver(host, puerto)
+    if not dirs:
+        return desde_aqui_no(f"Este equipo no encuentra «{host}»", paso["ms"])
+    if any(ipaddress.ip_address(d[0].split("%")[0]).is_loopback for _, d in dirs):
+        return desde_aqui_no(f"«{host}» apunta a este mismo equipo, y lo que se pide desde aquí entra como del propio hub")
+
+    pasos, abrir = [], urllib.request.urlopen
+    while True:
+        t = time.monotonic()
+        try:
+            codigo, cuerpo = _pagina(publica, espera, abrir)
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as err:
+            motivo = getattr(err, "reason", err)
+            if isinstance(motivo, ssl.SSLCertVerificationError) and not pasos:
+                # lo que importa aquí es si pide clave: se dice lo del certificado y se pregunta sin comprobarlo
+                pasos.append(_paso(CERTIFICADO_PUBLICO, None,
+                                   f"El certificado de {donde} no es válido para este equipo ({motivo.verify_message}). "
+                                   "Un navegador que tampoco lo dé por bueno no abrirá la señal", _ms(t)))
+                sin_comprobar = ssl.create_default_context()
+                sin_comprobar.check_hostname, sin_comprobar.verify_mode = False, ssl.CERT_NONE
+                abrir = lambda peticion, timeout: urllib.request.urlopen(peticion, timeout=timeout, context=sin_comprobar)
+                continue
+            texto = _error_red(motivo) if isinstance(motivo, Exception) else f"No se pudo conectar: {motivo}"
+            return pasos + desde_aqui_no(f"Este equipo no llega a {donde} ({texto[0].lower()}{texto[1:]})", _ms(t))
+        break
+    ms = _ms(t)
+    de = f" de «{senal}»" if senal else ""
+    if codigo in (401, 403):
+        pasos.append(_paso(CLAVE_PUBLICA, True, f"Por {donde} no se entra sin clave a lo que el hub no entrega abierto", ms))
+    elif 200 <= codigo < 300:
+        try:
+            misma = _pagina(local, espera, _SIN_PROXY.open) == (codigo, cuerpo)
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
+            misma = False
+        if misma:
+            pasos.append(_paso(CLAVE_PUBLICA, False,
+                               f"Por {donde} se entra sin clave: al pedir sin credenciales la página{de}, que el hub no "
+                               "entrega abierta, responde con ella. El proxy que hay delante no le dice al hub de dónde "
+                               "viene cada petición (cabecera X-Forwarded-For) y el hub las toma por suyas: quien conozca "
+                               "la dirección puede ver cualquier señal y publicar. Se corrige en el proxy", ms))
+        else:
+            pasos.append(_paso(CLAVE_PUBLICA, None, f"{donde} responde, pero no con lo que da el hub: no parece que esa "
+                                                    "dirección lleve hasta él", ms))
+    elif codigo == 500:
+        # MediaMTX responde así, a cualquiera, cuando aún no conoce la señal por la que se pregunta
+        pasos.append(_paso(CLAVE_PUBLICA, None, f"No se pudo comprobar ahora que {donde} pida clave: MediaMTX todavía no "
+                                                f"conoce la señal{de}. Vuelve a probar en unos segundos", ms, al_conectar=True))
+    elif codigo in (502, 503, 504):
+        pasos.append(_paso(CLAVE_PUBLICA, False, f"{donde} respondió {codigo}: el proxy que hay delante no llega al hub", ms))
+    else:
+        pasos.append(_paso(CLAVE_PUBLICA, None, f"{donde} respondió {codigo} al pedir la página{de}: no parece que esa "
+                                                "dirección lleve hasta el hub", ms))
+    return pasos
 
 
 # ---------------------------------------------------------------- lo que escucha el hub

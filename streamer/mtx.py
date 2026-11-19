@@ -177,6 +177,17 @@ LOCAL = {"user": "any", "pass": "", "ips": ["127.0.0.1", "::1"],
                          {"action": "api", "path": ""}]}
 
 
+# Un proxy inverso en este mismo equipo (el Caddy del Recorder delante de HLS o de WebRTC) llega a
+# MediaMTX desde 127.0.0.1, que para él es el usuario LOCAL. Probado con la 1.21.1: sin más, quien
+# entra por ese proxy lee cualquier señal por HLS y mira o publica por WebRTC sin clave ni token.
+# Con estas listas MediaMTX juzga lo que le llega de este equipo por la dirección que el proxy anota
+# en X-Forwarded-For; lo que no la trae (el panel y los ffmpeg del hub) sigue siendo local, y quien
+# llama directamente desde la red no puede hacerse pasar por local poniéndola él.
+# Pedírselas a un MediaMTX que no las tiene reinicia sus servidores HLS y WebRTC (en el banco, quien
+# miraba por HLS estuvo 10 s sin imagen): pasa una vez, la primera que el supervisor se las pide.
+PROXIES_LOCALES = ["127.0.0.1/32", "::1/128"]        # escritas como las devuelve MediaMTX
+
+
 def _patron(paths):
     return "~^(" + "|".join(re.escape(p) for p in sorted(paths)) + ")$"
 
@@ -194,7 +205,8 @@ def acceso_deseado(paths_hls, usuarios=(), publicar=()):
     if permisos:
         lista.append({"user": "any", "pass": "", "ips": [], "permissions": permisos})
     lista += sorted(usuarios, key=lambda u: json.dumps(u, sort_keys=True))
-    return {"authMethod": "internal", "authInternalUsers": lista, "hlsAlwaysRemux": False}
+    return {"authMethod": "internal", "authInternalUsers": lista, "hlsAlwaysRemux": False,
+            "hlsTrustedProxies": PROXIES_LOCALES, "webrtcTrustedProxies": PROXIES_LOCALES}
 
 
 OCULTA = "<redacted>"       # así devuelve MediaMTX una contraseña guardada: no se puede comparar

@@ -747,6 +747,34 @@ def _exigir_aire(request, x, rutas, que):
         _exigir(request, x.c, "modificar_al_aire", f"{que} está al aire hacia {nombres}")
 
 
+def _exigir_corte(request, x, protocolos, dicho, que, cambio):
+    """Un cambio de ajustes que reinicia un servidor del hub corta lo que esté al aire por ese
+    protocolo. Como al cambiar la fuente de un destino al aire, hace falta el permiso de modificar lo
+    que está al aire y decir qué destinos se cortan (`dicho`), que es la prueba de que se ha visto la
+    lista. Devuelve las rutas que el cambio corta: [(ruta, estado)]."""
+    afectadas = [(r, e) for r, e in ((r, x.estado_ruta(r)) for r in x.rutas.values()) if estados.al_aire(e)
+                 and {x.destinos[r["destino"]]["protocolo"], (x.fuentes.get(r["fuente"]) or {}).get("protocolo")} & protocolos]
+    if not afectadas:
+        return []
+    _exigir_aire(request, x, afectadas, que)
+    destinos = sorted(r["destino"] for r, _ in afectadas)
+    if sorted(set(dicho or [])) != destinos:
+        rutas = [{"destino": r["destino"], "destino_nombre": x.nombre("destinos", r["destino"]), "fuente": r["fuente"],
+                  "fuente_nombre": x.nombre("fuentes", r["fuente"]), "estado": e["estado"], "estado_nombre": e["nombre"]}
+                 for r, e in afectadas]
+        nombres = ", ".join(f"«{a['fuente_nombre']}» → «{a['destino_nombre']}» ({a['estado_nombre'].lower()})" for a in rutas[:5])
+        resto = f" y {len(rutas) - 5} más" if len(rutas) > 5 else ""
+        raise HTTPException(409, {"mensaje": f"{cambio} corta lo que está al aire por ahí: {nombres}{resto}. Quien esté conectado "
+                                             "tendrá que volver a conectar. Confirma el cambio diciendo qué destinos se cortan.",
+                                  "al_aire": rutas, "corta": destinos})
+    return afectadas
+
+
+def _cortadas(rutas):
+    """Lo que se apunta en el registro de cambios cuando un cambio de ajustes corta rutas al aire."""
+    return f"; corta {len(rutas)} ruta{'s' if len(rutas) != 1 else ''} al aire" if rutas else ""
+
+
 def _campos_dichos(campos):
     return ", ".join(sorted(NOMBRES_CAMPOS.get(k, k) for k in campos)) or "sin cambios"
 
@@ -1103,8 +1131,47 @@ def _prueba_ajena(fila):
     return sondas.whip_responde(fila["url"], fila["clave"])
 
 
-def _prueba_propia(fila, lado, c):
-    """El otro equipo es quien llama: se comprueba que el hub esté escuchando donde dice."""
+def _clave_publica(c, n, fila, lado, paths=None):
+    """Pasos de comprobar que la dirección pública por la que se entrega HLS o WebRTC (un proxy con
+    certificado delante de MediaMTX) pide clave a quien entra sin ella; ninguno si no hay dirección
+    pública propia o no hay con qué comprobarlo.
+
+    Se pregunta por la página de una fuente del hub, que MediaMTX no enseña sin clave a nadie de la
+    red: la propia si lo que se prueba es una fuente, la de su ruta si es un destino y, si no, otra
+    cualquiera que MediaMTX ya conozca. Vale también para lo que se entrega sin clave: lo que se mira
+    es que por esa dirección no se llegue a lo demás."""
+    proto = fila["protocolo"]
+    base = (n.get(f"{proto}_url") or "").rstrip("/") if proto in ("hls", "webrtc") else ""
+    if not base:
+        return []
+    if paths is None:
+        paths = _mediamtx()[0]
+    fuentes = {f["id"]: f for f in matriz.fuentes(c) if f["activo"] and f["id"] in (paths or {})}
+    if lado == "fuente":
+        primera = fila.get("id")
+    else:
+        ruta = c.execute("SELECT fuente FROM rutas WHERE destino=?", (fila.get("id") or "",)).fetchone()
+        primera = ruta["fuente"] if ruta else None
+    f = fuentes.get(primera) or next((fuentes[i] for i in sorted(fuentes)), None)
+    if not f:
+        return []
+    puerto = int(CFG.get("hls_puerto", 8888)) if proto == "hls" else n["webrtc_puerto"]
+    return sondas.exige_clave(f"{base}/{f['id']}/", f"http://127.0.0.1:{puerto}/{f['id']}/", base, f["nombre"])
+
+
+def _con_la_publica(pasos, extra):
+    """El resultado de una prueba con lo que se vio en la dirección pública detrás. Si ahí no hay nada
+    que objetar, el resumen sigue siendo el de la prueba."""
+    r = sondas.resultado(pasos)
+    if not extra:
+        return r
+    todo = sondas.resultado(pasos + extra)
+    return todo if todo["ok"] != r["ok"] else {**todo, "resumen": r["resumen"]}
+
+
+def _prueba_propia(fila, lado, c, paths=None):
+    """El otro equipo es quien llama: se comprueba que el hub esté escuchando donde dice y, si HLS o
+    WebRTC se entregan por una dirección pública propia, que por ella no se entre sin clave."""
     n = matriz.ajustes_red(c, CFG)
     puerto_propio = matriz.json_de(fila.get("opciones"), {}).get("puerto")
     proto = fila["protocolo"]
@@ -1138,10 +1205,10 @@ def _prueba_propia(fila, lado, c):
             pasos.append(sondas.paso("Certificado de RTMPS", None, _certificado_del_disco(aviso)))
         elif aviso and (_servidores_mtx() or {}).get("rtmps"):      # sigue en marcha, en el puerto que tenía
             pasos[-1] = sondas.paso("RTMPS", None, _certificado_del_disco(aviso))
-    if not n.get("host_publico"):
+    if not (n.get("host_publico") or (proto in ("hls", "webrtc") and n.get(f"{proto}_url"))):
         pasos.append(sondas.paso("Dirección pública", None, "Falta la dirección pública del hub en Ajustes: la dirección "
                                                            "que se entrega solo vale dentro de este equipo"))
-    return sondas.resultado(pasos)
+    return _con_la_publica(pasos, _clave_publica(c, n, fila, lado, paths) if pasos[0]["ok"] else [])
 
 
 def _probar(lado, fila, x):
@@ -1153,19 +1220,23 @@ def _probar(lado, fila, x):
         a = x.adaptadores.get(fila["protocolo"]) or {}
         return sondas.resultado([sondas.paso(f"Adaptador {P.NOMBRES[fila['protocolo']]}", bool(a.get("listo")),
                                              a.get("falta") or "Listo")])
+    senal = None
     if lado == "fuente":
         e = x.estado_fuente(fila)
         if e["estado"] == estados.RECIBIENDO:
-            return sondas.resultado([sondas.paso("Señal", True, "Ya llega señal de esta fuente. " + ". ".join(
-                h["que"] for h in e["evidencia"][:2]))])
+            senal = "Ya llega señal de esta fuente. "
     else:
         r = x.rutas.get(fila["id"])
         e = x.estado_ruta(r) if r else None
         if e and e["estado"] == estados.ENVIANDO and not e.get("sin_confirmar"):
             # un receptor SRT ya conectado no contesta a otro saludo: la prueba es que la señal sale
-            return sondas.resultado([sondas.paso("Señal", True, "La ruta está enviando ahora mismo. " + ". ".join(
-                h["que"] for h in e["evidencia"][:2]))])
-    return _prueba_ajena(fila) if fila["inicia"] == "hub" else _prueba_propia(fila, lado, x.c)
+            senal = "La ruta está enviando ahora mismo. "
+    if senal:
+        # que la señal pase no dice si por la dirección pública se entra sin clave: eso se mira igual
+        paso = sondas.paso("Señal", True, senal + ". ".join(h["que"] for h in e["evidencia"][:2]))
+        ajena = fila["inicia"] == "hub"
+        return _con_la_publica([paso], [] if ajena else _clave_publica(x.c, matriz.ajustes_red(x.c, CFG), fila, lado, x.paths))
+    return _prueba_ajena(fila) if fila["inicia"] == "hub" else _prueba_propia(fila, lado, x.c, x.paths)
 
 
 @router.post("/api/fuentes/{fid}/probar", dependencies=[exige("ver")])
@@ -1365,6 +1436,7 @@ class Red(BaseModel):
     host_publico: Optional[str] = None
     hls_url: Optional[str] = None
     webrtc_url: Optional[str] = None
+    corta: Optional[list[str]] = None       # los destinos al aire que el cambio corta: confirma que se sabe cuáles
 
 
 class Ice(BaseModel):
@@ -1376,6 +1448,7 @@ class Ice(BaseModel):
 class WebRTC(BaseModel):
     hosts: list[str] = []
     ice: list[Ice] = []
+    corta: Optional[list[str]] = None       # los destinos al aire que el cambio corta: confirma que se sabe cuáles
 
 
 class Permisos(BaseModel):
@@ -1447,7 +1520,8 @@ def ver_ajustes():
 @router.put("/api/ajustes/red", dependencies=[exige("ajustes")])
 def guardar_red(d: Red, request: Request):
     """Puertos de RTMP y WebRTC y direcciones públicas. Cambiar un puerto en uso reconecta a quien
-    esté conectado por ese protocolo: con rutas al aire por él hace falta el permiso de modificarlas."""
+    esté conectado por ese protocolo: con rutas al aire por él hace falta el permiso de modificarlas
+    y decir en `corta` qué destinos se cortan."""
     c = db.conectar()
     guardado = dict(db.ajuste(c, "red") or {})
     actual = matriz.ajustes_red(c, CFG)
@@ -1479,22 +1553,23 @@ def guardar_red(d: Red, request: Request):
                 raise HTTPException(422, "La dirección debe empezar por http:// o https://")
             guardado[clave] = valor
             cambios.append(clave.replace("_", " "))
-    if protocolos:
-        x = Contexto(c)
-        afectadas = [(r, e) for r, e in ((r, x.estado_ruta(r)) for r in x.rutas.values()) if estados.al_aire(e)
-                     and {x.destinos[r["destino"]]["protocolo"], (x.fuentes.get(r["fuente"]) or {}).get("protocolo")} & protocolos]
-        _exigir_aire(request, x, afectadas, "Ese puerto")
+    cortadas = _exigir_corte(request, Contexto(c), protocolos, d.corta, "Ese puerto", "Cambiar ese puerto") if protocolos else []
     db.guardar_ajuste(c, "red", {k: v for k, v in guardado.items() if v not in ("", None)})
-    _cambio(c, request, "Cambió los ajustes de red", "", ", ".join(cambios) or "sin cambios")
+    _cambio(c, request, "Cambió los ajustes de red", "", (", ".join(cambios) or "sin cambios") + _cortadas(cortadas))
     _olvidar()
     return _vista_ajustes(c)
 
 
 @router.put("/api/ajustes/webrtc", dependencies=[exige("ajustes")])
 def guardar_webrtc(d: WebRTC, request: Request):
-    """Direcciones que el hub anuncia y servidores STUN o TURN para WebRTC fuera de la red local."""
+    """Direcciones que el hub anuncia y servidores STUN o TURN para WebRTC fuera de la red local.
+    Cambiarlos reinicia el servidor WebRTC de MediaMTX: quien miraba se queda sin imagen hasta que su
+    página vuelve a conectar (unos 18 s en el banco) y quien publicaba tiene que volver a publicar. Con
+    rutas al aire por WebRTC hace falta el permiso de modificarlas y decir en `corta` qué destinos se
+    cortan."""
     c = db.conectar()
-    antes = {s.get("url"): s for s in (db.ajuste(c, "webrtc") or {}).get("ice") or [] if isinstance(s, dict)}
+    guardado = db.ajuste(c, "webrtc") or {}
+    antes = {s.get("url"): s for s in guardado.get("ice") or [] if isinstance(s, dict)}
     hosts = []
     for h in d.hosts[:8]:
         h = h.strip()
@@ -1508,8 +1583,14 @@ def guardar_webrtc(d: WebRTC, request: Request):
             raise HTTPException(422, "Un servidor ICE se escribe stun:servidor:3478 o turn:servidor:3478")
         clave = s.clave if s.clave is not None else (antes.get(url) or {}).get("clave", "")
         ice.append({"url": url, "usuario": _texto(s.usuario, "el usuario", 200), "clave": _texto(clave, "la credencial", 500)})
+    cortadas = []
+    if (hosts, ice) != (guardado.get("hosts") or [], guardado.get("ice") or []):       # lo mismo que hay no reinicia nada
+        cortadas = _exigir_corte(request, Contexto(c), {"webrtc"}, d.corta, "WebRTC",
+                                 "Cambiar las direcciones que anuncia el hub o sus servidores ICE reinicia su servidor WebRTC y")
     db.guardar_ajuste(c, "webrtc", {"hosts": hosts, "ice": ice})
-    _cambio(c, request, "Cambió los ajustes de WebRTC", "", f"{len(hosts)} direcciones anunciadas, {len(ice)} servidores ICE")
+    _cambio(c, request, "Cambió los ajustes de WebRTC", "",
+            f"{len(hosts)} {'dirección anunciada' if len(hosts) == 1 else 'direcciones anunciadas'}, "
+            f"{len(ice)} {'servidor' if len(ice) == 1 else 'servidores'} ICE" + _cortadas(cortadas))
     _olvidar()
     return _vista_ajustes(c)
 
