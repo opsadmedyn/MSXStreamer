@@ -260,13 +260,17 @@ def whip_responde(url, token="", espera=ESPERA):
 # ---------------------------------------------------------------- la dirección pública del hub
 CLAVE_PUBLICA = "Clave en la dirección pública"
 CERTIFICADO_PUBLICO = "Certificado de la dirección pública"
+PROPIO = "127.0.0.1"            # de donde dice venir quien quiere pasar por este mismo equipo
 _SIN_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))       # para hablar con este equipo
 
 
-def _pagina(url, espera, abrir):
-    """(código, cuerpo) de pedir una página sin credenciales. El cuerpo, solo si respondió 2xx."""
+def _pagina(url, espera, abrir, origen=""):
+    """(código, cuerpo) de pedir una página sin credenciales. El cuerpo, solo si respondió 2xx. Con
+    `origen`, la petición dice venir de esa dirección (cabecera X-Forwarded-For), como la mandaría
+    quien quisiera pasar por otro."""
+    cabeceras = {"User-Agent": "msx-hub", **({"X-Forwarded-For": origen} if origen else {})}
     try:
-        with abrir(urllib.request.Request(url, headers={"User-Agent": "msx-hub"}), timeout=espera) as r:
+        with abrir(urllib.request.Request(url, headers=cabeceras), timeout=espera) as r:
             return r.status, r.read(1 << 18) if 200 <= r.status < 300 else b""
     except urllib.error.HTTPError as err:
         return err.code, b""
@@ -287,6 +291,10 @@ def exige_clave(publica, local, donde, senal="", espera=ESPERA):
 
     Si en vez de un 401 llega una página, se compara con la que MediaMTX da a este equipo: solo si es
     la misma se dice que se entra sin clave (otra web en esa dirección también respondería 200).
+
+    Con el 401 no basta. Un proxy que deja pasar la X-Forwarded-For que traiga la petición (uno que
+    solo anota X-Real-IP, por ejemplo) responde 401 a quien pide sin más y abre a quien manda esa
+    cabecera con 127.0.0.1, porque MediaMTX se la cree. Así que se pide otra vez, diciéndolo.
 
     Devuelve los pasos. Lo que no se puede saber desde el propio hub (no llega a su dirección pública,
     o el nombre apunta a este mismo equipo y la petición sería suya de verdad) no cuenta."""
@@ -326,14 +334,39 @@ def exige_clave(publica, local, donde, senal="", espera=ESPERA):
         break
     ms = _ms(t)
     de = f" de «{senal}»" if senal else ""
-    if codigo in (401, 403):
-        pasos.append(_paso(CLAVE_PUBLICA, True, f"Por {donde} no se entra sin clave a lo que el hub no entrega abierto", ms))
-    elif 200 <= codigo < 300:
+
+    def la_del_hub(respuesta):
+        """¿Es eso lo que MediaMTX da a este equipo por esa misma página?"""
         try:
-            misma = _pagina(local, espera, _SIN_PROXY.open) == (codigo, cuerpo)
+            return _pagina(local, espera, _SIN_PROXY.open) == respuesta
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
-            misma = False
-        if misma:
+            return False
+    if codigo in (401, 403):
+        t = time.monotonic()
+        try:
+            disfrazada = _pagina(publica, espera, abrir, origen=PROPIO)
+            dijo = f"respondió {disfrazada[0]}"
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as err:
+            motivo = getattr(err, "reason", err)
+            texto = _error_red(motivo) if isinstance(motivo, Exception) else f"No se pudo conectar: {motivo}"
+            disfrazada, dijo = (0, b""), f"{texto[0].lower()}{texto[1:]}"
+        ms += _ms(t)
+        if 200 <= disfrazada[0] < 300 and la_del_hub(disfrazada):
+            pasos.append(_paso(CLAVE_PUBLICA, False,
+                               f"Por {donde} se entra sin clave diciendo venir del propio equipo: al pedir la página{de} "
+                               f"con la cabecera X-Forwarded-For: {PROPIO}, responde con ella. El proxy que hay delante "
+                               "deja pasar esa cabecera como la trae la petición, en vez de poner en ella la dirección de "
+                               "quien conecta, y el hub se la cree: quien lo sepa puede ver cualquier señal y publicar. "
+                               "Se corrige en el proxy", ms))
+        elif disfrazada[0] in (401, 403):
+            pasos.append(_paso(CLAVE_PUBLICA, True, f"Por {donde} no se entra sin clave a lo que el hub no entrega abierto, "
+                                                    "ni diciendo venir del propio equipo", ms))
+        else:
+            pasos.append(_paso(CLAVE_PUBLICA, None,
+                               f"Por {donde} no entra sin clave quien pide sin más, pero no se pudo comprobar que tampoco "
+                               f"entre quien dice venir del propio equipo (al pedirlo así, {dijo}). Vuelve a probar", ms))
+    elif 200 <= codigo < 300:
+        if la_del_hub((codigo, cuerpo)):
             pasos.append(_paso(CLAVE_PUBLICA, False,
                                f"Por {donde} se entra sin clave: al pedir sin credenciales la página{de}, que el hub no "
                                "entrega abierta, responde con ella. El proxy que hay delante no le dice al hub de dónde "

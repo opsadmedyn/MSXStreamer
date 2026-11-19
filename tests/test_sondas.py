@@ -275,13 +275,15 @@ PAGINA = b"<html>la pagina que MediaMTX da de una senal</html>"
 
 
 def _web(responder):
-    """Un servidor web de mentira: responder(ruta) -> (código, cuerpo). Devuelve (servidor, base, pedidas)."""
+    """Un servidor web de mentira: responder(ruta, origen) -> (código, cuerpo), donde origen es de dónde
+    dice venir la petición (X-Forwarded-For) o None. Devuelve (servidor, base, pedidas)."""
     pedidas = []
 
     class Web(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            pedidas.append((self.path, self.headers.get("Authorization")))
-            codigo, cuerpo = responder(self.path)
+            origen = self.headers.get("X-Forwarded-For")
+            pedidas.append((self.path, self.headers.get("Authorization"), origen))
+            codigo, cuerpo = responder(self.path, origen)
             self.send_response(codigo)
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
@@ -301,12 +303,20 @@ def publica(monkeypatch):
     monkeypatch.setenv("no_proxy", "*")
     monkeypatch.setattr(sondas, "resolver", lambda host, puerto, tipo=None: (sondas.paso("Resolver el nombre", True, ""),
                                                                               [(socket.AF_INET, ("198.51.100.7", puerto))]))
-    respuestas = {"codigo": 401, "cuerpo": b""}
-    delante, base, pedidas = _web(lambda ruta: (respuestas["codigo"], respuestas["cuerpo"]))
-    mediamtx, local, _ = _web(lambda ruta: (200, PAGINA))
+    respuestas = {}
+
+    def responder(ruta, origen):
+        """`disfrazada`: lo que se responde a quien dice venir del propio equipo, si no es lo mismo."""
+        if origen and "disfrazada" in respuestas:
+            return respuestas["disfrazada"]
+        return respuestas["codigo"], respuestas["cuerpo"]
+    delante, base, pedidas = _web(responder)
+    mediamtx, local, _ = _web(lambda ruta, origen: (200, PAGINA))
 
     def probar(**cambios):
-        respuestas.update(cambios)
+        respuestas.clear()
+        respuestas.update({"codigo": 401, "cuerpo": b""}, **cambios)
+        del pedidas[:]
         return sondas.exige_clave(f"{base}/camara/", f"{local}/camara/", "https://hls.ejemplo.tv", "Cámara 1", espera=2)
     probar.pedidas, probar.base = pedidas, base
     yield probar
@@ -318,8 +328,33 @@ def publica(monkeypatch):
 def test_la_direccion_publica_que_responde_401_a_quien_no_trae_clave_esta_bien(publica):
     (paso,) = publica(codigo=401)
     assert paso["que"] == sondas.CLAVE_PUBLICA and paso["ok"] is True and not paso["al_conectar"]
-    assert paso["detalle"] == "Por https://hls.ejemplo.tv no se entra sin clave a lo que el hub no entrega abierto"
-    assert publica.pedidas == [("/camara/", None)]              # una sola petición, y sin credenciales
+    assert paso["detalle"] == ("Por https://hls.ejemplo.tv no se entra sin clave a lo que el hub no entrega abierto, "
+                               "ni diciendo venir del propio equipo")
+    # dos peticiones sin credenciales: una sin más y otra que dice venir del propio equipo
+    assert publica.pedidas == [("/camara/", None, None), ("/camara/", None, "127.0.0.1")]
+
+
+def test_un_proxy_que_deja_pasar_la_direccion_de_origen_que_trae_la_peticion_esta_abierto(publica):
+    """Lo que pasa con un proxy que solo anota X-Real-IP: a quien pide sin más le responde 401, y a quien
+    manda X-Forwarded-For: 127.0.0.1 MediaMTX lo toma por el propio equipo."""
+    (paso,) = publica(codigo=401, disfrazada=(200, PAGINA))
+    assert paso["que"] == sondas.CLAVE_PUBLICA and paso["ok"] is False and not paso["al_conectar"]
+    assert paso["detalle"].startswith("Por https://hls.ejemplo.tv se entra sin clave diciendo venir del propio equipo: "
+                                      "al pedir la página de «Cámara 1» con la cabecera X-Forwarded-For: 127.0.0.1")
+    assert "deja pasar esa cabecera" in paso["detalle"] and "Se corrige en el proxy" in paso["detalle"]
+    assert sondas.resultado([sondas.paso("Puerto", True, "escucha"), paso])["ok"] is False
+
+
+def test_si_no_se_puede_saber_que_pasa_con_quien_dice_venir_del_propio_equipo_queda_en_duda(publica):
+    """Solo vale como cerrada si a esa petición también se le niega la entrada."""
+    for disfrazada, dijo in (((502, b""), "respondió 502"), ((404, b""), "respondió 404"),
+                             ((200, b"<html>otra cosa</html>"), "respondió 200")):
+        (paso,) = publica(codigo=401, disfrazada=disfrazada)
+        assert paso["ok"] is None and not paso["al_conectar"], disfrazada
+        assert paso["detalle"] == ("Por https://hls.ejemplo.tv no entra sin clave quien pide sin más, pero no se pudo comprobar "
+                                   f"que tampoco entre quien dice venir del propio equipo (al pedirlo así, {dijo}). Vuelve a probar")
+    (paso,) = publica(codigo=403, disfrazada=(403, b""))
+    assert paso["ok"] is True
 
 
 def test_si_la_direccion_publica_da_sin_clave_la_pagina_del_hub_se_dice_que_esta_abierta(publica):
@@ -353,7 +388,7 @@ def test_un_proxy_que_no_llega_al_hub_es_un_fallo_y_una_senal_que_mediamtx_aun_n
 def test_lo_que_el_hub_no_puede_ver_de_su_direccion_publica_no_cuenta(monkeypatch):
     monkeypatch.setenv("no_proxy", "*")
     # el nombre apunta a este mismo equipo: lo que se pida desde aquí entra como del propio hub, así que ni se pide
-    servidor, base, pedidas = _web(lambda ruta: (200, PAGINA))
+    servidor, base, pedidas = _web(lambda ruta, origen: (200, PAGINA))
     try:
         (paso,) = sondas.exige_clave(f"{base}/camara/", f"{base}/camara/", base, "Cámara 1", espera=2)
     finally:
@@ -389,7 +424,7 @@ def test_un_certificado_que_este_equipo_no_da_por_bueno_se_dice_y_se_sigue_pregu
     clave, cert = tmp_path / "clave.pem", tmp_path / "cert.pem"
     subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(clave), "-out", str(cert),
                     "-days", "2", "-subj", "/CN=proxy-de-pruebas"], check=True, capture_output=True, timeout=60)
-    servidor, _, pedidas = _web(lambda ruta: (401, b""))
+    servidor, _, pedidas = _web(lambda ruta, origen: (401, b""))
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(str(cert), str(clave))
     servidor.socket = tls.wrap_socket(servidor.socket, server_side=True)
@@ -401,7 +436,7 @@ def test_un_certificado_que_este_equipo_no_da_por_bueno_se_dice_y_se_sigue_pregu
         servidor.server_close()
     assert [p["que"] for p in pasos] == [sondas.CERTIFICADO_PUBLICO, sondas.CLAVE_PUBLICA]
     assert pasos[0]["ok"] is None and not pasos[0]["al_conectar"] and "no es válido para este equipo" in pasos[0]["detalle"]
-    assert pasos[1]["ok"] is True and pedidas == [("/camara/", None)]
+    assert pasos[1]["ok"] is True and pedidas == [("/camara/", None, None), ("/camara/", None, "127.0.0.1")]
     assert sondas.resultado(pasos)["ok"] is None                # ni «todo bien» ni «abierta»
 
 
