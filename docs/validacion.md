@@ -48,6 +48,13 @@ La misma prueba de las formas de conexión comprobó en el banco, además:
 - La selección de pistas de audio por destino, con una fuente de dos pistas.
 - El corte de la fuente con tres rutas activas, la política de reconexión con tope de intentos y el
   cambio de la fuente de un destino al aire, con su confirmación y sus permisos.
+- HLS y WebRTC con HTTPS por delante, por un proxy de pruebas en el mismo equipo: un lector y un
+  navegador reproducen, un navegador publica por WHIP con su token, y quien entra sin token recibe
+  un 401. Con un proxy que no anota de dónde viene cada petición se entra sin clave, y «Probar la
+  conexión» lo dice.
+- WebRTC con una dirección anunciada y un servidor TURN de pruebas (coturn): un navegador que solo
+  puede salir por el TURN reproduce y publica, y cambiar esos ajustes con alguien mirando pide
+  confirmar qué se corta y no corta lo que va por SRT.
 
 Verificadas con equipos reales: **ninguna todavía.** La prueba en la HP Z8 con señales reales está
 pendiente de que se apruebe el relevo.
@@ -62,7 +69,9 @@ Pendientes de validación:
   pruebas de minutos, no se nota: no está medido cuánto tarda en notarse con un origen real ni cómo
   se recupera.
 - RTMPS con un certificado de verdad y contra plataformas reales.
-- WebRTC y HLS fuera de la red local: HTTPS por delante y, en WebRTC, STUN o TURN.
+- HLS y WebRTC fuera de la red local, en la red de la estación: el proxy HTTPS, los nombres y el
+  certificado de verdad, y WebRTC atravesando un NAT real con su servidor STUN o TURN. En el banco
+  pasó con un proxy y un servidor TURN de pruebas dentro del mismo equipo, que no es lo mismo.
 - Las conversiones de vídeo con NVENC, y con señales 1080i o 1080p59,94.
 - MediaMTX no informa de si un destino WHIP recibe lo que se le reenvía: el hub lo enseña como
   «enviando, sin confirmar». En el banco se comprobó mirando el otro servidor.

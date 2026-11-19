@@ -17,6 +17,8 @@ reales»; eso se anota aparte (ver [validacion.md](validacion.md)).
   (`npm i playwright && npx playwright install chromium`, o el runtime del compositor de una
   estación, ver más abajo). Sin navegador la prueba corre igual y deja WebRTC «sin comprobar».
 - Salida a internet la primera vez: descarga MediaMTX v1.21.1 y comprueba su suma SHA-256.
+- Para algunos casos de la segunda prueba, `openssl` (certificados de usar y tirar) y `coturn` (el
+  servidor TURN de pruebas). Sin ellos esos casos quedan «sin comprobar» y lo demás corre igual.
 
 ## Arrancarlo
 
@@ -83,7 +85,7 @@ corto mientras se depura, `--fotogramas-b` para que la cámara de pruebas emita 
 hub igual, por la API del panel, y hace pasar señal de verdad por cada forma de conexión. Donde
 hace falta «otro equipo» que sirva o reciba la señal (otro hub, un servidor RTMP, una lista HLS, un
 servidor WHIP, una plataforma RTMPS) lo hace el propio hub por otra de sus salidas, o un segundo
-MediaMTX que el guion levanta para la ocasión. Son once casos:
+MediaMTX que el guion levanta para la ocasión. Son trece casos:
 
 | Caso | Qué comprueba |
 |---|---|
@@ -98,6 +100,8 @@ MediaMTX que el guion levanta para la ocasión. Son once casos:
 | `reconexion` | Política de reconexión con tope de intentos: «reconectando» mientras lo intenta, «error» al agotarlos, y nada más hasta que alguien pulsa «Reintentar». |
 | `cambio` | Cambiar la fuente de un destino al aire: el hub dice cuál está al aire y pide confirmación, un operador no puede hacerlo y el cambio queda en el registro con quién lo hizo. |
 | `matriz` | Las 42 combinaciones entre SRT, RTMP, HLS y WebRTC: cada una de las seis formas de entrada conectada a la vez a las siete formas de salida, con audio y vídeo comprobados en cada una. Antes de activar se lee el plan de las siete. |
+| `https` | HLS y WebRTC con HTTPS por delante: un proxy con certificado en el mismo equipo (`tests/banco/https_delante.py`) y el hub entregando esas direcciones. Un lector y un navegador reproducen, otro navegador publica por WHIP, quien entra por el proxy sin token recibe un 401 y «Probar la conexión» lo confirma. Después, con un proxy que no anota de dónde viene cada petición, se entra sin clave y «Probar la conexión» lo dice. |
+| `ice` | WebRTC con una dirección anunciada y un servidor TURN (un coturn que el guion levanta). Cambiar esos ajustes con alguien mirando exige decir qué se corta, quien miraba vuelve solo y la salida SRT de la misma fuente no se corta. Un navegador que solo puede salir por el TURN reproduce y publica. |
 
 En el banco:
 
@@ -113,6 +117,15 @@ sale con 0, 1 o 3 igual que la prueba de aceptación. `--casos rtmps,fuente` pas
 Para el caso `rtmps` hace falta `openssl`: el guion crea con él el certificado de su plataforma de
 pruebas, y `banco.sh` el del propio banco (firmado por él mismo), con el que el hub atiende RTMPS en
 el puerto 1946. Sin certificado en el hub, esa parte queda «sin comprobar».
+
+El caso `https` necesita también `openssl`, para el certificado de su proxy, y que el equipo tenga
+una dirección de red además de `127.0.0.1`: los clientes de la prueba entran por ella para que
+MediaMTX los vea llegar de fuera. El caso `ice` necesita `coturn` (`sudo apt-get install coturn`
+deja el programa `turnserver`; el guion lanza el suyo, en `127.0.0.1` y con puertos propios). En
+Ubuntu el paquete deja además un servicio habilitado en el puerto 3478, que la prueba no usa:
+`sudo systemctl disable --now coturn` lo apaga. Los dos casos cambian ajustes del hub (las
+direcciones públicas y los de WebRTC) y los dejan como estaban; en un hub que ya tiene los suyos no
+los tocan y quedan «sin comprobar».
 
 ## En una estación, sin tocar lo que está en producción
 
@@ -164,8 +177,11 @@ Los receptores y cámaras de esa prueba toman puertos libres a partir de los que
 
 - La carga de la HP Z8 con sus señales de verdad (1080i, 1080p59,94, varios audios) y con NVENC:
   el banco de desarrollo no tiene tarjeta y codifica por CPU.
-- El comportamiento con la red de por medio: pérdidas, latencia, cortafuegos, NAT y, en WebRTC,
-  servidores STUN o TURN. En el banco todo viaja por `127.0.0.1`.
+- El comportamiento con la red de por medio: pérdidas, latencia, cortafuegos y NAT. En el banco
+  todo viaja dentro del mismo equipo. El proxy HTTPS y el servidor TURN de las pruebas también
+  están en él: comprueban que el hub habla bien con ellos y que no deja entrar sin clave, no que
+  WebRTC atraviese un NAT de verdad ni que el proxy, los nombres y el certificado de una estación
+  estén bien puestos.
 - La compatibilidad con cada codificador, receptor o plataforma concretos (un decodificador SRT de
   un fabricante, YouTube, un reproductor de televisión).
 - NDI y Zixi: necesitan su SDK o su componente con licencia y un equipo real delante.
@@ -236,3 +252,31 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   mide aparte del momento en que vuelve la señal.
 - El reenvío WHIP de MediaMTX hacia otro MediaMTX funciona, y lo que entra por WHIP se reproduce
   por WHEP sin convertir nada.
+- Un proxy inverso en el mismo equipo llega a MediaMTX desde `127.0.0.1`, que para MediaMTX es el
+  propio hub. Por un proxy así, sin credenciales, se leía por HLS cualquier señal y se miraba y se
+  publicaba por WebRTC, y la respuesta traía además la credencial del servidor TURN. Con
+  `hlsTrustedProxies` y `webrtcTrustedProxies` puestos a `127.0.0.1` y `::1`, MediaMTX juzga lo que
+  le llega de ahí por la dirección anotada en `X-Forwarded-For`: de fuera y sin credenciales, 401;
+  sin la cabecera (el panel, los ffmpeg del hub), local como antes; y quien llama directamente
+  desde la red no puede hacerse pasar por local poniéndola. El supervisor lo pide al arrancar
+  (`streamer/mtx.py`). Un proxy que no anota esa cabecera lo deja todo abierto igual.
+- Pedírselo a un MediaMTX que no lo tiene reinicia sus servidores HLS y WebRTC, una vez: un
+  navegador que miraba por HLS estuvo unos 10 s sin imagen, un lector HLS de ffmpeg se cortó y un
+  lector SRT no notó nada (35 s seguidos, con 33 ms como mayor hueco). Después MediaMTX devuelve las
+  listas tal como el hub las pide y no se vuelven a tocar.
+- A quien pide sin credenciales desde fuera la página de una señal declarada, MediaMTX responde 401,
+  por HLS y por WebRTC; a este equipo le da la página (200), y pedirla no arranca nada. Para una
+  señal que no conoce responde 500 a cualquiera. Es lo que usa «Probar la conexión» para ver si por
+  la dirección pública se entra sin clave: pide la página de una fuente y, si en vez de un 401
+  recibe la misma página que MediaMTX le da a él, lo dice.
+- Cambiar las direcciones que anuncia WebRTC o sus servidores ICE reinicia el servidor WebRTC de
+  MediaMTX. Quien miraba se queda sin imagen un segundo después; su página da la conexión por
+  cerrada a los 16 s y vuelve a conectar sola: 18 o 19 s sin imagen. La salida SRT de la misma
+  fuente no se corta. Reiniciar el supervisor con esos ajustes puestos no corta nada.
+- Con un servidor TURN (coturn), un navegador obligado a salir solo por él reproduce la salida
+  WebRTC a 30 fps con audio y publica por WHIP. MediaMTX entrega al navegador los servidores ICE con
+  su credencial: si es una contraseña fija, llega tal cual a cada navegador autorizado; con secreto
+  compartido (usuario `AUTH_SECRET`) MediaMTX fabrica un usuario temporal y el secreto no sale.
+- Si el servidor TURN configurado no responde, WebRTC sigue funcionando por conexión directa, pero
+  cada navegador nuevo tarda entre 9,5 y 10,8 s en empezar a ver, en vez de entre 1,5 y 2,5 s. Con
+  un nombre que no existe, entre 2,5 y 3,5 s.

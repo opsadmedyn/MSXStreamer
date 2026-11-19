@@ -106,7 +106,9 @@ curl -s http://127.0.0.1:8095/api/version
 
 Los puertos y direcciones públicas también se cambian desde Ajustes (`PUT /api/ajustes/red`), que
 manda sobre `config.json`. El hub no pide a MediaMTX un puerto que tenga otro programa: deja ese
-servidor apagado y lo dice en el estado de las fuentes y destinos afectados.
+servidor apagado y lo dice en el estado de las fuentes y destinos afectados. Cambiar desde Ajustes
+el puerto de un servidor reinicia ese servidor y corta lo que esté al aire por él: con rutas al aire
+el hub responde con la lista de las que se cortan y pide confirmarla (ver «Quién puede cambiar qué»).
 
 El panel y el supervisor leen `config.json` al arrancar. Después de cambiarlo hay que reiniciar los
 dos, `sudo systemctl restart msxs-supervisor msxs-web`, que no corta ninguna señal: MediaMTX y los
@@ -192,27 +194,94 @@ Cómo se comporta, medido en el banco con MediaMTX 1.21.1 y señales en marcha:
 
 ## HLS y WebRTC fuera de la red local
 
-Pendiente de validar en la red de la EZC80. Lo previsto:
+Comprobado en el banco de pruebas, con un proxy HTTPS y un servidor TURN de pruebas en el mismo
+equipo que el hub (casos `https` e `ice` de [combinaciones-banco.md](combinaciones-banco.md)).
+Pendiente en la red de la EZC80: el proxy, los nombres y el certificado de verdad, y un NAT real
+entre el hub y quien mira.
 
-- **HTTPS por delante.** Un proxy inverso con certificado (el Caddy del Recorder u otro) sirve HLS
-  y WebRTC con nombres propios, y el hub entrega esas direcciones si se le dicen en `hls_url` y
-  `webrtc_url`. Con Caddy, por ejemplo:
+### HTTPS por delante
+
+Un proxy inverso con certificado (el Caddy del Recorder u otro) sirve HLS y WebRTC con nombres
+propios, y el hub entrega esas direcciones si se le dicen en `hls_url` y `webrtc_url`. Con Caddy:
+
+```
+hls.ejemplo.com {
+    reverse_proxy 127.0.0.1:8888
+}
+webrtc.ejemplo.com {
+    reverse_proxy 127.0.0.1:8889
+}
+```
+
+Con un nombre propio para cada uno no hay que reescribir rutas en el proxy. En el banco, por un
+proxy así, un lector y un navegador reproducen la lista HLS, un navegador reproduce la página WebRTC
+que entrega el hub, otro publica por WHIP con su token, y Monitoreo enseña la dirección de quien
+mira, no la del proxy.
+
+**El proxy tiene que decirle al hub de dónde viene cada petición.** Un proxy en la misma estación
+llega a MediaMTX desde `127.0.0.1`, que para MediaMTX es el propio hub y entra sin clave. Lo
+encontró la prueba: por un proxy así, cualquiera leía por HLS cualquier señal y miraba o publicaba
+por WebRTC sin token. Desde esta versión el hub le pide a MediaMTX que juzgue lo que le llega de
+`127.0.0.1` por la dirección que el proxy anota en la cabecera `X-Forwarded-For`. Lo que no la trae
+(el panel y los ffmpeg del hub) sigue siendo del hub, y quien llama a MediaMTX directamente desde la
+red no gana nada poniéndola él.
+
+- Caddy la anota solo, con la dirección de quien conecta, y descarta la que traiga la petición. No
+  hay que hacer nada.
+- nginx no la anota si no se le dice. En cada `location` que lleve al hub hace falta
+  `proxy_set_header X-Forwarded-For $remote_addr;` (también vale `$proxy_add_x_forwarded_for`).
+- Sin esa cabecera todo lo que entra por el proxy pasa por ser del hub. En el banco, por un proxy
+  que no la anota, la lista HLS de una fuente se lee sin clave. El hub no puede impedirlo desde
+  dentro, pero lo comprueba: «Probar la conexión» de una fuente o un destino HLS o WebRTC pide por
+  la dirección pública, sin clave, la página de una fuente, y dice si se entra. Pedirla no abre
+  ninguna señal.
+- Si el hub no llega a su propia dirección pública (pasa detrás de algunos routers) o el nombre
+  apunta a la propia estación, «Probar la conexión» dice que desde ahí no se puede comprobar.
+  Entonces se mira desde otro equipo, con el identificador de cualquier fuente del hub:
 
   ```
-  hls.ejemplo.com {
-      reverse_proxy 127.0.0.1:8888
-  }
-  webrtc.ejemplo.com {
-      reverse_proxy 127.0.0.1:8889
-  }
+  curl -s -o /dev/null -w '%{http_code}\n' https://hls.ejemplo.com/<id de la fuente>/
+  curl -s -o /dev/null -w '%{http_code}\n' https://webrtc.ejemplo.com/<id de la fuente>/
   ```
 
-  Con un nombre propio para cada uno no hay que reescribir rutas en el proxy.
-- **WebRTC necesita además que lleguen los medios.** La señalización va por HTTPS, pero los medios
-  van por UDP al puerto `webrtc_udp`. Si la estación está detrás de NAT hay que anunciar su IP
-  pública y abrir ese puerto, o usar un servidor TURN. Las dos cosas se dicen en Ajustes
-  (`PUT /api/ajustes/webrtc` con `hosts` y la lista `ice` de servidores STUN y TURN, cada uno con su
-  usuario y credencial). Las credenciales de TURN se guardan como las demás claves.
+  Las dos tienen que responder `401`. Un `200` quiere decir que se entra sin clave.
+- Vale lo mismo para cualquier programa de la estación que reenvíe conexiones de fuera hacia los
+  puertos del hub (un túnel, un proxy TCP): MediaMTX las ve llegar de `127.0.0.1` y no les pide
+  clave. SRT y RTMP no tienen dónde anotar el origen, así que delante de ellos no se pone nada así.
+- Con el proxy en otra máquina MediaMTX ve la dirección del proxy, que no es la suya, y pide clave
+  como a cualquiera. Monitoreo enseñará entonces la dirección del proxy y no la de quien mira. Este
+  montaje no se ha probado en el banco.
+
+### WebRTC: que lleguen los medios
+
+La señalización va por HTTPS, pero los medios van por UDP al puerto `webrtc_udp`. Si la estación
+está detrás de NAT hay que anunciar su IP pública y abrir ese puerto, o usar un servidor TURN. Las
+dos cosas se dicen en Ajustes (`PUT /api/ajustes/webrtc`, con `hosts` y la lista `ice` de servidores
+STUN y TURN, cada uno con su usuario y credencial). Las credenciales de TURN se guardan como las
+demás claves.
+
+Medido en el banco con MediaMTX 1.21.1 y un coturn de pruebas:
+
+- La dirección que se pone en `hosts` aparece entre las que el hub ofrece al navegador.
+- Un navegador que solo puede salir por el servidor TURN reproduce la salida WebRTC (30 fps, con
+  audio) y publica por WHIP. Vale con usuario y contraseña fijos y con secreto compartido.
+- **Mejor con secreto compartido.** Con usuario y contraseña fijos, esa contraseña llega tal cual a
+  cada navegador autorizado a mirar. Con secreto compartido (en coturn, `use-auth-secret`; en el
+  hub, usuario `AUTH_SECRET` y el secreto como credencial) cada navegador recibe un usuario
+  temporal y el secreto no sale del hub.
+- **Cambiar `hosts` o `ice` corta WebRTC.** MediaMTX reinicia su servidor WebRTC, y con él se
+  cierran sus sesiones. Quien miraba se queda sin imagen hasta que su página vuelve a conectar sola
+  (18 o 19 s en el banco). Con quien publica por WHIP no se midió: volverá si su codificador
+  reconecta solo. Lo que va por SRT no se corta. Por eso, con rutas WebRTC al aire, el hub responde
+  con la lista de las que se cortan y pide confirmarla (ver «Quién puede cambiar qué»).
+- **Un servidor TURN que no responde retrasa cada conexión.** WebRTC sigue funcionando por conexión
+  directa, pero cada navegador nuevo tarda unos 10 s en empezar en vez de 2. Si el servidor TURN se
+  retira, hay que quitarlo también de Ajustes.
+- Reiniciar el supervisor con un servidor TURN configurado no corta a quien mira.
+
+Al servidor TURN tienen que llegar tanto el hub como quien mira. El paquete `coturn` de Ubuntu
+queda habilitado al instalarlo y arranca solo en el puerto 3478: si se instala solo para una prueba,
+`sudo systemctl disable --now coturn`.
 
 ## Relevo de la 0.3.9 en la EZC80
 
@@ -226,12 +295,18 @@ se reinicia.
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
 3. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
    propia estación sin tocar nada de lo que está al aire. Ver [banco-de-pruebas.md](banco-de-pruebas.md).
-4. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor (las salidas
-   siguen al aire):
+4. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
 
    ```
    scripts/desplegar.sh <alias ssh>
    ```
+
+   Las salidas siguen al aire, con una excepción la primera vez que arranca esta versión: el
+   supervisor le pide a MediaMTX que juzgue por `X-Forwarded-For` lo que le llega de un proxy de la
+   estación (ver «HTTPS por delante»), y MediaMTX reinicia una vez sus servidores HLS y WebRTC. En
+   el banco, un navegador que miraba por HLS estuvo unos 10 s sin imagen y un lector HLS hecho con
+   ffmpeg se cortó; un lector SRT no notó nada. Conviene hacer el relevo sin nadie mirando por HLS.
+   En los arranques siguientes no pasa.
 
 5. Comprobar: `curl -s http://127.0.0.1:8095/api/version` en la estación, el panel abre, los flujos
    de la 0.3.9 siguen como estaban y `journalctl -u msxs-supervisor -n 50` no tiene errores.
@@ -278,6 +353,13 @@ Los roles son los del Recorder. Por defecto:
 Un administrador lo cambia en Ajustes (`PUT /api/ajustes/permisos`); el administrador conserva
 siempre todos. Cada cambio en el hub queda en el registro de cambios con quién lo hizo
 (`GET /api/cambios`), sin claves.
+
+Hay ajustes que cortan lo que está al aire: el puerto de un servidor (`PUT /api/ajustes/red`) y las
+direcciones anunciadas o los servidores ICE de WebRTC (`PUT /api/ajustes/webrtc`). Con rutas al aire
+por ese protocolo hacen falta los dos permisos, el de ajustes y el de modificar una ruta al aire. El
+hub responde primero con un 409 que trae las rutas que se cortan (`al_aire`) y sus destinos
+(`corta`), y el cambio se confirma repitiéndolo con esa lista en `corta`, igual que al cambiar la
+fuente de un destino al aire. En el registro de cambios queda cuántas rutas cortó.
 
 ## Comprobar la instalación
 
