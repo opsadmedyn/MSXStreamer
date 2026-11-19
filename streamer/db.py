@@ -1,7 +1,8 @@
-"""Media Syntaxis Streamer - base de datos: flujos, salidas y su estado.
+"""Media Syntaxis Streamer - base de datos: lo que se quiere y su estado.
 
-El panel escribe aquí lo que se quiere (flujos y salidas activos) y el supervisor lo cumple.
-Así, si el panel se reinicia, las salidas siguen al aire.
+El panel escribe aquí lo que se quiere (flujos y salidas activos; fuentes, destinos y rutas del
+hub) y el supervisor lo cumple. Así, si el panel se reinicia, las salidas siguen al aire, y tras
+reiniciar el equipo el supervisor vuelve a levantar exactamente lo que estaba habilitado.
 """
 
 import json
@@ -77,6 +78,83 @@ CREATE TABLE IF NOT EXISTS eventos (
     flujo       TEXT, salida TEXT,
     texto       TEXT NOT NULL
 );
+
+-- ------------------------------------------------------------ hub de señales (matriz.py)
+CREATE TABLE IF NOT EXISTS fuentes (
+    id          TEXT PRIMARY KEY,          -- también es su path en MediaMTX
+    nombre      TEXT NOT NULL,
+    protocolo   TEXT NOT NULL,             -- 'srt' | 'rtmp' | 'hls' | 'webrtc' | 'ndi' | 'zixi'
+    inicia      TEXT NOT NULL,             -- quién inicia la conexión: 'origen' (llama al hub) | 'hub'
+    url         TEXT NOT NULL DEFAULT '',  -- inicia el hub: srt://host:puerto, rtmp(s)://…, https://….m3u8
+    streamid    TEXT NOT NULL DEFAULT '',  -- srt, inicia el hub: el que pide el origen
+    passphrase  TEXT NOT NULL DEFAULT '',  -- srt
+    latencia_ms INTEGER NOT NULL DEFAULT 400,
+    clave       TEXT NOT NULL DEFAULT '',  -- inicia el origen: con la que publica en el hub; rtmp del hub: la del origen
+    opciones    TEXT NOT NULL DEFAULT '{}',-- JSON: {"puerto"} srt con puerto propio, {"variante"} hls, {"nombre"} ndi…
+    activo      INTEGER NOT NULL DEFAULT 1,
+    creado      REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE TABLE IF NOT EXISTS destinos (
+    id          TEXT PRIMARY KEY,          -- si el hub entrega una dirección, también es su path en MediaMTX
+    nombre      TEXT NOT NULL,
+    protocolo   TEXT NOT NULL,
+    inicia      TEXT NOT NULL,             -- 'hub' (el hub se conecta al destino) | 'receptor' (el hub entrega una dirección)
+    url         TEXT NOT NULL DEFAULT '',  -- inicia el hub: srt://host:puerto, rtmp(s)://servidor/app, https://…/whip
+    streamid    TEXT NOT NULL DEFAULT '',
+    passphrase  TEXT NOT NULL DEFAULT '',
+    latencia_ms INTEGER NOT NULL DEFAULT 300,
+    clave       TEXT NOT NULL DEFAULT '',  -- inicia el hub: clave de emisión o token; receptor: con la que lee
+    perfil      TEXT NOT NULL DEFAULT 'original',  -- el que propone la matriz al conectar una fuente
+    audio       TEXT NOT NULL DEFAULT 'todas',     -- 'todas' | número de pista (desde 1)
+    reconexion  TEXT NOT NULL DEFAULT '{}',        -- JSON: {"cada_s", "max_intentos"}
+    opciones    TEXT NOT NULL DEFAULT '{}',
+    creado      REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE TABLE IF NOT EXISTS rutas (         -- un destino recibe una sola fuente a la vez
+    destino     TEXT PRIMARY KEY REFERENCES destinos(id) ON DELETE CASCADE,
+    fuente      TEXT NOT NULL,             -- id de una fuente o path de un flujo heredado (ver matriz.heredadas)
+    perfil      TEXT NOT NULL DEFAULT 'original',
+    audio       TEXT NOT NULL DEFAULT 'todas',
+    desde       REAL NOT NULL DEFAULT (strftime('%s','now')),
+    por         TEXT NOT NULL DEFAULT ''   -- quién la conectó
+);
+CREATE TABLE IF NOT EXISTS perfiles (      -- además de los fijos (plan.PERFILES_FIJOS)
+    id          TEXT PRIMARY KEY,
+    nombre      TEXT NOT NULL,
+    video       TEXT NOT NULL DEFAULT 'null',   -- JSON: {"alto", "kbps"} o null (el vídeo no se toca)
+    audio       TEXT NOT NULL DEFAULT 'null'    -- JSON: {"kbps"} o null
+);
+CREATE TABLE IF NOT EXISTS inspecciones (  -- lo que trae cada fuente, visto por el supervisor
+    fuente      TEXT PRIMARY KEY,          -- id de una fuente o path de un flujo heredado
+    t           REAL NOT NULL,
+    huella      TEXT NOT NULL DEFAULT '',  -- de la señal inspeccionada: si cambia, se vuelve a mirar
+    pistas      TEXT NOT NULL DEFAULT 'null',   -- JSON como lo espera plan.planear
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS senales (       -- cuándo hubo señal en cada path del hub
+    path        TEXT PRIMARY KEY,
+    lista       INTEGER NOT NULL DEFAULT 0,
+    desde       REAL,                      -- desde cuándo está así
+    ultima      REAL                       -- última vez que se vio con señal
+);
+CREATE TABLE IF NOT EXISTS ajustes (
+    clave       TEXT PRIMARY KEY,
+    valor       TEXT NOT NULL              -- JSON
+);
+CREATE TABLE IF NOT EXISTS cambios (       -- quién cambió qué en el hub y cuándo. Nunca lleva claves
+    t           REAL NOT NULL DEFAULT (strftime('%s','now')),
+    quien       TEXT NOT NULL DEFAULT '',  -- email del usuario, o 'El hub' si fue el supervisor
+    rol         TEXT NOT NULL DEFAULT '',
+    accion      TEXT NOT NULL,             -- «Activó una ruta», «Cambió la fuente al aire»…
+    objeto      TEXT NOT NULL DEFAULT '',  -- «Estudio A → YouTube»
+    detalle     TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS ordenes (       -- lo que el panel pide al supervisor que haga en su próxima vuelta
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    t           REAL NOT NULL DEFAULT (strftime('%s','now')),
+    orden       TEXT NOT NULL,             -- 'reintentar'
+    tarea       TEXT NOT NULL              -- id de la tarea (ruta_<destino>, ent_<fuente>…)
+);
 """
 
 
@@ -88,6 +166,7 @@ def conectar():
     c.execute("PRAGMA foreign_keys=ON")
     c.executescript(ESQUEMA)
     migrar(c)
+    _solo_el_usuario()
     return c
 
 
@@ -107,10 +186,52 @@ def migrar(c):
         c.execute("UPDATE flujos SET directo=1 WHERE entrada='hub' AND url LIKE '%streamid=play/%'")
     if "respaldos" not in columnas:           # JSON: el mismo feed en los otros hubs y, al final, el origen
         c.execute("ALTER TABLE flujos ADD COLUMN respaldos TEXT NOT NULL DEFAULT '[]'")
+    columnas = {r["name"] for r in c.execute("PRAGMA table_info(estado_salidas)")}
+    if "intentos" not in columnas:            # seguidos sin llegar a enviar: los cuenta la política de reconexión
+        c.execute("ALTER TABLE estado_salidas ADD COLUMN intentos INTEGER NOT NULL DEFAULT 0")
+
+
+_permisos_vistos = False
+
+
+def _solo_el_usuario():
+    """La base guarda claves (passphrases, claves de emisión): solo la lee el usuario del servicio.
+    Se comprueba una vez por proceso; los archivos -wal y -shm heredan los permisos de la base."""
+    global _permisos_vistos
+    if _permisos_vistos or not RUTA.exists():
+        return
+    _permisos_vistos = True
+    for ruta in (RUTA, RUTA.with_name(RUTA.name + "-wal"), RUTA.with_name(RUTA.name + "-shm")):
+        try:
+            if ruta.stat().st_mode & 0o077:
+                ruta.chmod(0o600)
+        except OSError:
+            pass
 
 
 def filas(c, sql, *args):
     return [dict(r) for r in c.execute(sql, args)]
+
+
+def ajuste(c, clave, defecto=None):
+    """Valor guardado de un ajuste del hub (JSON), o `defecto`."""
+    r = c.execute("SELECT valor FROM ajustes WHERE clave=?", (clave,)).fetchone()
+    try:
+        return json.loads(r["valor"]) if r else defecto
+    except ValueError:
+        return defecto
+
+
+def guardar_ajuste(c, clave, valor):
+    c.execute("INSERT INTO ajustes(clave, valor) VALUES (?,?) ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+              (clave, json.dumps(valor, ensure_ascii=False)))
+
+
+def cambio(c, quien, rol, accion, objeto="", detalle=""):
+    """Anota un cambio hecho en el hub. Se guardan dos años."""
+    c.execute("INSERT INTO cambios(quien, rol, accion, objeto, detalle) VALUES (?,?,?,?,?)",
+              (quien, rol, accion, objeto, detalle))
+    c.execute("DELETE FROM cambios WHERE t < strftime('%s','now') - 730*86400")
 
 
 def evento(c, texto, flujo=None, salida=None):

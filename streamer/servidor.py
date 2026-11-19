@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 import composicion
 import db
 import mtx
+from secretos import de_filas as _secretos, limpiar as _limpiar, url_visible as _url_visible
 from supervisor import path_de_flujo
 
 ESTATICOS = pathlib.Path(__file__).parent / "static"
@@ -403,78 +404,8 @@ def _host(request: Request):
 # Un operador no ve el streamid, lo que va en las URL tras "?" o antes de "@", ni la clave RTMP
 # pegada al final de la URL (decisión 3 de la propuesta). A nadie se le enseña, en un error o en
 # el registro, la línea con la que el supervisor arranca ffmpeg (lleva todas las claves) ni un
-# valor guardado de los anteriores. Solo cambia lo que se devuelve: la base y el supervisor, no.
-OCULTO = "***"
-LINEA_ARRANQUE = re.compile(r"== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d ")     # la que escribe el supervisor al lanzar
-OPCIONES_SECRETAS = (" -srt_streamid ", " -passphrase ")
-URL_EN_TEXTO = re.compile(r"\b(srt|rtmps?)://[^\s\"'<>]+")
-PARAMS_NO_SECRETOS = {"mode", "latency", "rcvlatency", "peerlatency", "pkt_size", "payload_size", "transtype"}
-
-
-def _clave_en_ruta(ruta):
-    """Último tramo no vacío de la ruta de una URL RTMP: la clave, si no va aparte."""
-    return ruta.rstrip("/").rpartition("/")[2]
-
-
-def _url_visible(url, tipo, clave):
-    """URL sin usuario ni contraseña, sin parámetros y, en RTMP sin clave aparte, sin su último tramo."""
-    if not url:
-        return url
-    try:
-        p = urllib.parse.urlsplit(url, allow_fragments=False)
-    except ValueError:
-        return OCULTO
-    ruta = p.path
-    if tipo == "rtmp" and not clave and _clave_en_ruta(ruta):
-        sin_barra = ruta.rstrip("/")
-        ruta = sin_barra.rpartition("/")[0] + "/" + OCULTO + ruta[len(sin_barra):]
-    return urllib.parse.urlunsplit((p.scheme, p.netloc.rpartition("@")[2], ruta, OCULTO if p.query else "", ""))
-
-
-def _secretos(flujos, salidas):
-    """Valores guardados que no deben aparecer en un texto, también codificados como van en una
-    URL (mtx.conf_de_flujo los codifica, y un error de MediaMTX puede repetir esa URL)."""
-    valores = set()
-    respaldos = []
-    for f in flujos:                        # hub: el origen de respaldo (Castr) lleva la clave en el streamid
-        respaldos += [{"url": u} for u in db.fuentes({"url": "", "respaldos": f.get("respaldos")})]
-    respaldos += [{"url": c["url"]} for c in db.canales_recorder() if c.get("url")]   # canal sin reenvío
-    for fila in [*flujos, *salidas, *respaldos]:
-        valores.update(fila.get(k) or "" for k in ("streamid", "passphrase", "clave"))
-        url = fila.get("url") or ""
-        try:
-            partes = urllib.parse.urlsplit(url, allow_fragments=False)
-            valores.update(v for k, v in urllib.parse.parse_qsl(partes.query) if k not in PARAMS_NO_SECRETOS)
-            valores.add(partes.password or "")
-            ruta = partes.path
-        except ValueError:                  # URL que no se puede analizar: se usa tal cual
-            ruta = url.split("?")[0]
-        if fila.get("tipo") == "rtmp" and not fila.get("clave"):
-            valores.add(_clave_en_ruta(ruta))
-    valores |= {urllib.parse.quote_plus(v) for v in valores}
-    return sorted((v for v in valores if v), key=len, reverse=True)
-
-
-def _url_en_texto(m):
-    url = m.group(0).rstrip(":,.;)]")                   # "rtmp://…/clave: Connection refused"
-    return _url_visible(url, "srt" if m.group(1) == "srt" else "rtmp", "") + m.group(0)[len(url):]
-
-
-def _limpiar(texto, secretos):
-    """Error o texto del registro sin la línea de arranque de ffmpeg ni valores secretos. Además,
-    toda URL SRT o RTMP sale como la ve un operador: así tampoco aparecen las claves de un destino
-    o flujo ya borrado o editado, que ya no están en la base."""
-    if not texto:
-        return texto
-    m = LINEA_ARRANQUE.search(texto)
-    if m:
-        texto = texto[:m.start()] + "(línea de arranque oculta)"
-    elif any(o in texto for o in OPCIONES_SECRETAS):
-        return "(línea de arranque oculta)"
-    for s in secretos:
-        texto = texto.replace(s, OCULTO)
-    return URL_EN_TEXTO.sub(_url_en_texto, texto)
-
+# valor guardado de los anteriores. Las funciones viven en secretos.py, que también usa el lanzador
+# (correr.py) para que esas claves no lleguen a los registros.
 
 # ---------------------------------------------------------------- HLS bajo demanda
 # El HLS de un flujo solo se sirve a la red con un destino HLS activo. Las reglas las aplica el
