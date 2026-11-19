@@ -24,10 +24,13 @@ comprueba, por la misma API del panel y con señales reales, lo que aquella no t
   matriz       cada una de las seis formas de entrada, conectada a la vez a las siete formas de salida:
                las 42 combinaciones de SRT, RTMP, HLS y WebRTC, con audio y vídeo comprobados en cada una
   https        HLS y WebRTC con HTTPS por delante, como se sirven fuera de la red local: un proxy con
-               certificado en el mismo equipo y el hub entregando esas direcciones porque se le dicen en
+               certificado en el mismo equipo (un Caddy de verdad si el equipo lo tiene, y si no uno de
+               pruebas que hace lo mismo) y el hub entregando esas direcciones porque se le dicen en
                Ajustes. Un lector y un navegador reproducen por HTTPS, un navegador publica por WHIP y
-               quien entra por el proxy sin token no pasa. Con otro proxy que no anota de dónde viene
-               cada petición sí se entra sin clave, y «Probar la conexión» lo dice
+               quien entra por el proxy sin token no pasa, ni diciendo venir del propio equipo. Con
+               otros dos proxies mal puestos (uno que no anota de dónde viene cada petición y otro que
+               deja pasar lo que la petición diga de sí misma) sí se entra sin clave, y «Probar la
+               conexión» lo dice
   ice          WebRTC con una dirección anunciada y un servidor TURN (un coturn de pruebas): cambiar esos
                ajustes con alguien mirando exige decir qué se corta y no corta lo que va por SRT, y un
                navegador que solo puede salir por el TURN reproduce y publica
@@ -426,14 +429,15 @@ def reproduce(nav, pagina, segundos, fps, espera=45):
 
 
 def reproduce_hls(nav, pagina, segundos, espera=45):
-    """¿El navegador reproduce la página HLS que entrega el hub? (ok, texto), midiendo `segundos` desde que arranca."""
-    def arranco():
-        v = nav.ultima(pagina).get("video") or {}
-        return (v.get("tiempo") or 0) > 0.5 and (v.get("bytes_video") or 0) > 0
-    if not esperar(arranco, espera, cada=0.5):
+    """¿El navegador reproduce la página HLS que entrega el hub? (ok, texto), midiendo `segundos` desde
+    que empieza a reproducir de verdad (ver A.hls_reproduce). Lo que tardó en empezar se dice aparte."""
+    if not esperar(lambda: A.hls_reproduce(nav.ultima(pagina).get("video")), espera, cada=0.5):
         u = nav.ultima(pagina)
         return False, "el navegador no llega a reproducir: " + json.dumps({k: u.get(k) for k in ("video", "errores", "error", "texto")},
                                                                          ensure_ascii=False)[:300]
+    muestras = [(t, v) for t, v in nav.serie(pagina, "video") if v]
+    empieza = next((t for t, v in muestras if A.hls_reproduce(v)), None)
+    arranque = f"empezó {empieza - muestras[0][0]:.0f} s después de cargar la página; " if empieza is not None else ""
     t0 = time.time()
     time.sleep(segundos)
     t1 = time.time()
@@ -443,7 +447,7 @@ def reproduce_hls(nav, pagina, segundos, espera=45):
     u = nav.ultima(pagina).get("video") or {}
     ok = avance["segundos"] > 0 and avance["avance"] >= A.HLS_AVANCE_MIN * avance["segundos"] \
         and (avance["parada_max_s"] or 0) <= A.HLS_PARADA_MAX and video > 0 and sonido > 0
-    return ok, (f"reprodujo {avance['avance']:.1f} s de {avance['segundos']:.1f} s; mayor parada {avance['parada_max_s']} s; "
+    return ok, (f"{arranque}reprodujo {avance['avance']:.1f} s de {avance['segundos']:.1f} s; mayor parada {avance['parada_max_s']} s; "
                 f"{u.get('ancho')}×{u.get('alto')}; decodificó {video / 1e6:.1f} MB de vídeo y {sonido / 1e3:.0f} kB de audio")
 
 
@@ -1075,14 +1079,18 @@ def matriz(b, c):
             time.sleep(2)
 
 
-def codigo_https(url, metodo="GET", cuerpo=None, tipo=""):
-    """Con qué código responde, sin credenciales, una dirección https de pruebas (su certificado no se comprueba)."""
+PROPIO = "127.0.0.1"                # de donde dice venir quien quiere pasar por el propio equipo
+
+
+def codigo_https(url, metodo="GET", cuerpo=None, tipo="", origen=""):
+    """Con qué código responde, sin credenciales, una dirección https de pruebas (su certificado no se
+    comprueba). Con `origen`, la petición dice venir de esa dirección (cabecera X-Forwarded-For)."""
     contexto = ssl.create_default_context()
     contexto.check_hostname, contexto.verify_mode = False, ssl.CERT_NONE
     abrir = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=contexto))
+    cabeceras = {**({"Content-Type": tipo} if tipo else {}), **({"X-Forwarded-For": origen} if origen else {})}
     try:
-        return abrir.open(urllib.request.Request(url, data=cuerpo, method=metodo, headers={"Content-Type": tipo} if tipo else {}),
-                          timeout=15).status
+        return abrir.open(urllib.request.Request(url, data=cuerpo, method=metodo, headers=cabeceras), timeout=15).status
     except urllib.error.HTTPError as e:
         return e.code
     except (urllib.error.URLError, OSError) as e:
@@ -1097,15 +1105,45 @@ def paso_de(prueba, que):
     return next((p for p in prueba.get("pasos") or [] if p.get("que") == que), {})
 
 
+def caddy_delante(b, carpeta, de_red, dentro):
+    """Un Caddy de verdad delante de HLS y de WebRTC, si este equipo lo tiene. Corre aparte del que haya
+    en el sistema: con su configuración, sus puertos y su almacén dentro de la carpeta de la prueba, sin
+    puerto de administración y sin instalar su certificado raíz en ningún sitio.
+
+    Devuelve ({hls_url, webrtc_url}, "Caddy <versión>"), o (None, por qué no)."""
+    if not shutil.which("caddy"):
+        return None, "este equipo no tiene Caddy"
+    dice = subprocess.run(["caddy", "version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20).stdout.split()
+    version = (dice or ["de versión desconocida"])[0].lstrip("v")
+    puertos = {k: b.puerto("rtmp") for k in dentro}
+    almacen = carpeta / "caddy"
+    (carpeta / "Caddyfile").write_text(
+        "{\n\tadmin off\n\tauto_https disable_redirects\n\tskip_install_trust\n"
+        f'\tstorage file_system "{almacen}"\n\tdefault_sni {de_red}\n}}\n'
+        + "".join(f"https://{de_red}:{puertos[k]} {{\n\tbind {de_red}\n\ttls internal\n\treverse_proxy 127.0.0.1:{dentro[k]}\n}}\n"
+                  for k in dentro), encoding="utf-8")
+    caddy = A.Proceso("caddy", ["env", f"XDG_DATA_HOME={almacen}", f"XDG_CONFIG_HOME={almacen}", "caddy", "run",
+                                "--config", carpeta / "Caddyfile", "--adapter", "caddyfile"], carpeta, b.secretos).lanzar()
+    b.abierto_caso.append(caddy.parar)
+    publicas = {f"{k}_url": f"https://{de_red}:{puertos[k]}" for k in dentro}
+    # atiende cuando ya tiene su certificado: hasta entonces no completa la conexión segura
+    if not esperar(lambda: caddy.vivo() and all(isinstance(codigo_https(u + "/"), int) for u in publicas.values()), 30, cada=0.5):
+        caddy.parar()
+        return None, f"el Caddy {version} de este equipo no arranca con la configuración de la prueba (ver {carpeta / 'caddy.log'})"
+    return publicas, f"Caddy {version}"
+
+
 def https_delante(b, c):
     """HLS y WebRTC con HTTPS por delante, como se sirven fuera de la red local: un proxy con certificado
-    delante de MediaMTX (aquí uno de pruebas, tests/banco/https_delante.py) y el hub entregando esas
-    direcciones porque se le dicen en Ajustes (hls_url y webrtc_url). El proxy está en el mismo equipo
-    que el hub, como el Caddy de una estación, y quien mira y quien publica entran por la dirección de
-    red del equipo: para MediaMTX vienen de fuera, y sin su token no deben pasar.
+    delante de MediaMTX y el hub entregando esas direcciones porque se le dicen en Ajustes (hls_url y
+    webrtc_url). El proxy es un Caddy de verdad si este equipo lo tiene y, si no, uno de pruebas que
+    trata como Caddy la dirección de origen (tests/banco/https_delante.py). Está en el mismo equipo que
+    el hub, como el Caddy de una estación, y quien mira y quien publica entran por la dirección de red
+    del equipo: para MediaMTX vienen de fuera, y sin su token no deben pasar.
 
-    Al final se cambia ese proxy por otro que no anota de dónde viene cada petición: por ahí se entra
-    sin clave, que el hub no puede impedir, y «Probar la conexión» tiene que decirlo."""
+    Al final se cambia ese proxy por dos mal puestos, uno tras otro: uno que no anota de dónde viene
+    cada petición y otro que deja pasar lo que la petición diga de sí misma. Por los dos se entra sin
+    clave, que el hub no puede impedir, y «Probar la conexión» tiene que decirlo."""
     titulo = "HLS y WebRTC con HTTPS por delante"
     red = b.hub.pedir("GET", "/api/ajustes")["red"]
     if red.get("hls_url_propia") or red.get("webrtc_url_propia"):
@@ -1138,7 +1176,9 @@ def https_delante(b, c):
         if not esperar(lambda: not any(A.puerto_libre(p, udp=False) for p in puertos.values()), 12, cada=0.25) or not proxy.vivo():
             return None
         return {f"{k}_url": f"https://{de_red}:{puertos[k]}" for k in dentro}
-    publicas = proxy_delante("proxy")
+    publicas, delante = caddy_delante(b, carpeta, de_red, dentro)
+    if not publicas:
+        publicas, delante = proxy_delante("proxy"), f"el proxy de pruebas, haciendo de Caddy ({delante})"
     if not publicas:
         c.comprobar(titulo, None, f"el proxy de pruebas no arranca (ver {carpeta / 'proxy.log'})")
         return
@@ -1154,7 +1194,7 @@ def https_delante(b, c):
     sitio = lambda u: (lambda p: f"{p.scheme}://{p.hostname}:{p.port}")(urllib.parse.urlsplit(u))     # sin la ruta ni la clave
     c.comprobar("Con hls_url y webrtc_url en Ajustes, el hub entrega direcciones https://",
                 all(sitio(u) == publicas[f"{k}_url"] for u, k in entregadas.values()),
-                " · ".join(f"{nombre}: {sitio(u)}" for nombre, (u, _) in entregadas.items()))
+                f"delante, {delante} · " + " · ".join(f"{nombre}: {sitio(u)}" for nombre, (u, _) in entregadas.items()))
 
     b.conectar(fid, d_hls)
     b.conectar(fid, d_rtc)
@@ -1162,11 +1202,18 @@ def https_delante(b, c):
     # el proxy llega a MediaMTX desde 127.0.0.1, que para MediaMTX es el propio hub y entra sin clave:
     # lo que pasa por el proxy tiene que juzgarse por la dirección de quien conecta
     oferta = {"cuerpo": b"v=0\r\n", "tipo": "application/sdp"}
-    sin_token = {"mirar por WebRTC": codigo_https(dir_rtc["pagina"].rstrip("/") + "/whep", "POST", **oferta),
+    whep, camara = dir_rtc["pagina"].rstrip("/") + "/whep", f"{publicas['hls_url']}/{fid}/index.m3u8"
+    sin_token = {"mirar por WebRTC": codigo_https(whep, "POST", **oferta),
                  "publicar por WebRTC": codigo_https(dir_whip["url"], "POST", **oferta),
-                 "leer por HLS la cámara, que no se entrega por HLS": codigo_https(f"{publicas['hls_url']}/{fid}/index.m3u8")}
+                 "leer por HLS la cámara, que no se entrega por HLS": codigo_https(camara)}
     c.comprobar("Quien entra por el proxy sin token no mira ni publica por WebRTC, ni lee por HLS una señal que no se entrega así",
                 all(x == 401 for x in sin_token.values()), " · ".join(f"{k}: responde {v}" for k, v in sin_token.items()))
+    # y lo que la petición diga de sí misma no cuenta: el proxy pone la dirección de quien conecta
+    disfrazado = {"mirar por WebRTC": codigo_https(whep, "POST", origen=PROPIO, **oferta),
+                  "publicar por WebRTC": codigo_https(dir_whip["url"], "POST", origen=PROPIO, **oferta),
+                  "leer por HLS la cámara": codigo_https(camara, origen=PROPIO)}
+    c.comprobar(f"Tampoco pasa quien dice venir del propio equipo (cabecera X-Forwarded-For: {PROPIO})",
+                all(x == 401 for x in disfrazado.values()), " · ".join(f"{k}: responde {v}" for k, v in disfrazado.items()))
     # «Probar la conexión» pide por la dirección pública, sin clave, la página de una fuente: con este
     # proxy tiene que ver que no se entra. El certificado es de usar y tirar, y eso también lo dice
     pruebas = {k: b.hub.pedir("POST", f"/api/destinos/{d}/probar") for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
@@ -1211,11 +1258,42 @@ def https_delante(b, c):
     b.hub.pedir("PUT", "/api/ajustes/red", mudas)
     abierta = codigo_https(f"{mudas['hls_url']}/{fid}/index.m3u8")
     pruebas = {k: b.hub.pedir("POST", f"/api/destinos/{d}/probar") for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
+    dicho = lambda pruebas: " · ".join(f"{k}: {(paso_de(p, CLAVE_PUBLICA).get('detalle') or p.get('resumen') or '').split('. ')[0]}"
+                                       for k, p in pruebas.items())
     c.comprobar("Con un proxy que no anota de dónde viene cada petición se entra sin clave, y «Probar la conexión» lo dice",
                 abierta == 200 and all(p.get("ok") is False and paso_de(p, CLAVE_PUBLICA).get("ok") is False for p in pruebas.values()),
-                f"sin clave, la lista HLS de la cámara responde {abierta} · "
-                + " · ".join(f"{k}: {(paso_de(p, CLAVE_PUBLICA).get('detalle') or p.get('resumen') or '').split('. ')[0]}"
-                             for k, p in pruebas.items()))
+                f"sin clave, la lista HLS de la cámara responde {abierta} · {dicho(pruebas)}")
+
+    # Un proxy que anota la dirección de quien conecta en otra cabecera (X-Real-IP) y deja pasar la
+    # X-Forwarded-For que traiga la petición, como un nginx al que solo se le puso la primera. A quien
+    # pide sin más le responde 401; a quien manda X-Forwarded-For: 127.0.0.1, MediaMTX lo toma por el
+    # propio equipo. Con mirar si responde 401 no basta: «Probar la conexión» tiene que pedirlo también así
+    credulas = proxy_delante("proxy-solo-real-ip", "--solo-real-ip")
+    if not credulas:
+        c.comprobar("Un proxy que deja pasar lo que la petición diga de sí misma", None,
+                    f"el tercer proxy de pruebas no arranca (ver {carpeta / 'proxy-solo-real-ip.log'})")
+        return
+    b.hub.pedir("PUT", "/api/ajustes/red", credulas)
+    camara = f"{credulas['hls_url']}/{fid}/index.m3u8"
+    whep, whip = b.direccion("destinos", d_rtc)["pagina"].rstrip("/") + "/whep", b.direccion("fuentes", f_whip)["url"]
+
+    def pedir(origen):
+        return {"la lista HLS de la cámara": codigo_https(camara, origen=origen), "WHEP": codigo_https(whep, "POST", origen=origen, **oferta),
+                "WHIP": codigo_https(whip, "POST", origen=origen, **oferta)}
+    sin_mas, diciendo = pedir(""), pedir(PROPIO)
+    # con la puerta pasada, a la lista se responde con ella y a la oferta de pruebas, que no es una oferta, con un 4xx que no es el 401
+    pasa = lambda codigo: isinstance(codigo, int) and codigo < 500 and codigo not in (401, 403)
+    pruebas = {k: b.hub.pedir("POST", f"/api/destinos/{d}/probar") for k, d in (("HLS", d_hls), ("WebRTC", d_rtc))}
+    c.comprobar("Con un proxy que deja pasar lo que la petición diga de sí misma, quien dice venir del propio equipo entra sin clave, "
+                "y «Probar la conexión» lo dice",
+                all(x == 401 for x in sin_mas.values()) and diciendo["la lista HLS de la cámara"] == 200
+                and pasa(diciendo["WHEP"]) and pasa(diciendo["WHIP"])
+                and all(p.get("ok") is False and "diciendo venir del propio equipo" in (paso_de(p, CLAVE_PUBLICA).get("detalle") or "")
+                        for p in pruebas.values()),
+                "sin token y sin más: " + ", ".join(f"{k} responde {v}" for k, v in sin_mas.items())
+                + f" · sin token y con X-Forwarded-For: {PROPIO}: " + ", ".join(f"{k} responde {v}" for k, v in diciendo.items())
+                + " (a la oferta de pruebas, que no es una oferta, se le responde así una vez pasada la puerta)"
+                + f" · {dicho(pruebas)}")
 
 
 ANUNCIADA = "203.0.113.7"           # una dirección de documentación (RFC 5737): no es de nadie ni lleva a ningún sitio
@@ -1395,8 +1473,9 @@ def informe(datos):
          f"FFmpeg {campo(motor, 'ffmpeg', 'version') or '?'} · conversiones de vídeo con {campo(motor, 'ffmpeg', 'codificador') or '?'}",
          "- **Con qué se comprobó:** la cámara y los receptores son programas (ffmpeg y un Chromium sin ventana). Donde hace falta "
          "«otro equipo» que sirva o reciba la señal (otro hub, un servidor RTMP, una lista HLS, un servidor WHIP) lo hace este mismo "
-         "hub por otra de sus salidas o entradas; la plataforma RTMPS es un segundo MediaMTX con un certificado de pruebas, y el "
-         "proxy HTTPS, un programa del banco con otro; el servidor TURN, un coturn en este mismo equipo. Es una verificación de banco "
+         "hub por otra de sus salidas o entradas; la plataforma RTMPS es un segundo MediaMTX con un certificado de pruebas; el "
+         "proxy HTTPS, el que dice su caso (un Caddy lanzado para la prueba o, si el equipo no lo tiene, un programa del banco), "
+         "también con un certificado de pruebas; el servidor TURN, un coturn en este mismo equipo. Es una verificación de banco "
          "de pruebas, no con equipos reales.",
          f"- **Cómo se manejó el hub:** por la API del panel, con una sesión de administrador ({datos['hub']}).", "",
          "Complementa a la prueba de aceptación ([aceptacion-banco.md](aceptacion-banco.md)), que cubre la entrada RTMP y la entrada "

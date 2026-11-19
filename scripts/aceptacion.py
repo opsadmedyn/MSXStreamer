@@ -427,6 +427,16 @@ def campo(m, *claves):
     return m
 
 
+def hls_reproduce(video):
+    """¿Está reproduciendo ya el reproductor HLS, por lo que dice una muestra suya? Al abrir la página
+    salta al directo antes de tener nada que enseñar: su reloj deja de estar a cero y todavía no
+    reproduce (readyState por debajo de 3). Casi siempre es un instante; a veces se queda así 4 s o
+    más, con proxy delante y sin él. Eso es lo que tarda en arrancar, no una parada."""
+    video = video or {}
+    return (video.get("tiempo") or 0) > 0.5 and (video.get("listo") or 0) >= 3 \
+        and (video.get("bytes_video") or 0) > 0 and (video.get("bytes_audio") or 0) > 0
+
+
 def tramo(serie, t0, t1):
     return [(t, v) for t, v in serie if t0 <= t <= t1 and v is not None]
 
@@ -799,8 +809,7 @@ class Caso:
 
     # -- lo que se ve en cada salida
     def _hls_reproduce(self):
-        u = self.navegador.ultima("hls").get("video") or {}
-        return (u.get("tiempo") or 0) > 1 and (u.get("bytes_video") or 0) > 0 and (u.get("bytes_audio") or 0) > 0
+        return hls_reproduce(self.navegador.ultima("hls").get("video"))
 
     def _webrtc_reproduce(self):
         u = self.navegador.ultima("webrtc").get("rtc") or {}
