@@ -154,7 +154,7 @@ scripts/medir-carga.sh --solo-mirar      # no arranca nada: dice cómo está la 
 scripts/medir-carga.sh --lugar "HP Z8 (EZC80), banco al lado de producción"
 ```
 
-El guion tarda unos 13 minutos y hace esto, en orden:
+El guion tarda unos 7 minutos y hace esto, en orden:
 
 1. Anota la estación (procesador, memoria, tarjeta gráfica, carga) y cómo está el Streamer en
    producción: su versión, el estado de sus tres servicios y los identificadores de sus procesos de

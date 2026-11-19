@@ -191,7 +191,7 @@ trap 'exit 130' INT TERM HUP
 echo "== arrancando el banco en $MSXS_BANCO (panel en 127.0.0.1:$PANEL)"
 tests/banco/banco.sh arrancar
 
-echo "== prueba de aceptación (unos 12 minutos)"
+echo "== prueba de aceptación (unos 6 minutos)"
 # La prueba corre aparte y aquí se la espera: así una señal a este guion (un kill, o el cierre de la sesión
 # desde la que corre) llega en el acto a la prueba, que para su cámara, sus receptores y su navegador y borra
 # del hub lo que creó; después el guion sigue, para el banco y lo cuenta. Con la prueba en primer plano, bash
