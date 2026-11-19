@@ -35,6 +35,32 @@ def test_sin_fotogramas_b_y_entrelazada():
     assert inspeccion.interpretar({"streams": datos["streams"]})["video"]["b"] is None
 
 
+def _paquetes(por_segundo, segundos=2.0, indice=0):
+    """Los paquetes de vídeo que ffprobe vería llegar a ese ritmo."""
+    return [{"stream_index": indice, "pts": round(n * 90000 / por_segundo), "dts": round(n * 90000 / por_segundo),
+             "pts_time": f"{n / por_segundo:.6f}"} for n in range(int(por_segundo * segundos))]
+
+
+def test_los_fotogramas_por_segundo_que_declara_ffprobe_se_corrigen_si_no_cuadran_con_los_que_llegan():
+    """De un navegador que publica por WebRTC ffprobe a veces no declara nada, o declara el triple."""
+    def fps(media, base, paquetes):
+        flujo = dict(FFPROBE["streams"][0], avg_frame_rate=media, r_frame_rate=base)
+        return inspeccion.interpretar({"streams": [flujo], "packets": paquetes})["video"]["fps"]
+    assert fps("0/0", "60/1", _paquetes(20)) == 20.0            # declara 60 y llegan 20
+    assert fps("0/0", "90000/1", _paquetes(20)) == 20.0         # no declara nada que valga
+    assert fps("0/0", "90000/1", []) is None                    # ni se vio llegar nada
+    assert fps("20/1", "20/1", _paquetes(20)) == 20.0
+    assert fps("2499/125", "20/1", _paquetes(20)) == 19.992     # una media algo corta se queda como está
+    assert fps("60000/1001", "60000/1001", _paquetes(59.94)) == 59.94
+    # solo se corrige hacia abajo: entrelazada con un paquete por campo, llegan el doble de los que declara
+    assert fps("25/1", "50/1", _paquetes(50)) == 25.0
+    # con pocos paquetes, o sin sus tiempos, no se corrige nada
+    assert fps("0/0", "60/1", _paquetes(20, segundos=0.4)) == 60.0
+    assert fps("0/0", "60/1", [{"stream_index": 0, "pts": n * 4500, "dts": n * 4500} for n in range(40)]) == 60.0
+    # los paquetes de otra pista no cuentan
+    assert fps("0/0", "60/1", _paquetes(20, indice=1)) == 60.0
+
+
 def test_solo_audio_y_caratula():
     datos = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "mjpeg", "disposition": {"attached_pic": 1}},
                          {"index": 1, "codec_type": "audio", "codec_name": "mp3", "channels": 2, "sample_rate": "44100"}]}

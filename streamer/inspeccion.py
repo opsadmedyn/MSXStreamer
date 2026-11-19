@@ -25,7 +25,7 @@ import secretos
 SEGUNDOS = 3                    # de señal que se miran
 LIMITE = 25                     # segundos que puede tardar ffprobe antes de darlo por perdido
 ENTRADAS = ("stream=index,codec_type,codec_name,profile,width,height,avg_frame_rate,r_frame_rate,field_order,"
-            "channels,sample_rate,disposition:stream_tags=language,comment,title:packet=stream_index,pts,dts")
+            "channels,sample_rate,disposition:stream_tags=language,comment,title:packet=stream_index,pts,dts,pts_time")
 ENTRELAZADOS = {"tt", "bb", "tb", "bt"}
 
 
@@ -43,7 +43,14 @@ def comando(entrada, segundos=SEGUNDOS):
             "-show_entries", ENTRADAS, *entrada]
 
 
-def _fps(s):
+def _fps(s, llegan=None):
+    """Fotogramas por segundo: los que declara ffprobe (la media o, si no la da, el ritmo base) salvo
+    que no cuadren con los que se vieron llegar. De una señal de ritmo irregular (un navegador que
+    publica por WebRTC) ffprobe a veces no declara nada o declara el triple (60 donde hay 20), y con
+    eso una conversión pondría los fotogramas clave tres veces más separados. `llegan` son los
+    paquetes de vídeo por segundo que se contaron, o None. Solo corrigen hacia abajo: una señal
+    entrelazada puede traer dos paquetes por fotograma."""
+    declarados = None
     for clave in ("avg_frame_rate", "r_frame_rate"):
         try:
             n, _, d = (s.get(clave) or "").partition("/")
@@ -51,8 +58,26 @@ def _fps(s):
         except (ValueError, ZeroDivisionError):
             continue
         if 1 <= v <= 240:
-            return round(v, 3)
-    return None
+            declarados = round(v, 3)
+            break
+    if llegan and (declarados is None or declarados > 1.5 * llegan):
+        return round(llegan, 2)
+    return declarados
+
+
+def _llegan(paquetes):
+    """Paquetes de vídeo por segundo, por sus tiempos de presentación. None si son pocos para decirlo."""
+    tiempos = []
+    for p in paquetes:
+        try:
+            tiempos.append(float(p["pts_time"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if len(tiempos) < 10:
+        return None
+    dura = max(tiempos) - min(tiempos)
+    ritmo = (len(tiempos) - 1) / dura if dura >= 0.4 else 0
+    return ritmo if 1 <= ritmo <= 240 else None
 
 
 def interpretar(datos):
@@ -64,8 +89,9 @@ def interpretar(datos):
             if (s.get("disposition") or {}).get("attached_pic"):
                 continue                            # la carátula de un audio no es vídeo
             indice_video = s.get("index")
+            llegan = _llegan([p for p in datos.get("packets") or [] if p.get("stream_index") == indice_video])
             video = {"codec": P.codec(s.get("codec_name")), "ancho": s.get("width") or None,
-                     "alto": s.get("height") or None, "fps": _fps(s), "perfil": s.get("profile") or "",
+                     "alto": s.get("height") or None, "fps": _fps(s, llegan), "perfil": s.get("profile") or "",
                      "entrelazado": (s.get("field_order") or "") in ENTRELAZADOS, "b": None}
         elif s.get("codec_type") == "audio":
             try:
