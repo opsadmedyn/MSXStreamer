@@ -1534,6 +1534,8 @@ def argumentos():
 
 def main():
     args = argumentos()
+    for senal in (A.signal.SIGTERM, A.signal.SIGHUP):       # si la cortan, recoge lo suyo (ver aceptacion.py)
+        A.signal.signal(senal, A._cortada)
     sesion = os.environ.get("MSXS_SESION", "")
     if args.sesion_archivo:
         sesion = pathlib.Path(args.sesion_archivo).read_text().strip()

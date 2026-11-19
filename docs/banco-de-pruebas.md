@@ -145,8 +145,46 @@ El banco cabe al lado del Streamer en marcha si se le desplazan los puertos. Con
 con 8289/UDP (WebRTC), y su propia carpeta. No comparte nada con la instalación de `/home/mediasat/streamer`: ni
 la base de datos, ni MediaMTX, ni los servicios de systemd.
 
-Es la forma de medir la carga en la HP Z8 antes del relevo. En la estación, como `mediasat`, desde
-una copia del repositorio:
+Es la forma de medir la carga en la HP Z8 antes del relevo, y `scripts/medir-carga.sh` lo hace de
+una vez. En la estación, como `mediasat`, desde una copia del repositorio (nunca desde la carpeta
+del Streamer):
+
+```
+scripts/medir-carga.sh --solo-mirar      # no arranca nada: dice cómo está la estación y si se puede
+scripts/medir-carga.sh --lugar "HP Z8 (EZC80), banco al lado de producción"
+```
+
+El guion tarda unos 13 minutos y hace esto, en orden:
+
+1. Anota la estación (procesador, memoria, tarjeta gráfica, carga) y cómo está el Streamer en
+   producción: su versión, el estado de sus tres servicios y los identificadores de sus procesos de
+   rutas. No escribe sus líneas de órdenes, que llevan claves.
+2. Se niega a seguir si ya hay un banco en marcha, si alguno de los puertos del banco está ocupado,
+   si quedan menos de 2 GB libres o si la carga media del último minuto pasa del 60 % de los
+   núcleos (`CARGA_MAXIMA` lo cambia).
+3. Arranca el banco en `/home/mediasat/hub-banco` con lo que la estación ya tiene: el Python y el
+   MediaMTX del Streamer (una copia del binario, si es de la misma versión), el mismo ffmpeg, y el
+   Node y el Chromium del compositor como navegador de la prueba. No instala ni descarga nada, salvo
+   MediaMTX si la estación tuviera otra versión.
+4. Pasa la prueba de aceptación completa con señales de prueba, midiendo la carga en cada fase.
+5. Para el banco, comprueba que no queda ninguno de sus procesos ni de sus puertos, y vuelve a
+   mirar el Streamer en producción: los servicios y los procesos tienen que ser los mismos que
+   antes. Lo deja escrito en `produccion.txt`, junto al `informe.md` y al `datos.json` de la prueba.
+
+Sale con lo que salga la prueba (0 pasa, 1 falla, 3 algo quedó sin comprobar), con 2 si no llegó a
+arrancar y con 130 si se interrumpió. Para pararlo antes de tiempo basta un `kill` al guion: cierra
+la prueba (su cámara, sus receptores y su navegador, y lo que creó en el hub), para el banco y lo
+cuenta; tarda unos 15 segundos.
+
+La señal de prueba y los reproductores corren en la misma máquina, así que el uso total de CPU que
+sale en el informe los incluye; las filas de cada proceso del hub y la de MediaMTX no. La prueba no
+usa la tarjeta gráfica: sus rutas van en copia, y solo se convierte el audio para WebRTC.
+
+Si el Chromium del compositor no decodificara H.264, el guion lo dice al mirar y pasa la prueba sin
+navegador (esas comprobaciones quedan «sin comprobar»); `CHROMIUM=/usr/bin/google-chrome` hace que
+use otro navegador.
+
+Por dentro son los pasos de siempre, con los puertos desplazados, y se pueden dar a mano:
 
 ```
 export MSXS_BANCO=/home/mediasat/hub-banco DESPLAZA=100
@@ -166,15 +204,9 @@ MSXS_SESION=admin python3 scripts/aceptacion.py --hub http://127.0.0.1:8195 \
 tests/banco/banco.sh parar
 ```
 
-Antes de arrancar conviene comprobar que esos puertos están libres en la estación
-(`ss -Hltnu | grep -E ':(8195|10097|8990|8988|2045|2046|8989|8289|9311|1960)\b'` no debe dar nada). La
-señal de prueba y los reproductores corren en la misma máquina, así que el uso total de CPU que
-sale en el informe los incluye; las filas de cada proceso del hub y la de MediaMTX no.
-
-Si el Chromium del compositor no decodificara H.264, las comprobaciones del navegador fallarían
-diciéndolo; `CHROMIUM=/usr/bin/google-chrome` hace que la prueba use otro navegador.
-
-Las demás formas de conexión se pasan igual, antes de parar el banco:
+Las demás formas de conexión se pasan igual, antes de parar el banco. Esta prueba sí convierte
+vídeo (con la tarjeta gráfica, si la hay) y cambia y repone ajustes del banco, así que conviene
+pasarla con la estación tranquila:
 
 ```
 MSXS_SESION=admin python3 scripts/combinaciones.py --hub http://127.0.0.1:8195 \

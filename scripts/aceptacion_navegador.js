@@ -16,6 +16,7 @@
 //
 // Necesita Playwright (playwright o playwright-core) con su Chromium; CHROMIUM=/ruta usa otro
 // navegador. Termina al cerrarle la entrada o con SIGTERM.
+//   node aceptacion_navegador.js --capacidades   solo dice si este navegador puede reproducir lo que entrega el hub
 // Si por la entrada le llega una línea «recargar», vuelve a cargar las páginas (como quien pulsa F5).
 //
 // Una página con «publicar» ({"whip": "http://…/whip", "token": "…", "codec": "H264", "audio_wav": "/ruta.wav"})
@@ -128,7 +129,33 @@ async function medir() {
   return r;
 }
 
+// --capacidades: no abre ninguna página; dice en una línea JSON si este navegador puede reproducir lo
+// que entrega el hub (H.264 y AAC en la página HLS, H.264 y Opus por WebRTC) y termina.
+async function capacidades() {
+  const opciones = {};
+  if (process.env.CHROMIUM) opciones.executablePath = process.env.CHROMIUM;
+  const navegador = await chromium.launch(opciones);
+  try {
+    const pagina = await navegador.newPage();
+    console.log(JSON.stringify(await pagina.evaluate(() => {
+      const recibe = (tipo, codec) => Boolean(window.RTCRtpReceiver
+        && ((RTCRtpReceiver.getCapabilities(tipo) || {}).codecs || []).some((c) => c.mimeType.toLowerCase() === codec));
+      const puede = (tipo) => Boolean(window.MediaSource && MediaSource.isTypeSupported(tipo));
+      return {
+        navegador: (navigator.userAgent.match(/(?:Headless)?Chrome\/[0-9.]+/) || [''])[0],
+        mse_h264: puede('video/mp4; codecs="avc1.64001f"'),
+        mse_aac: puede('audio/mp4; codecs="mp4a.40.2"'),
+        rtc_h264: recibe('video', 'video/h264'),
+        rtc_opus: recibe('audio', 'audio/opus'),
+      };
+    })));
+  } finally {
+    await navegador.close();
+  }
+}
+
 (async () => {
+  if (process.argv[2] === '--capacidades') return capacidades();
   const dicho = (process.argv[2] || '{}').trim();
   const config = JSON.parse(dicho.startsWith('{') ? dicho : fs.readFileSync(dicho, 'utf8'));
   const opciones = { args: ['--autoplay-policy=no-user-gesture-required'] };

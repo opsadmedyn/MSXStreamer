@@ -1350,8 +1350,17 @@ def argumentos():
     return p.parse_args()
 
 
+def _cortada(senal, _marco):
+    # Si cortan la prueba (se cierra la sesión de SSH desde la que corre, o un kill), termina como
+    # con Ctrl+C: los «finally» paran la cámara, los receptores y el navegador y borran del hub lo
+    # que creó. Sin esto, Python muere en el acto y todo eso se queda en marcha en el equipo.
+    raise SystemExit(128 + senal)
+
+
 def main():
     args = argumentos()
+    for senal in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(senal, _cortada)
     sesion = os.environ.get("MSXS_SESION", "")
     if args.sesion_archivo:
         sesion = pathlib.Path(args.sesion_archivo).read_text().strip()
