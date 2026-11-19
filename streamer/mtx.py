@@ -6,6 +6,7 @@ declarar en cada vuelta: si MediaMTX se reinicia, en unos segundos recupera todo
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -214,10 +215,31 @@ def _normalizar(g):
 # conexiones SRT en curso. También probado: si el puerto está ocupado por otro programa, MediaMTX
 # se cierra entero al aplicar el cambio. Por eso antes de pedirle un puerto nuevo se comprueba que
 # esté libre, y si no lo está no se le pide: el servidor se queda apagado y el panel dice por qué.
+#
+# RTMPS (RTMP con TLS) es otro servidor de MediaMTX, con su puerto y un certificado. Probado con la
+# 1.21.1: si se le pide con un certificado que no puede cargar, MediaMTX se cierra entero (por eso
+# se comprueba antes); encenderlo o apagarlo reinicia también el servidor RTMP y corta a quien
+# publica por RTMP; una vez en marcha guarda el certificado en memoria, lo recarga solo cuando los
+# archivos cambian (una renovación) y, si lo nuevo no vale, sigue con el anterior; y ni un cambio de
+# usuarios, ni encender WebRTC, ni cambiar el puerto RTMP lo reinician. Por eso un RTMPS que ya está
+# en marcha no se toca cuando lo que se pide ahora no se puede aplicar (el certificado del disco deja
+# de valer, o config.json pide otro certificado u otro puerto que no valen): sigue como estaba, que
+# no corta a nadie, y se avisa (RTMPS_DISCO).
 SERVIDORES = {
     "rtmp": (("rtmpAddress", "puerto", "tcp"),),
     "webrtc": (("webrtcAddress", "puerto", "tcp"), ("webrtcLocalUDPAddress", "udp", "udp")),
 }
+
+
+RTMPS_DISCO = "rtmps_certificado"       # aviso: RTMPS sigue en marcha como estaba; lo que se pide ahora no vale
+
+
+def aviso(nombre, motivo):
+    """Para el registro: el texto de un servidor que no se puede encender (o del aviso de RTMPS)."""
+    if nombre == RTMPS_DISCO:
+        return ("MediaMTX: RTMPS sigue en marcha como estaba, con el certificado que ya tenía cargado, porque lo "
+                f"que se pide ahora no se puede aplicar. {motivo}")
+    return f"MediaMTX: no se enciende {nombre.upper()}. {motivo}"
 
 
 def puerto_libre(puerto, tipo="tcp"):
@@ -238,10 +260,43 @@ def puerto_libre(puerto, tipo="tcp"):
         s.close()
 
 
-def conf_servidores(servicios, actual, libre=puerto_libre):
+def certificado_valido(cert, clave):
+    """"" si el certificado y su clave se pueden cargar juntos; si no, por qué. MediaMTX se cierra
+    entero cuando se le pide encender un servidor con un certificado que no puede usar: el hub lo
+    comprueba antes y, si no vale, no lo pide."""
+    import ssl
+    for que, ruta, marca, falta in (
+            ("el certificado", cert, "-----BEGIN CERTIFICATE-----", "El archivo del certificado no tiene un certificado en formato PEM"),
+            ("la clave del certificado", clave, "PRIVATE KEY-----", "El archivo de la clave no tiene una clave privada en formato PEM")):
+        if not os.path.isfile(ruta):
+            return f"No se encuentra {que} ({ruta})"
+        try:
+            with open(ruta, encoding="ascii", errors="replace") as f:
+                texto = f.read(1_000_000)
+        except OSError:
+            return f"Este usuario no puede leer {que} ({ruta})"
+        if marca not in texto:
+            return f"{falta} ({ruta})"
+        if "ENCRYPTED" in texto:
+            return f"La clave del certificado está cifrada con contraseña y MediaMTX la necesita sin cifrar ({ruta})"
+    try:
+        # con contraseña vacía: sin ella, OpenSSL la pediría por el terminal si la clave estuviera cifrada
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, clave, password="")
+    except (ssl.SSLError, OSError, ValueError) as err:
+        if getattr(err, "reason", None) == "KEY_VALUES_MISMATCH":
+            return "El certificado y su clave no se pueden usar juntos: la clave es de otro certificado"
+        return f"El certificado y su clave no se pueden usar juntos ({getattr(err, 'reason', None) or err})"
+    return ""
+
+
+def conf_servidores(servicios, actual, libre=puerto_libre, certificado=certificado_valido):
     """Claves globales de MediaMTX para los servidores que pide el hub y, aparte, los que no se
     pueden encender: ({clave: valor}, {servidor: motivo}).
-    servicios: {"rtmp": {"puerto"} | None, "webrtc": {"puerto", "udp", "hosts", "ice"} | None}."""
+    servicios: {"rtmp": {"puerto", "tls": {"puerto", "cert", "clave"} | None} | None,
+                "webrtc": {"puerto", "udp", "hosts", "ice"} | None}.
+    RTMPS va con el servidor RTMP (cifrado «optional»: se atiende con y sin TLS, cada uno en su
+    puerto). Si no se puede encender, RTMP se enciende sin él y el motivo queda en problemas["rtmps"];
+    si ya está en marcha y lo que se pide ahora no vale, sigue como estaba y se avisa en problemas[RTMPS_DISCO]."""
     conf, problemas = {}, {}
     for nombre, direcciones in SERVIDORES.items():
         pedido = (servicios or {}).get(nombre)
@@ -260,6 +315,26 @@ def conf_servidores(servicios, actual, libre=puerto_libre):
             continue                        # no se toca: como esté ahora
         conf[nombre] = True
         conf.update(propias)
+        if nombre == "rtmp":
+            tls = pedido.get("tls")
+            conf["rtmpEncryption"] = "no"
+            if tls:
+                pedida = {"rtmpEncryption": "optional", "rtmpsAddress": f":{int(tls['puerto'])}",
+                          "rtmpServerKey": str(tls["clave"]), "rtmpServerCert": str(tls["cert"])}
+                en_marcha = bool(actual.get("rtmp")) and actual.get("rtmpEncryption") == "optional"
+                ya_abierto = en_marcha and actual.get("rtmpsAddress") == pedida["rtmpsAddress"]
+                motivo = certificado(tls["cert"], tls["clave"])
+                if not motivo and not ya_abierto and not libre(tls["puerto"], "tcp"):
+                    motivo = f"El puerto {int(tls['puerto'])}/TCP está ocupado por otro programa"
+                if not motivo:
+                    conf.update(pedida)
+                elif en_marcha:
+                    # ya corre, con el certificado que cargó: se deja como está. Apagarlo reiniciaría el
+                    # servidor RTMP y cortaría a quien publica, y lo nuevo no se puede aplicar
+                    conf.update({k: actual.get(k) for k in pedida})
+                    problemas[RTMPS_DISCO] = motivo
+                else:
+                    problemas["rtmps"] = motivo
         if nombre == "webrtc":
             conf["webrtcAdditionalHosts"] = [h for h in pedido.get("hosts") or [] if h]
             conf["webrtcICEServers2"] = [
@@ -299,19 +374,21 @@ def _aplicar(deseado, actual):
     return True
 
 
-def asegurar_acceso(paths_hls, usuarios=(), publicar=(), servicios=None, libre=puerto_libre):
+def asegurar_acceso(paths_hls, usuarios=(), publicar=(), servicios=None, libre=puerto_libre, certificado=certificado_valido):
     """Aplica las reglas de acceso y los servidores del hub si MediaMTX tiene otra cosa (p. ej. tras
     reiniciarse). Devuelve (cambió, {servidor: por qué no se puede encender})."""
     deseado = acceso_deseado(paths_hls, usuarios, publicar)
     actual = _pedir("GET", "/v3/config/global/get")
-    servidores, problemas = conf_servidores(servicios, actual, libre)
+    servidores, problemas = conf_servidores(servicios, actual, libre, certificado)
     return _aplicar({**deseado, **servidores}, actual), problemas
 
 
 def servidores_encendidos():
-    """{"rtmp": bool, "webrtc": bool}: los servidores que MediaMTX tiene encendidos ahora mismo."""
+    """{"rtmp": bool, "webrtc": bool, "rtmps": bool}: los servidores que MediaMTX tiene encendidos ahora mismo."""
     g = _pedir("GET", "/v3/config/global/get")
-    return {nombre: bool(g.get(nombre)) for nombre in SERVIDORES}
+    encendidos = {nombre: bool(g.get(nombre)) for nombre in SERVIDORES}
+    encendidos["rtmps"] = encendidos["rtmp"] and g.get("rtmpEncryption") in ("optional", "strict")
+    return encendidos
 
 
 def asegurar_acceso_solo(paths_hls, usuarios=(), publicar=()):

@@ -174,8 +174,20 @@ def rtmp_responde(url, espera=ESPERA):
         pasos.append(_paso("Conexión TCP", True, f"{host}:{puerto} acepta conexiones", _ms(t)))
         if esquema == "rtmps":
             t = time.monotonic()
-            s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
-            pasos.append(_paso("Conexión segura (TLS)", True, "Certificado válido", _ms(t)))
+            try:
+                s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
+                pasos.append(_paso("Conexión segura (TLS)", True, "Certificado válido", _ms(t)))
+            except ssl.SSLCertVerificationError as err:
+                # Quien envía (ffmpeg) cifra pero no comprueba el certificado: la ruta conectará igual.
+                # No es un fallo de conexión sino algo que el operador debe saber; se sigue con el
+                # saludo por una conexión nueva, sin esa comprobación.
+                s.close()
+                sin_comprobar = ssl.create_default_context()
+                sin_comprobar.check_hostname, sin_comprobar.verify_mode = False, ssl.CERT_NONE
+                s = sin_comprobar.wrap_socket(socket.create_connection((host, puerto), timeout=espera), server_hostname=host)
+                pasos.append(_paso("Conexión segura (TLS)", None,
+                                   f"El certificado del servidor no es válido ({err.verify_message}). El hub emite "
+                                   "igualmente y cifrado, pero sin garantía de que el servidor sea quien dice ser", _ms(t)))
         t = time.monotonic()
         s.settimeout(espera)
         s.sendall(b"\x03" + struct.pack(">II", 0, 0) + os.urandom(1528))        # C0 + C1
@@ -189,7 +201,9 @@ def rtmp_responde(url, espera=ESPERA):
             pasos.append(_paso("Saludo RTMP", True, "Responde un servidor RTMP", _ms(t)))
             pasos.append(_paso("Clave de emisión", None, "No se envía en la prueba: se comprueba al conectar la ruta",
                                al_conectar=True))
-            return _resultado(pasos, f"Responde un servidor RTMP en {host}:{puerto}. La clave se comprueba al conectar.")
+            dudas = any(p["ok"] is None and not p["al_conectar"] for p in pasos)     # el certificado: que sea eso el resumen
+            return _resultado(pasos, None if dudas else
+                              f"Responde un servidor RTMP en {host}:{puerto}. La clave se comprueba al conectar.")
         pasos.append(_paso("Saludo RTMP", False, "El servidor acepta la conexión pero no responde como RTMP", _ms(t)))
     except (OSError, socket.timeout) as err:
         nombre = "Conexión segura (TLS)" if isinstance(err, ssl.SSLError) else \

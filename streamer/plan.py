@@ -63,6 +63,16 @@ def nombre_pista(i, a):
     return f"Pista {i + 1}" + (f" · {extra}" if extra else "")
 
 
+def _lista(numeros):
+    """«2», «1 y 2», «1, 2 y 3»."""
+    numeros = [str(n) for n in numeros]
+    return numeros[0] if len(numeros) == 1 else ", ".join(numeros[:-1]) + " y " + numeros[-1]
+
+
+def _pistas_de_audio(numeros):
+    return f"la pista {numeros[0]} de audio" if len(numeros) == 1 else f"las pistas {_lista(numeros)} de audio"
+
+
 def kbps_por_alto(alto):
     for minimo, kbps in KBPS_POR_ALTO:
         if (alto or 0) >= minimo:
@@ -227,6 +237,8 @@ def planear(pistas, protocolo, perfil=None, audio="todas", empuja=True):
         avisos.append("La fuente no trae audio.")
 
     # ---- la señal que lee la ruta
+    van = [f["pista"] for f in plan_a if f["accion"] != "omite"]
+    no_van = [f["pista"] for f in plan_a if f["accion"] == "omite"]
     convierte_v = isinstance(senal_v, dict)
     convierte_a = any(t["codec"] != "copia" for t in senal_a)
     entera = [t["origen"] for t in senal_a] == list(range(len(enlace)))    # van todas las que lleva el enlace
@@ -244,8 +256,13 @@ def planear(pistas, protocolo, perfil=None, audio="todas", empuja=True):
         resumen = "Se convierte el vídeo" + (" y el audio se copia." if senal_a else ".")
     elif convierte_a:
         resumen = ("Se copia el vídeo y se convierte el audio." if v else "Se convierte el audio.")
-    else:
+    elif not no_van:
         resumen = "Se copia todo: solo cambia el transporte."
+    else:                                           # «todo» sería mentira: se dice qué es lo que se copia
+        partes = (["el vídeo"] if v else []) + ([_pistas_de_audio(van)] if van else [])
+        resumen = f"Se copia{'n' if len(partes) > 1 or len(van) > 1 else ''} {' y '.join(partes)}: solo cambia el transporte."
+    if no_van:
+        resumen += f" {_pistas_de_audio(no_van).capitalize()} no se envía{'n' if len(no_van) > 1 else ''}."
     if convierte_v:
         carga = f"Un codificador de vídeo a {senal_v['ancho']}×{senal_v['alto']}."
     elif convierte_a:

@@ -389,7 +389,22 @@ def ajustes_red(c, cfg):
     for clave in ("host_publico", "hls_url", "webrtc_url", "hls_puerto", "mediamtx_srt", "srt_puerto"):
         if guardado.get(clave) or cfg.get(clave):
             r[clave] = guardado.get(clave) or cfg.get(clave)
+    tls = rtmps(cfg)
+    if tls:                                 # solo de config.json: son archivos del equipo, no algo del panel
+        r.update(rtmps_puerto=tls["puerto"], rtmps_cert=tls["cert"], rtmps_clave=tls["clave"])
     return r
+
+
+def rtmps(cfg):
+    """RTMPS de entrada y de entrega: {"puerto", "cert", "clave"} si config.json da un puerto y un
+    certificado con su clave; None si no (el hub atiende entonces solo RTMP sin cifrar)."""
+    try:
+        puerto = int(cfg.get("rtmps_puerto") or 0)
+    except (TypeError, ValueError):
+        puerto = 0
+    if not (0 < puerto < 65536 and cfg.get("rtmps_cert") and cfg.get("rtmps_clave")):
+        return None
+    return {"puerto": puerto, "cert": str(cfg["rtmps_cert"]), "clave": str(cfg["rtmps_clave"])}
 
 
 def servicios(c, cfg):
@@ -399,7 +414,7 @@ def servicios(c, cfg):
     ds = [d for d in destinos(c) if entrega(d) or reenvia_whip(d)]
     usados = {x["protocolo"] for x in [*fs, *ds]}
     n, webrtc = ajustes_red(c, cfg), db.ajuste(c, "webrtc") or {}
-    return {"rtmp": {"puerto": n["rtmp_puerto"]} if "rtmp" in usados else None,
+    return {"rtmp": {"puerto": n["rtmp_puerto"], "tls": rtmps(n)} if "rtmp" in usados else None,
             "webrtc": {"puerto": n["webrtc_puerto"], "udp": n["webrtc_udp"], "hosts": webrtc.get("hosts") or [],
                        "ice": webrtc.get("ice") or []} if "webrtc" in usados else None}
 
@@ -411,7 +426,7 @@ def red(cfg):
     host = cfg.get("host_publico") or "127.0.0.1"
     srt = urllib.parse.urlsplit(cfg.get("mediamtx_srt", "srt://127.0.0.1:8890")).port or 8890
     return {"host": host, "srt": int(cfg.get("srt_puerto") or srt),
-            "rtmp": int(cfg.get("rtmp_puerto") or RED["rtmp_puerto"]),
+            "rtmp": int(cfg.get("rtmp_puerto") or RED["rtmp_puerto"]), "rtmps": (rtmps(cfg) or {}).get("puerto"),
             "hls": (cfg.get("hls_url") or f"http://{host}:{int(cfg.get('hls_puerto') or 8888)}").rstrip("/"),
             "webrtc": (cfg.get("webrtc_url")
                        or f"http://{host}:{int(cfg.get('webrtc_puerto') or RED['webrtc_puerto'])}").rstrip("/")}
@@ -451,7 +466,12 @@ def _direccion(fila, n, lado, clave, frase):
         llave = i + (f"?user={i}&pass={clave}" if clave else "")
         servidor = f"rtmp://{n['host']}:{n['rtmp']}/"
         nombre_llave = "Clave de emisión" if lado == "fuente" else "Nombre de la señal"
-        return {"url": servidor + llave, "campos": [_campo("Servidor", servidor), _campo(nombre_llave, llave, bool(clave))]}
+        r = {"url": servidor + llave, "campos": [_campo("Servidor", servidor), _campo(nombre_llave, llave, bool(clave))]}
+        if n.get("rtmps"):                  # la misma señal, cifrada: el otro equipo elige con cuál de los dos entra
+            seguro = f"rtmps://{n['host']}:{n['rtmps']}/"
+            r["url_rtmps"] = seguro + llave
+            r["campos"].insert(1, _campo("Servidor RTMPS (cifrado)", seguro))
+        return r
     if proto == "hls":
         campos = [_campo("Usuario", i), _campo("Contraseña", clave, True)] if clave else []
         return {"url": f"{n['hls']}/{i}/index.m3u8", "campos": campos}

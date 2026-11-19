@@ -83,6 +83,24 @@ def test_elegir_pistas_para_un_receptor_que_viene_al_hub_pide_senal_derivada():
     assert p["carga"] == "Solo se reparten las pistas: carga mínima."
 
 
+def test_el_resumen_no_dice_que_se_copia_todo_cuando_alguna_pista_no_se_envia():
+    """El operador lee el resumen antes de activar: si una pista se queda fuera, tiene que decirlo."""
+    assert plan.planear(INTERNACIONAL, "srt")["resumen"] == "Se copia todo: solo cambia el transporte."
+    p = plan.planear(INTERNACIONAL, "srt", audio="2", empuja=False)
+    assert p["resumen"] == "Se copian el vídeo y la pista 2 de audio: solo cambia el transporte. La pista 1 de audio no se envía."
+    p = plan.planear(INTERNACIONAL, "rtmp")                   # RTMP lleva una sola pista
+    assert p["resumen"] == "Se copian el vídeo y la pista 1 de audio: solo cambia el transporte. La pista 2 de audio no se envía."
+    p = plan.planear(INTERNACIONAL, "webrtc", audio="1", empuja=False)
+    assert p["resumen"] == "Se copia el vídeo y se convierte el audio. La pista 2 de audio no se envía."
+    tres = dict(INTERNACIONAL, audio=INTERNACIONAL["audio"] + [{"codec": "aac", "canales": 2, "hz": 48000, "nombre": "Ambiente"}])
+    assert plan.planear(tres, "rtmp", audio="2", perfil=P720)["resumen"] == \
+        "Se convierte el vídeo y el audio se copia. Las pistas 1 y 3 de audio no se envían."
+    solo_audio = {"video": None, "audio": INTERNACIONAL["audio"]}
+    assert plan.planear(solo_audio, "rtmp")["resumen"] == "Se copia la pista 1 de audio: solo cambia el transporte. La pista 2 de audio no se envía."
+    g711 = {"video": ESTUDIO["video"], "audio": [{"codec": "g711", "canales": 1, "hz": 8000}]}
+    assert plan.planear(g711, "srt")["resumen"] == "Se copia el vídeo: solo cambia el transporte. La pista 1 de audio no se envía."
+
+
 def test_dos_destinos_con_el_mismo_perfil_comparten_la_conversion():
     a = plan.planear(ESTUDIO, "webrtc", empuja=False)
     b = plan.planear(ESTUDIO, "webrtc", empuja=True)       # reenvío WHIP

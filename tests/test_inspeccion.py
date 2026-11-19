@@ -1,5 +1,7 @@
 """De lo que dicen ffprobe y MediaMTX a lo que necesita el plan de una ruta."""
 
+import json
+
 import inspeccion
 
 FFPROBE = {
@@ -53,6 +55,56 @@ def test_lo_que_mediamtx_sabe_al_instante_es_parcial():
     assert inspeccion.de_mediamtx({"ready": False}) is None and inspeccion.de_mediamtx(None) is None
     # un MediaMTX antiguo solo da los nombres de los códecs
     assert inspeccion.de_mediamtx({"ready": True, "tracks": ["H265", "MPEG-4 Audio"]})["video"]["codec"] == "h265"
+
+
+def _info_con(ancho, alto):
+    return dict(INFO, tracks2=[{"codec": "H264", "codecProps": {"width": ancho, "height": alto}}] + INFO["tracks2"][1:])
+
+
+def test_un_origen_que_cambia_el_tamano_de_la_imagen_sin_volver_a_conectar_se_nota():
+    """Un navegador que publica por WebRTC empieza pequeño y sube: la huella no cambia (es la misma
+    conexión y las mismas pistas), pero MediaMTX deja de ver el tamaño que veía al inspeccionar."""
+    inspeccionada = {"video": {"codec": "h264", "ancho": 320, "alto": 180, "fps": 20.0, "b": False}, "audio": [],
+                     "segun_mediamtx": [320, 180]}
+    assert inspeccion.huella(_info_con(320, 180)) == inspeccion.huella(_info_con(1280, 720))
+    assert inspeccion.medidas_nuevas(inspeccionada, _info_con(320, 180)) is None
+    assert inspeccion.medidas_nuevas(inspeccionada, _info_con(1280, 720)) == [1280, 720]
+    # una inspección guardada por una versión anterior: se compara con lo que midió entonces
+    assert inspeccion.medidas_nuevas({"video": {"codec": "h264", "ancho": 320, "alto": 180}}, _info_con(480, 270)) == [480, 270]
+    assert inspeccion.medidas_nuevas({"video": {"codec": "h264", "ancho": 320, "alto": 180}}, _info_con(320, 180)) is None
+
+
+def test_que_ffprobe_y_mediamtx_no_coincidan_en_el_tamano_no_es_un_cambio():
+    """Si no, la fuente se volvería a mirar sin fin y sus conversiones se reiniciarían cada vez."""
+    inspeccionada = {"video": {"codec": "h264", "ancho": 1920, "alto": 1080}, "audio": [], "segun_mediamtx": [1920, 1088]}
+    assert inspeccion.medidas_nuevas(inspeccionada, _info_con(1920, 1088)) is None
+
+
+def test_sin_medidas_o_sin_video_no_hay_cambio_que_mirar():
+    solo_nombres = {"ready": True, "tracks": ["H264"]}                  # un MediaMTX que no dice las medidas
+    assert inspeccion.medidas_de(solo_nombres) is None and inspeccion.medidas_de(None) is None
+    assert inspeccion.medidas_de(INFO) == [1280, 720]
+    assert inspeccion.medidas_nuevas({"video": {"codec": "h264", "ancho": 320, "alto": 180}}, solo_nombres) is None
+    assert inspeccion.medidas_nuevas({"video": None, "audio": [{"codec": "aac"}]}, INFO) is None
+    assert inspeccion.medidas_nuevas(None, INFO) is None
+
+
+def test_un_origen_que_vuelve_con_lo_mismo_se_reconoce_por_lo_que_dice_mediamtx():
+    resumen = inspeccion.resumen_mediamtx(_info_con(1280, 720))
+    assert resumen["video"][:3] == ["h264", 1280, 720] and len(resumen["audio"]) == len(_info_con(1280, 720)["tracks2"]) - 1
+    assert inspeccion.resumen_mediamtx(None) is None and inspeccion.resumen_mediamtx({"ready": False}) is None
+    vista = {"video": {"codec": "h264", "ancho": 1280, "alto": 720, "fps": 29.97, "b": False}, "audio": [{"codec": "aac"}],
+             "resumen_mediamtx": json.loads(json.dumps(resumen))}           # como vuelve de la base de datos
+    vuelve = dict(_info_con(1280, 720), readyTime="2026-11-19T08:00:00Z")   # otra conexión, la misma señal
+    assert inspeccion.la_misma(vista, vuelve)
+    assert not inspeccion.la_misma(vista, _info_con(1920, 1080))            # vuelve con otro tamaño
+    otra_pista = _info_con(1280, 720)
+    otra_pista["tracks2"] = otra_pista["tracks2"][:1]
+    assert not inspeccion.la_misma(vista, otra_pista)                       # vuelve sin audio
+    assert not inspeccion.la_misma(dict(vista, parcial=True), vuelve)       # lo que se sabía no era completo
+    sin_resumen = {k: v for k, v in vista.items() if k != "resumen_mediamtx"}
+    assert not inspeccion.la_misma(sin_resumen, vuelve)                     # inspecciones de antes de guardar el resumen
+    assert not inspeccion.la_misma(None, vuelve) and not inspeccion.la_misma(vista, None)
 
 
 def test_la_huella_cambia_cuando_el_origen_vuelve_o_cambian_sus_pistas():

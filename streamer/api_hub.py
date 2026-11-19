@@ -358,7 +358,7 @@ def _pistas(pistas):
     return {"video": dict(v, texto=plan.texto_video(v), pasa=v.get("codec") in P.ENLACE_VIDEO) if v else None,
             "audio": [dict(a, pista=i + 1, texto=plan.texto_audio(a), nombre_pista=plan.nombre_pista(i, a),
                            pasa=a.get("codec") in P.ENLACE_AUDIO) for i, a in enumerate(pistas.get("audio") or [])],
-            "parcial": bool(pistas.get("parcial"))}
+            "parcial": bool(pistas.get("parcial")), "sin_confirmar": bool(pistas.get("sin_confirmar"))}
 
 
 def _remoto(fila):
@@ -599,6 +599,8 @@ def _puertos_ocupados(c, excepto=""):
               n["webrtc_puerto"]: "el WebRTC del hub", n["webrtc_udp"]: "los medios de WebRTC",
               int(CFG.get("hls_puerto", 8888)): "el HLS del hub", int(CFG.get("panel_puerto", 8095)): "el panel",
               (urllib.parse.urlsplit(CFG.get("mediamtx_api", "http://127.0.0.1:9997")).port or 9997): "la API de MediaMTX"}
+    if matriz.rtmps(n):
+        usados[matriz.rtmps(n)["puerto"]] = "el RTMPS del hub"
     for fila in [*matriz.fuentes(c), *matriz.destinos(c)]:
         puerto = matriz.json_de(fila.get("opciones"), {}).get("puerto")
         if puerto and fila["id"] != excepto:
@@ -1120,12 +1122,22 @@ def _prueba_propia(fila, lado, c):
     else:
         paso = sondas.hub_escucha(n["webrtc_puerto"], "tcp", "MediaMTX (WebRTC)")
     pasos = [paso]
-    problema = ((db.ajuste(c, "servidores") or {}).get("problemas") or {}).get(proto)
+    problemas = (db.ajuste(c, "servidores") or {}).get("problemas") or {}
+    problema = problemas.get(proto)
     if problema:
         pasos = [sondas.paso(paso["que"], False, f"MediaMTX no puede encender {P.NOMBRES[proto]}. {problema}. "
                                                  f"Cambia el puerto en Ajustes")]
     elif paso["ok"] is False and proto in ("rtmp", "webrtc") and not fila.get("id"):
         pasos = [sondas.paso(paso["que"], None, f"El servidor {P.NOMBRES[proto]} del hub se enciende al guardar")]
+    tls = matriz.rtmps(n) if proto == "rtmp" else None
+    if tls and pasos[0]["ok"]:              # el hub entrega también la dirección cifrada: ¿la atiende?
+        pasos.append(sondas.paso("RTMPS", None, f"El hub atiende RTMP, pero no RTMPS. {problemas['rtmps']}")
+                     if problemas.get("rtmps") else sondas.hub_escucha(tls["puerto"], "tcp", "MediaMTX (RTMPS)"))
+        aviso = problemas.get(mtx.RTMPS_DISCO)
+        if aviso and pasos[-1]["ok"]:
+            pasos.append(sondas.paso("Certificado de RTMPS", None, _certificado_del_disco(aviso)))
+        elif aviso and (_servidores_mtx() or {}).get("rtmps"):      # sigue en marcha, en el puerto que tenía
+            pasos[-1] = sondas.paso("RTMPS", None, _certificado_del_disco(aviso))
     if not n.get("host_publico"):
         pasos.append(sondas.paso("Dirección pública", None, "Falta la dirección pública del hub en Ajustes: la dirección "
                                                            "que se entrega solo vale dentro de este equipo"))
@@ -1375,6 +1387,11 @@ PUERTOS_RED = (("RTMP", "rtmp_puerto", "tcp", "rtmp"), ("WebRTC (señalización)
                ("WebRTC (medios)", "webrtc_udp", "udp", "webrtc"))
 
 
+def _certificado_del_disco(motivo):
+    return ("RTMPS sigue en marcha como estaba, con el certificado que MediaMTX ya tenía cargado, pero lo que se pide "
+            f"ahora no se puede aplicar: {motivo}. Si MediaMTX se reinicia, RTMPS no volverá hasta corregirlo")
+
+
 def _vista_ajustes(c):
     n = matriz.ajustes_red(c, CFG)
     red = matriz.red(n)
@@ -1396,9 +1413,24 @@ def _vista_ajustes(c):
             estado = sondas.paso(nombre, None, "Apagado: se enciende solo cuando una fuente o un destino usa este protocolo")
         puertos.append({"servicio": servicio, "puerto": n[clave], "tipo": tipo.upper(), "clave": clave,
                         "en_uso": bool(servicios[usa]), "estado": estado})
+    tls = matriz.rtmps(n)
+    if tls:                                 # va con RTMP; su puerto y su certificado se ponen en config.json
+        nombre = f"Puerto {tls['puerto']}/TCP del hub"
+        if problemas.get("rtmps"):
+            estado = sondas.paso(nombre, False, f"{problemas['rtmps']}. El puerto y los archivos de RTMPS se indican en "
+                                                "config.json (rtmps_puerto, rtmps_cert, rtmps_clave)")
+        elif servicios["rtmp"]:
+            estado = sondas.hub_escucha(tls["puerto"], "tcp", "MediaMTX (RTMPS)")
+            # con el aviso, RTMPS sigue en marcha: en este puerto o, si lo que no vale es un puerto nuevo, en el que tenía
+            if problemas.get(mtx.RTMPS_DISCO) and (estado["ok"] or (_servidores_mtx() or {}).get("rtmps")):
+                estado = sondas.paso(nombre, None, _certificado_del_disco(problemas[mtx.RTMPS_DISCO]))
+        else:
+            estado = sondas.paso(nombre, None, "Apagado: se enciende solo cuando una fuente o un destino usa RTMP")
+        puertos.append({"servicio": "RTMPS", "puerto": tls["puerto"], "tipo": "TCP", "clave": None,
+                        "en_uso": bool(servicios["rtmp"]), "estado": estado})
     return {"red": {"host_publico": n.get("host_publico") or "", "hls_url": red["hls"], "webrtc_url": red["webrtc"],
                     "hls_url_propia": bool(n.get("hls_url")), "webrtc_url_propia": bool(n.get("webrtc_url")),
-                    "https": red["webrtc"].startswith("https://")},
+                    "https": red["webrtc"].startswith("https://"), "rtmps": bool(tls)},
             "puertos": puertos, "problemas": problemas,
             "webrtc": {"hosts": webrtc.get("hosts") or [],
                        "ice": [{"url": s.get("url", ""), "usuario": s.get("usuario", ""), "tiene_clave": bool(s.get("clave"))}

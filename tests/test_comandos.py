@@ -121,12 +121,28 @@ def test_conversion_de_video_escala_y_quita_los_fotogramas_b():
     assert tras(x264, "-c:v") == "libx264" and tras(x264, "-tune") == "zerolatency"
 
 
-def test_conversion_sin_cambiar_medidas_no_escala():
+def test_conversion_sin_cambiar_medidas_fija_igualmente_la_medida_de_salida():
+    """Un navegador que publica por WebRTC cambia el tamaño de la imagen sobre la marcha: el
+    codificador debe recibir siempre el de salida, también cuando la fuente «ya lo trae»."""
     pistas = {"video": {"codec": "h264", "ancho": 1280, "alto": 720, "fps": 30, "b": True},
               "audio": [{"codec": "opus", "canales": 6, "hz": 48000}]}
     p = plan.planear(pistas, "webrtc", empuja=False)
     cmd = comandos.conversion("conv_f1_x", "f1", p["senal"], "conv_f1_x", pistas)
-    assert tras(cmd, "-vf") == "setsar=1,format=yuv420p" and tras(cmd, "-ac:a:0") == "2"
+    assert tras(cmd, "-vf") == "scale=1280:720,setsar=1,format=yuv420p" and tras(cmd, "-ac:a:0") == "2"
+
+
+def test_lo_que_se_lee_del_propio_hub_arranca_sin_esperar_a_otros_programas():
+    """El enlace interno trae un solo programa: no hay que esperar 5 s por si aparece otro. La señal
+    de un origen sí puede traer varios y se abre como siempre."""
+    pistas = {"video": {"codec": "h264", "ancho": 1280, "alto": 720, "fps": 30, "b": True}, "audio": []}
+    lectores = [comandos.envio("ruta_d1", destino(url="srt://198.51.100.7:9000"), "f1"),
+                comandos.envio("ruta_d1", destino(protocolo="rtmp", url="rtmp://live.example/app", clave="k"), "f1"),
+                comandos.conversion("conv_f1_x", "f1", plan.planear(pistas, "webrtc", empuja=False)["senal"], "conv_f1_x", pistas)]
+    for cmd in lectores:
+        assert tras(cmd, "-scan_all_pmts") == "0" and cmd.index("-scan_all_pmts") < cmd.index("-i")
+    for f in (fuente(url="srt://198.51.100.7:9000"), fuente(protocolo="rtmp", url="rtmp://origen.example/app"),
+              fuente(protocolo="hls", url="https://cdn.example/x/master.m3u8")):
+        assert "-scan_all_pmts" not in comandos.entrada("ent_f1", f, "f1")
 
 
 def test_la_firma_del_comando_no_cambia_entre_vueltas():

@@ -181,7 +181,49 @@ def de_path(path, info=None):
             for k in ("ancho", "alto"):
                 pistas["video"][k] = pistas["video"].get(k) or sabido["video"].get(k)
         pistas = con_lo_que_no_pasa(pistas, info)
+        pistas["segun_mediamtx"] = medidas_de(info)     # para saber después si la imagen cambia de tamaño
+        pistas["resumen_mediamtx"] = resumen_mediamtx(info)     # y si, cuando el origen vuelva, trae lo mismo
     return pistas, error
+
+
+def resumen_mediamtx(info):
+    """Lo que MediaMTX dice de una señal, en corto y comparable entre dos momentos: códecs, medidas,
+    perfil y canales. None si no hay señal."""
+    sabido = de_mediamtx(info)
+    if not sabido:
+        return None
+    v = sabido["video"]
+    return {"video": [v["codec"], v["ancho"], v["alto"], v["perfil"]] if v else None,
+            "audio": [[a["codec"], a["canales"], a["hz"]] for a in sabido["audio"]]}
+
+
+def la_misma(pistas, info):
+    """¿La señal que llega ahora es, para MediaMTX, la que ya se inspeccionó del todo? Un codificador
+    que se cae y vuelve trae casi siempre lo mismo: lo que se sabía de él sirve mientras ffprobe lo
+    confirma, y las conversiones no tienen que esperar a esa segunda mirada."""
+    if not pistas or pistas.get("parcial") or not pistas.get("resumen_mediamtx"):
+        return False
+    return pistas["resumen_mediamtx"] == resumen_mediamtx(info)
+
+
+def medidas_de(info):
+    """[ancho, alto] del vídeo de un path según MediaMTX, o None si no lo sabe."""
+    v = (de_mediamtx(info) or {}).get("video") or {}
+    return [v["ancho"], v["alto"]] if v.get("ancho") and v.get("alto") else None
+
+
+def medidas_nuevas(pistas, info):
+    """Un origen WebRTC (un navegador) cambia el tamaño de la imagen según su ancho de banda sin
+    volver a conectar: empieza pequeño y sube en los primeros segundos. Devuelve el tamaño que
+    MediaMTX ve ahora cuando no es el que veía al inspeccionar la señal, o None.
+    Se compara lo que dice MediaMTX consigo mismo, no con lo que midió ffprobe: si en alguna señal
+    los dos no coinciden, eso no es un cambio y no hay que volver a mirarla una y otra vez."""
+    ahora = medidas_de(info)
+    v = (pistas or {}).get("video")
+    if not ahora or not v:
+        return None
+    antes = pistas.get("segun_mediamtx") or [v.get("ancho"), v.get("alto")]
+    return ahora if list(antes) != ahora else None
 
 
 def huella(info):

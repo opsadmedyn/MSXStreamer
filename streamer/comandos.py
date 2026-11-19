@@ -22,6 +22,11 @@ import mtx
 FFMPEG = db.config().get("ffmpeg", "ffmpeg")
 RUN = db.BASE / "run"
 LATENCIA_LOCAL = "&latency=200000"          # lectura local para convertir: 200 ms, como la composición
+# Lo que el hub lee de su propio MediaMTX trae siempre un solo programa. Por defecto ffmpeg sigue
+# buscando otros durante 5 s antes de arrancar; así arranca en cuanto conoce las pistas (en el banco,
+# 1,3 s en vez de 5,4): menos espera al activar una ruta y en cada reintento. Solo para lo que viene
+# del propio hub: la señal de un origen puede traer varios programas y se abre como siempre.
+LECTURA_LOCAL = ["-scan_all_pmts", "0"]
 PAQUETE = "&pkt_size=1316"
 
 
@@ -140,7 +145,7 @@ def conversion(tid, path_fuente, senal, path_senal, pistas=None, codificador="li
     """ffmpeg que lee la fuente y publica la señal derivada que describe `senal` (ver plan.planear).
     Lo que la señal marca como copia no se toca; el resto se codifica una sola vez para todas las
     rutas que la usan."""
-    cmd = _base(tid) + ["-thread_queue_size", "512", "-i", mtx.url_lectura(path_fuente) + LATENCIA_LOCAL]
+    cmd = _base(tid) + LECTURA_LOCAL + ["-thread_queue_size", "512", "-i", mtx.url_lectura(path_fuente) + LATENCIA_LOCAL]
     v = senal.get("video")
     origen = (pistas or {}).get("video") or {}
     con_video = isinstance(v, dict)
@@ -150,9 +155,9 @@ def conversion(tid, path_fuente, senal, path_senal, pistas=None, codificador="li
         filtros = []
         if origen.get("entrelazado"):       # un fotograma por cuadro: mantiene los fps de la fuente
             filtros.append("yadif=mode=send_frame:parity=auto:deint=interlaced")
-        if (origen.get("ancho"), origen.get("alto")) != (v["ancho"], v["alto"]):
-            filtros.append(f"scale={v['ancho']}:{v['alto']}")
-        filtros += ["setsar=1", "format=yuv420p"]
+        # siempre a la medida de salida, aunque la fuente ya la traiga (entonces no cuesta nada): un
+        # origen WebRTC cambia de tamaño sobre la marcha y el codificador tiene que recibir siempre el mismo
+        filtros += [f"scale={v['ancho']}:{v['alto']}", "setsar=1", "format=yuv420p"]
         cmd += ["-map", "0:v:0", "-vf", ",".join(filtros), *codificador_video(codificador, v["kbps"], origen.get("fps"))]
     for n, t in enumerate(senal.get("audio") or []):
         cmd += ["-map", f"0:a:{t['origen']}"]
@@ -170,7 +175,7 @@ def conversion(tid, path_fuente, senal, path_senal, pistas=None, codificador="li
 def envio(tid, d, path_senal, mapa_audio=None, entera=True):
     """ffmpeg que lleva la señal de `path_senal`, en copia, al destino `d` (SRT o RTMP).
     mapa_audio: pistas de la señal que van, por orden. entera: van todas las pistas tal cual."""
-    cmd = _base(tid) + ["-i", mtx.url_lectura(path_senal)]
+    cmd = _base(tid) + LECTURA_LOCAL + ["-i", mtx.url_lectura(path_senal)]
     mapa = list(mapa_audio or [])
     if d["protocolo"] == "rtmp":            # FLV admite un vídeo y un audio
         cmd += ["-map", "0:v:0?", "-map", f"0:a:{mapa[0] if mapa else 0}?", "-c", "copy", "-f", "flv"]

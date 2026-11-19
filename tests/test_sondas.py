@@ -192,6 +192,37 @@ def test_rtmps_sin_tls_al_otro_lado_falla_en_la_conexion_segura():
     assert r["ok"] is False and r["pasos"][-1]["que"] == "Conexión segura (TLS)"
 
 
+@pytest.mark.skipif(not shutil.which("openssl"), reason="hace falta openssl para crear el certificado de la prueba")
+def test_rtmps_con_un_certificado_que_no_es_valido_no_se_da_por_caido(tmp_path):
+    """Un servidor RTMPS propio con certificado autofirmado: quien envía (ffmpeg) no comprueba el
+    certificado, así que la ruta conectará. La prueba lo dice como aviso y sigue hasta el saludo."""
+    import ssl
+    clave, cert = tmp_path / "clave.pem", tmp_path / "cert.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(clave), "-out", str(cert),
+                    "-days", "2", "-subj", "/CN=servidor-de-pruebas"], check=True, capture_output=True, timeout=60)
+    servidor_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    servidor_tls.load_cert_chain(str(cert), str(clave))
+
+    def servidor(conexion):
+        try:
+            tls = servidor_tls.wrap_socket(conexion, server_side=True)
+        except ssl.SSLError:                                # el primer intento: el cliente rechaza el certificado
+            return
+        leer(tls, 1537)
+        tls.sendall(b"\x03" + bytes(3072))
+        tls.recv(4096)
+    s, puerto = servidor_tcp(servidor)
+    try:
+        r = sondas.rtmp_responde(f"rtmps://127.0.0.1:{puerto}/live/CLAVE-DE-EMISION", espera=3)
+    finally:
+        s.close()
+    pasos = {p["que"]: p for p in r["pasos"]}
+    assert pasos["Conexión segura (TLS)"]["ok"] is None and "certificado del servidor no es válido" in pasos["Conexión segura (TLS)"]["detalle"]
+    assert pasos["Saludo RTMP"]["ok"] is True
+    assert r["ok"] is None and "emite igualmente" in r["resumen"]           # ni «todo bien» ni «no conecta»
+    assert "CLAVE-DE-EMISION" not in str(r)
+
+
 # ---------------------------------------------------------------- WHIP
 class _Whip(http.server.BaseHTTPRequestHandler):
     token = "token-correcto"

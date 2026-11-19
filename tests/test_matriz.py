@@ -191,6 +191,31 @@ def test_direcciones_que_el_hub_entrega_con_y_sin_claves(c):
     assert matriz.direccion(dict(f, inicia="hub"), n, "fuente") is None
 
 
+def test_rtmps_solo_con_puerto_certificado_y_clave_en_config_json(c):
+    tls = {"rtmps_puerto": 1946, "rtmps_cert": "/etc/hub/cert.pem", "rtmps_clave": "/etc/hub/clave.pem"}
+    assert matriz.rtmps(tls) == {"puerto": 1946, "cert": "/etc/hub/cert.pem", "clave": "/etc/hub/clave.pem"}
+    for incompleto in ({}, dict(tls, rtmps_puerto=0), dict(tls, rtmps_puerto="no"), dict(tls, rtmps_cert=""), dict(tls, rtmps_clave=""),
+                       dict(tls, rtmps_puerto=70000)):
+        assert matriz.rtmps(incompleto) is None
+    cfg = {"host_publico": "ezc80.example", "rtmp_puerto": 1945, **tls}
+    # sin nadie que use RTMP no se pide nada; con una fuente RTMP, el servidor y su TLS
+    assert matriz.servicios(c, cfg)["rtmp"] is None
+    f = matriz.crear(c, "fuentes", nombre="Estudio A", protocolo="rtmp", inicia="origen", clave="CLAVE")
+    assert matriz.servicios(c, cfg)["rtmp"] == {"puerto": 1945, "tls": matriz.rtmps(tls)}
+    assert matriz.servicios(c, {"rtmp_puerto": 1945})["rtmp"] == {"puerto": 1945, "tls": None}
+    # la dirección que se entrega: la de siempre y, además, la cifrada (misma clave de emisión)
+    n, fila = matriz.red(matriz.ajustes_red(c, cfg)), matriz.fuentes(c)[0]
+    assert n["rtmps"] == 1946 and matriz.red({"rtmp_puerto": 1945})["rtmps"] is None
+    d = matriz.direccion(fila, n, "fuente", ver_claves=True)
+    assert d["url"] == f"rtmp://ezc80.example:1945/{f}?user={f}&pass=CLAVE"
+    assert d["url_rtmps"] == f"rtmps://ezc80.example:1946/{f}?user={f}&pass=CLAVE"
+    assert [x["nombre"] for x in d["campos"]] == ["Servidor", "Servidor RTMPS (cifrado)", "Clave de emisión"]
+    oculta = matriz.direccion(fila, n, "fuente")
+    assert "CLAVE" not in json.dumps(oculta) and oculta["url_rtmps"].endswith("pass=***")
+    sin = matriz.direccion(fila, matriz.red({"host_publico": "ezc80.example", "rtmp_puerto": 1945}), "fuente", True)
+    assert "url_rtmps" not in sin and len(sin["campos"]) == 2
+
+
 def test_identificadores_unicos_entre_fuentes_destinos_y_flujos(c):
     a = matriz.crear(c, "fuentes", nombre="Cámara Ñandú 1", protocolo="srt", inicia="origen")
     b = matriz.crear(c, "destinos", nombre="Cámara Ñandú 1", protocolo="hls", inicia="receptor")

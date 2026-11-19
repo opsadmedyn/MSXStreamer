@@ -542,7 +542,7 @@ def test_ajustes_de_red_y_de_webrtc(panel, c):
                                                       "webrtc_url": "https://hub.ejemplo.com/webrtc/"})
     assert r.status_code == 200 and r.json()["red"] == {"host_publico": "hub.ejemplo.com", "hls_url": "http://hub.ejemplo.com:8888",
                                                         "webrtc_url": "https://hub.ejemplo.com/webrtc", "hls_url_propia": False,
-                                                        "webrtc_url_propia": True, "https": True}
+                                                        "webrtc_url_propia": True, "https": True, "rtmps": False}
     assert matriz.ajustes_red(c, {})["rtmp_puerto"] == puerto
     fid = fuente_rtmp(panel)
     assert panel["operador"].get("/api/fuentes").json()[0]["direccion"]["url"].startswith(f"rtmp://hub.ejemplo.com:{puerto}/{fid}")
@@ -557,6 +557,47 @@ def test_ajustes_de_red_y_de_webrtc(panel, c):
     assert db.ajuste(c, "webrtc")["ice"][0]["clave"] == "credencial-turn"
     assert panel["admin"].put("/api/ajustes/webrtc", json={"hosts": [], "ice": [{"url": "http://x"}]}).status_code == 422
     assert "credencial-turn" not in json.dumps(cambios(c)) and "credencial-turn" not in panel["operador"].get("/api/ajustes").text
+
+
+def test_rtmps_en_ajustes_en_las_direcciones_y_en_la_prueba(panel, c, monkeypatch):
+    escucha = socket.socket()
+    escucha.bind(("127.0.0.1", 0))
+    escucha.listen(1)
+    monkeypatch.setitem(api_hub.CFG, "rtmps_puerto", escucha.getsockname()[1])
+    monkeypatch.setitem(api_hub.CFG, "rtmps_cert", "/etc/hub/cert.pem")
+    monkeypatch.setitem(api_hub.CFG, "rtmps_clave", "/etc/hub/clave.pem")
+    try:
+        a = panel["operador"].get("/api/ajustes").json()
+        fila = a["puertos"][-1]
+        assert a["red"]["rtmps"] and fila["servicio"] == "RTMPS" and fila["puerto"] == escucha.getsockname()[1]
+        assert fila["clave"] is None and fila["estado"]["ok"] is None and "Apagado" in fila["estado"]["detalle"]   # nadie usa RTMP
+        # su puerto cuenta como ocupado por el hub
+        r = panel["admin"].put("/api/ajustes/red", json={"rtmp_puerto": escucha.getsockname()[1]})
+        assert r.status_code == 409 and "el RTMPS del hub" in r.json()["detail"]
+        fid = fuente_rtmp(panel)
+        claves = panel["admin"].get(f"/api/fuentes/{fid}/claves").json()
+        assert claves["url_rtmps"].startswith(f"rtmps://127.0.0.1:{escucha.getsockname()[1]}/{fid}?user={fid}&pass=")
+        assert "Servidor RTMPS (cifrado)" in [x["nombre"] for x in claves["campos"]]
+        assert panel["operador"].get("/api/fuentes").json()[0]["direccion"]["url_rtmps"].endswith("pass=***")
+        assert panel["operador"].get("/api/ajustes").json()["puertos"][-1]["estado"]["ok"] is True      # alguien escucha en él
+        # el supervisor no ha podido encenderlo: se dice por qué y dónde se corrige, y RTMP sigue
+        db.guardar_ajuste(c, "servidores", {"problemas": {"rtmps": "No se encuentra el certificado (/etc/hub/cert.pem)"}})
+        estado = panel["operador"].get("/api/ajustes").json()["puertos"][-1]["estado"]
+        assert estado["ok"] is False and "No se encuentra el certificado" in estado["detalle"] and "config.json" in estado["detalle"]
+        # en marcha, pero el certificado del disco ha dejado de valer: sigue, y se avisa
+        db.guardar_ajuste(c, "servidores", {"problemas": {api_hub.mtx.RTMPS_DISCO: "El certificado y su clave no se pueden usar juntos"}})
+        estado = panel["operador"].get("/api/ajustes").json()["puertos"][-1]["estado"]
+        assert estado["ok"] is None and "sigue en marcha" in estado["detalle"] and "no se pueden usar juntos" in estado["detalle"]
+        # si lo que no vale es un puerto nuevo, sigue en el que tenía: en este no escucha nadie, pero MediaMTX dice que RTMPS está
+        escucha.close()
+        monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: {"rtmp": True, "webrtc": False, "rtmps": True})
+        estado = panel["operador"].get("/api/ajustes").json()["puertos"][-1]["estado"]
+        assert estado["ok"] is None and "sigue en marcha" in estado["detalle"]
+        monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: None)           # MediaMTX no responde: no se afirma nada
+        estado = panel["operador"].get("/api/ajustes").json()["puertos"][-1]["estado"]
+        assert estado["ok"] is False and "Nada escucha" in estado["detalle"]
+    finally:
+        escucha.close()
 
 
 def test_perfiles_propios(panel, c, mtx_falso):

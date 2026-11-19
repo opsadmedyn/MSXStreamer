@@ -66,6 +66,7 @@ CAMBIO_ENTRADA = 20.0                       # entrada de hub sin señal tanto ti
 ESTABLE = 60.0                              # enviando tanto tiempo seguido: los intentos vuelven a cero
 MISMO_AVISO = 600.0                         # la misma caída no se anota en los eventos más de una vez cada tanto
 REINSPECCION = 30.0                         # inspección incompleta: se repite cada tanto
+MEDIDAS_ESTABLES = 10.0                     # un tamaño de imagen nuevo se da por bueno cuando lleva tanto sin moverse
 
 
 path_de_flujo = mtx.path_de_flujo
@@ -352,8 +353,11 @@ class Supervisor:
         self.inspectores = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="inspeccion")
         self.mirando = {}                   # fuente -> (huella, tarea en curso)
         self.miradas = {}                   # fuente -> cuándo se intentó por última vez
+        self.medidas = {}                   # fuente -> ([ancho, alto] que MediaMTX ve ahora, desde cuándo)
         self.primera = True                 # primera vuelta: se barre lo que corra sin que nadie lo pida
         self.problemas = None               # servidores de MediaMTX que no se pudieron encender
+        self.config = db.config()           # config.json, leído al arrancar como hace el panel: si no, el
+        #                                     supervisor aplicaría un puerto nuevo que el panel aún no enseña
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
@@ -467,7 +471,7 @@ class Supervisor:
         hub = self.hub or matriz.vacio()
         abiertos = paths | hub["abiertos"]["read"]
         # sin saber qué pide el hub (self.hub is None) no se le quitan sus servidores: se dejan como estén
-        servicios = matriz.servicios(self.c, db.config()) if self.hub is not None else None
+        servicios = matriz.servicios(self.c, self.config) if self.hub is not None else None
         if self.reposo:
             servicios = {}
         cambio, problemas = mtx.asegurar_acceso(abiertos, hub["usuarios"], hub["abiertos"]["publish"], servicios) \
@@ -478,7 +482,7 @@ class Supervisor:
             self.problemas = problemas
             db.guardar_ajuste(self.c, "servidores", {"problemas": problemas, "t": time.time()})
             for nombre, motivo in problemas.items():
-                db.evento(self.c, f"MediaMTX: no se enciende {nombre.upper()}. {motivo}")
+                db.evento(self.c, mtx.aviso(nombre, motivo))
 
     def composiciones(self, por_id):
         """Composiciones activas de los flujos de esta vuelta, como mucho COMP_MAX: primero las que
@@ -604,7 +608,9 @@ class Supervisor:
     def inspeccionar(self, estado):
         """Mira qué trae cada fuente cuando llega su señal o cambia (otra conexión del origen, otras
         pistas). Lo que MediaMTX ya sabe se guarda al momento: las rutas que copian arrancan sin
-        esperar. El resto (fps, fotogramas B) lo mira ffprobe aparte, sin parar la vuelta."""
+        esperar. El resto (fps, fotogramas B) lo mira ffprobe aparte, sin parar la vuelta.
+        Si el origen vuelve con lo mismo que traía (para MediaMTX), se conserva lo que ya se sabía,
+        marcado «sin_confirmar», hasta que ffprobe lo confirma o lo corrige: las conversiones siguen."""
         ahora = time.time()
         for fid, (huella, tarea) in list(self.mirando.items()):
             if tarea.done():
@@ -625,17 +631,39 @@ class Supervisor:
             if not huella or fid in self.mirando:
                 continue
             r = self.c.execute("SELECT huella, pistas FROM inspecciones WHERE fuente=?", (fid,)).fetchone()
+            sabido = matriz.json_de(r["pistas"], None) if r else None
             if not r or r["huella"] != huella:
+                # el origen volvió a conectar. Si para MediaMTX trae lo mismo que la última vez, lo que
+                # se sabía sigue valiendo mientras se confirma: las conversiones no se paran a esperar
+                pistas = dict(sabido, sin_confirmar=True) if inspeccion.la_misma(sabido, info) else inspeccion.de_mediamtx(info)
                 self.c.execute("""INSERT INTO inspecciones(fuente, t, huella, pistas, error) VALUES (?,?,?,?,'')
                                   ON CONFLICT(fuente) DO UPDATE SET t=excluded.t, huella=excluded.huella,
                                   pistas=excluded.pistas, error=''""",
-                               (fid, ahora, huella, json.dumps(inspeccion.de_mediamtx(info), ensure_ascii=False)))
-            elif not (matriz.json_de(r["pistas"], None) or {"parcial": True}).get("parcial"):
-                continue                            # ya está mirada del todo
+                               (fid, ahora, huella, json.dumps(pistas, ensure_ascii=False)))
+            elif not ((sabido or {"parcial": True}).get("parcial") or sabido.get("sin_confirmar")):
+                if not self.otras_medidas(fid, sabido, info, ahora):
+                    continue                        # ya está mirada del todo y sigue igual
             elif ahora - self.miradas.get(fid, 0) < REINSPECCION or not inspeccion.algo_pasa(info):
                 continue                            # o nada de lo que trae cabe en el enlace: no hay qué mirar
             self.miradas[fid] = ahora
             self.mirando[fid] = (huella, self.inspectores.submit(_mirar_fuente, dict(f), info))
+        for fid in [x for x in self.medidas if x not in {f["id"] for f in self.hub["fuentes"]}]:
+            del self.medidas[fid]
+
+    def otras_medidas(self, fid, pistas, info, ahora):
+        """¿Hay que volver a mirar una fuente ya inspeccionada porque su imagen cambió de tamaño? Un
+        navegador que publica por WebRTC lo cambia sobre la marcha, sin volver a conectar. Se espera a
+        que el tamaño nuevo lleve MEDIDAS_ESTABLES s sin moverse: lo que enseña el panel y lo que
+        deciden las conversiones no debe bailar con cada escalón de la subida."""
+        nuevas = inspeccion.medidas_nuevas(pistas, info)
+        if not nuevas:
+            self.medidas.pop(fid, None)
+            return False
+        vistas = self.medidas.get(fid)
+        if not vistas or vistas[0] != nuevas:
+            self.medidas[fid] = (nuevas, ahora)
+            return False
+        return ahora - vistas[1] >= MEDIDAS_ESTABLES and ahora - self.miradas.get(fid, 0) >= MEDIDAS_ESTABLES
 
     def ocultos(self):
         """Claves que el lanzador debe tapar en los registros: todas las guardadas."""
