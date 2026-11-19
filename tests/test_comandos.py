@@ -1,6 +1,7 @@
 """Los comandos de ffmpeg de cada pieza: qué leen, qué copian, qué codifican y a dónde lo mandan."""
 
 import json
+import sys
 
 import comandos
 import plan
@@ -65,6 +66,12 @@ def test_entrada_rtmp_y_hls():
     assert tras(comandos.entrada("e", fuente(protocolo="hls", url="https://x/y.m3u8"), "f1"), "-map") == "0:p:0"
     # al ritmo de la señal y con colchón: tres segmentos por detrás del directo (con uno salía a golpes)
     assert "-re" in cmd and tras(cmd, "-live_start_index") == "-3" and cmd.index("-re") < cmd.index("-i")
+    # y dentro de la espera, que no deja empezar hasta que la lista de esa variante tiene esos tres
+    assert cmd[:4] == [sys.executable, str(comandos.ESPERA_HLS), "1", "3"] and cmd[4] == comandos.FFMPEG
+    assert comandos.ESPERA_HLS.is_file()
+    assert str(comandos.RUN / "ent_f1.prog") in cmd     # por su .prog reconoce el supervisor al proceso, espere o emita
+    for otra in (fuente(url="srt://198.51.100.7:9000"), fuente(protocolo="rtmp", url="rtmp://origen.example/app")):
+        assert comandos.entrada("ent_f1", otra, "f1")[0] == comandos.FFMPEG         # las demás entradas, sin espera
 
 
 def test_envio_srt_en_copia_con_todas_las_pistas():

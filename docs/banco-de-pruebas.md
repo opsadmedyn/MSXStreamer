@@ -83,7 +83,7 @@ corto mientras se depura, `--fotogramas-b` para que la cámara de pruebas emita 
 hub igual, por la API del panel, y hace pasar señal de verdad por cada forma de conexión. Donde
 hace falta «otro equipo» que sirva o reciba la señal (otro hub, un servidor RTMP, una lista HLS, un
 servidor WHIP, una plataforma RTMPS) lo hace el propio hub por otra de sus salidas, o un segundo
-MediaMTX que el guion levanta para la ocasión. Son diez casos:
+MediaMTX que el guion levanta para la ocasión. Son once casos:
 
 | Caso | Qué comprueba |
 |---|---|
@@ -97,6 +97,7 @@ MediaMTX que el guion levanta para la ocasión. Son diez casos:
 | `fuente` | Corte de la fuente durante 20 s con tres rutas activas (copia, conversión y HLS): las tres pasan a «esperando fuente», no queda ningún proceso dando vueltas y vuelven solas, sin duplicados. |
 | `reconexion` | Política de reconexión con tope de intentos: «reconectando» mientras lo intenta, «error» al agotarlos, y nada más hasta que alguien pulsa «Reintentar». |
 | `cambio` | Cambiar la fuente de un destino al aire: el hub dice cuál está al aire y pide confirmación, un operador no puede hacerlo y el cambio queda en el registro con quién lo hizo. |
+| `matriz` | Las 42 combinaciones entre SRT, RTMP, HLS y WebRTC: cada una de las seis formas de entrada conectada a la vez a las siete formas de salida, con audio y vídeo comprobados en cada una. Antes de activar se lee el plan de las siete. |
 
 En el banco:
 
@@ -213,6 +214,17 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   sale cada 100 ms, el 35 % del tiempo no salía nada, con parones de 0,9 s, y un navegador veía esa
   fuente por WebRTC a 24 fps. Empezando tres segmentos por detrás del directo, como hace un
   reproductor, sale continuo. Cuesta dos segmentos más de retardo en una fuente que ya trae varios.
+- Eso no bastaba con una lista recién nacida, que no tiene tres segmentos que dejar por delante.
+  Pasa cuando el origen arranca después que el hub y con los servidores que crean la lista cuando
+  alguien la pide, como MediaMTX. MediaMTX, además, la sirve desde el principio con sus siete
+  entradas, rellenas por delante con huecos (`#EXT-X-GAP`) que ffmpeg no conoce: los pide, recibe un
+  404 y se los salta. El margen que falta al empezar ya no se recupera: a un lector del hub los
+  fotogramas de esa fuente le llegaban con parones de hasta 1,6 s (los de una cámara SRT, con 80 ms
+  como mucho) y un navegador la veía por WebRTC a 26 fps. Ahora el proceso de entrada mira la lista
+  antes de leerla (`streamer/espera_hls.py`): si al final tiene menos de tres segmentos de verdad,
+  espera a que los tenga, con un tope, y la fuente dice en su estado qué está esperando. Con eso los
+  fotogramas llegan cada 30 ms, con 51 ms como mucho. En el banco son unos 4 s más hasta que la
+  fuente empieza a recibirse, solo cuando la lista es nueva.
 - En lo que un cliente lee del hub por RTMP, el audio empieza hasta 2 s antes que el vídeo: MediaMTX
   manda el audio enseguida y el vídeo desde el siguiente fotograma clave. Las pruebas miden los
   fotogramas sobre lo que dura el vídeo, no sobre toda la captura.

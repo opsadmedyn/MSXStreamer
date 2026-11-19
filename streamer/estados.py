@@ -23,6 +23,7 @@ NOMBRES = {ESPERANDO_FUENTE: "Esperando fuente", RECIBIENDO: "Recibiendo medios"
            ESPERANDO_RECEPTOR: "Esperando receptor", RECONECTANDO: "Reconectando", ERROR: "Error",
            DESACTIVADA: "Desactivada"}
 FUENTE_PARADA = "La fuente está desactivada"     # el mismo texto que matriz.FUENTE_PARADA
+ESPERA_LISTA = "Esperando a que la lista HLS"   # el mismo texto que espera_hls.ESPERA
 CONVERSION_ROTA = 3             # fallos seguidos de una conversión para dejar de llamarlo «reconectando»
 CADUCA = 15.0                   # segundos sin noticias del supervisor para avisar de que el dato es viejo
 
@@ -151,6 +152,11 @@ def de_fuente(f, info=None, tarea=None, senal=None, kbps=None, mtx_ok=True, impe
             if f["inicia"] == "origen":
                 return _estado(ESPERANDO_FUENTE, "El hub escucha y nadie ha llamado todavía",
                                [_hecho("El proceso de entrada escucha en el puerto de la fuente", tarea.get("desde")), antes], visto)
+            if (tarea.get("error") or "").startswith(ESPERA_LISTA):    # lo dice el propio proceso de entrada
+                return _estado(RECONECTANDO if ultima else ESPERANDO_FUENTE,
+                               "El origen ya sirve la lista y el hub espera a que tenga margen: leída desde su "
+                               "primer segmento, la señal saldría a golpes",
+                               [_hecho(tarea["error"], tarea.get("desde")), antes], visto)
             return _estado(RECONECTANDO if ultima else ESPERANDO_FUENTE, "El hub está conectando con el origen",
                            [_hecho("El proceso de entrada está en marcha y aún no publica", tarea.get("desde")),
                             _intentos(tarea), antes], visto)

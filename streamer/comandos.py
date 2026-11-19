@@ -14,6 +14,8 @@ hasta ahora; de que no acabe en el registro se encarga el lanzador (correr.py).
 """
 
 import json
+import pathlib
+import sys
 import urllib.parse
 
 import db
@@ -29,6 +31,7 @@ LATENCIA_LOCAL = "&latency=200000"          # lectura local para convertir: 200 
 LECTURA_LOCAL = ["-scan_all_pmts", "0"]
 PAQUETE = "&pkt_size=1316"
 HLS_DESDE = "-3"                            # por qué segmento se empieza a leer una fuente HLS (ver entrada)
+ESPERA_HLS = pathlib.Path(__file__).parent / "espera_hls.py"
 
 
 def url_salida(s):
@@ -108,9 +111,13 @@ def entrada(tid, f, path):
         # -re: al ritmo de la señal y no a golpes de segmento. Y tres segmentos por detrás del directo,
         # como un reproductor: empezando por el último no queda colchón, cada segmento llega tarde y
         # sale de golpe (en el banco, el 35 % del tiempo no salía nada, con parones de 0,9 s, y un
-        # navegador lo veía por WebRTC a 24 fps). Con dos por detrás, el 6 %; con tres sale continuo
+        # navegador lo veía por WebRTC a 24 fps). Con dos por detrás, el 6 %; con tres sale continuo.
+        # Para que esos tres existan, el ffmpeg va dentro de espera_hls.py: si la lista acaba de nacer
+        # espera (con tope) a que los tenga, porque el margen que no hay al empezar ya no se recupera
+        variante = int(opciones.get("variante") or 0)
+        cmd = [sys.executable, str(ESPERA_HLS), str(variante), HLS_DESDE.lstrip("-")] + cmd
         cmd += ["-rw_timeout", "15000000", "-re", "-live_start_index", HLS_DESDE, "-i", f["url"]]
-        mapas = ["-map", f"0:p:{int(opciones.get('variante') or 0)}"]    # la variante elegida, con sus audios
+        mapas = ["-map", f"0:p:{variante}"]             # la variante elegida, con sus audios
     else:
         raise ValueError(f"la entrada {f['protocolo']} no lleva proceso")
     return cmd + mapas + ["-c", "copy", "-ignore_unknown", "-f", "mpegts", mtx.url_publicacion(path) + PAQUETE]

@@ -44,6 +44,24 @@ def test_fuente_que_el_hub_va_a_buscar():
     assert E.de_fuente(PULL, None, tarea=agotada, ahora=AHORA)["estado"] == "error"
 
 
+def test_fuente_hls_cuya_lista_acaba_de_nacer():
+    """El proceso de entrada corre pero aún no lee: espera a que la lista del origen tenga margen
+    (espera_hls.py). Se dice eso, con lo que ha visto en la lista, y no «conectando con el origen»."""
+    hls = dict(PULL, protocolo="hls", url="https://cdn.example/x/master.m3u8")
+    espera = "Esperando a que la lista HLS del origen tenga 3 segmentos para leerla con margen: tiene 1"
+    e = E.de_fuente(hls, None, tarea={"pid": 10, "desde": AHORA - 2, "error": espera, "visto": AHORA - 1}, ahora=AHORA)
+    assert e["estado"] == "esperando_fuente" and "espera a que tenga margen" in e["detalle"]
+    assert e["evidencia"][0] == {"que": espera, "desde": AHORA - 2} and e["actualizado"] == AHORA - 1
+    e = E.de_fuente(hls, None, tarea={"pid": 10, "desde": AHORA - 2, "error": espera}, senal={"ultima": AHORA - 30}, ahora=AHORA)
+    assert e["estado"] == "reconectando" and espera in hechos(e) and "Última señal recibida" in hechos(e)
+    # en cuanto el proceso deja de decirlo (ya lee), vuelve a ser la conexión de siempre
+    e = E.de_fuente(hls, None, tarea={"pid": 10, "desde": AHORA - 6, "error": ""}, ahora=AHORA)
+    assert e["detalle"] == "El hub está conectando con el origen"
+    # y si el proceso ha caído, lo que cuenta es el fallo y no una espera vieja
+    cae = {"pid": None, "error": "Server returned 404 Not Found", "intentos": 2}
+    assert "El otro equipo no tiene esa señal" in hechos(E.de_fuente(hls, None, tarea=cae, ahora=AHORA))
+
+
 def test_fuente_desactivada_sin_mediamtx_y_sin_adaptador():
     assert E.de_fuente(dict(PUBLICA, activo=0), LISTO, ahora=AHORA)["estado"] == "desactivada"
     assert E.de_fuente(PUBLICA, None, mtx_ok=False, ahora=AHORA)["estado"] == "error"

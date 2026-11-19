@@ -111,3 +111,22 @@ def test_si_la_confirmacion_falla_se_repite_cada_tanto_y_si_vuelve_distinta_se_e
     supervisor.Supervisor.inspeccionar(s, {"f1": otra})
     guardada = _guardada(s, "f1")
     assert guardada["parcial"] and guardada["video"]["alto"] == 1080 and "sin_confirmar" not in guardada
+
+
+def test_lo_que_espera_un_proceso_que_aun_no_ha_arrancado_su_ffmpeg(tmp_path):
+    """Una fuente HLS cuya lista acaba de nacer: su proceso corre, pero es la espera (espera_hls.py) y no
+    ffmpeg todavía. Lo que dice en el registro pasa al estado; en cuanto ffmpeg arranca, ya no."""
+    prog, log = tmp_path / "ent_f1.prog", tmp_path / "ent_f1.log"
+    assert supervisor.en_espera(prog, log) == ""                        # ni registro todavía
+    log.write_text("\n== 2026-11-19 13:00:00 python3 espera_hls.py 0 3 ffmpeg -i https://cdn.example/x.m3u8\n")
+    assert supervisor.en_espera(prog, log) == ""                        # recién lanzado: aún no ha dicho nada
+    espera = "Esperando a que la lista HLS del origen tenga 3 segmentos para leerla con margen: tiene 1"
+    with log.open("a") as f:
+        f.write(espera + "\n")
+    assert supervisor.en_espera(prog, log) == espera
+    with log.open("a") as f:
+        f.write("La lista HLS del origen ya tiene 3 segmentos: el hub empieza a leerla\n")
+    assert supervisor.en_espera(prog, log) == ""                        # ya no espera
+    log.write_text(espera + "\n")
+    prog.write_text("progress=continue\n")                              # ffmpeg arrancó: lo que diga el registro es de antes
+    assert supervisor.en_espera(prog, log) == ""

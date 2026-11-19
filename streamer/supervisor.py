@@ -45,6 +45,7 @@ import urllib.parse
 
 import composicion
 import db
+import espera_hls
 import inspeccion
 import matriz
 import mtx
@@ -308,6 +309,16 @@ def ultimo_error(log):
         return lineas[-1][:300] if lineas else ""
     except OSError:
         return ""
+
+
+def en_espera(prog, log):
+    """Qué espera un proceso que corre y aún no ha arrancado su ffmpeg, si lo dice su registro: una
+    fuente HLS cuya lista acaba de nacer (espera_hls.py). '' si ffmpeg ya arrancó (ya existe su
+    .prog, que se borra antes de cada lanzamiento) o si no espera nada."""
+    if prog.exists():
+        return ""
+    texto = ultimo_error(log)
+    return texto if texto.startswith(espera_hls.ESPERA) else ""
 
 
 def adaptadores_del_hub():
@@ -786,7 +797,7 @@ class Supervisor:
                 if kbps and e["desde"] and time.time() - e["desde"] > ESTABLE:
                     self.espera.pop(sid, None)              # un minuto estable: se reinicia la espera
                     e["intentos"] = 0
-                self.guardar({**e, "kbps": kbps, "error": ""})
+                self.guardar({**e, "kbps": kbps, "error": en_espera(prog, log)})
                 continue
 
             # no corre: ¿hay entrada? sin entrada no tiene sentido lanzarlo
