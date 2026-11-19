@@ -40,14 +40,14 @@ curl -fsSLO https://github.com/bluenviron/mediamtx/releases/download/${MTX_VERSI
 grep "[ *]\$F\$" checksums.sha256 | sha256sum -c -
 tar xzf \$F mediamtx && install -m 755 mediamtx $DEST/bin/mediamtx
 cd / && rm -rf /tmp/msxs-mtx
-python3 -m venv $DEST/venv && $DEST/venv/bin/pip install -q fastapi uvicorn
+python3 -m venv $DEST/venv
 REMOTO
 fi
 
 echo "== $HOST: copiando v$VERSION"
 $SSH "$COMO mkdir -p $DEST/streamer $DEST/releases/v$VERSION"
 COPYFILE_DISABLE=1 tar cz --no-xattrs streamer/*.py streamer/componer.sh streamer/compositor streamer/static VERSION config systemd \
-  | $SSH "$COMO tar xz -C $DEST/releases/v$VERSION"
+  requirements.lock | $SSH "$COMO tar xz -C $DEST/releases/v$VERSION"
 # rsync sin --delete: el login.html de la clave del panel (hasta la 0.3.0) se quita aparte
 $SSH "$COMO bash -c 'rsync -a $DEST/releases/v$VERSION/streamer/ $DEST/streamer/ && rm -f $DEST/streamer/static/login.html && cp $DEST/releases/v$VERSION/VERSION $DEST/ && cd $DEST/streamer && python3 -m py_compile *.py'"
 
@@ -56,6 +56,7 @@ if [ "$INSTALAR" = 1 ]; then
   $SSH "$COMO bash -s" <<REMOTO
 set -euo pipefail
 cd $DEST
+venv/bin/pip install -q -r releases/v$VERSION/requirements.lock     # las versiones que funcionan en producción
 [ -f mediamtx.yml ] || cp releases/v$VERSION/config/mediamtx.yml mediamtx.yml
 if [ ! -f config.json ]; then
   cp releases/v$VERSION/config/config.ejemplo.json config.json    # revisar host_publico
