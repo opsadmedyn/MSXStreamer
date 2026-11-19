@@ -29,8 +29,9 @@ Desde otra máquina de la red (la carga que mide sigue siendo la del hub):
     python3 scripts/aceptacion.py --hub http://ezc80:8095 --receptor <IP de esta máquina vista desde el hub>
 
 Necesita ffmpeg y ffprobe con libsrt y, para WebRTC y para ver el HLS en un navegador, Node con
-Playwright (npm i playwright; npx playwright install chromium). Sin navegador (--sin-navegador)
-WebRTC queda sin comprobar y la prueba lo dice. No usa nada fuera de la biblioteca estándar.
+Playwright (playwright o playwright-core, con su Chromium; en una estación vale el del compositor:
+ver docs/banco-de-pruebas.md). Sin navegador (--sin-navegador) WebRTC queda sin comprobar y la
+prueba lo dice. No usa nada fuera de la biblioteca estándar.
 
 Sale con 0 si todo pasa, 1 si algo falla y 3 si algo quedó sin comprobar. Deja en la carpeta de
 resultados informe.md (para leer) y datos.json (todas las medidas).
@@ -79,6 +80,10 @@ def hora(t):
 
 def decir(texto):
     print(f"[{hora(time.time())}] {texto}", flush=True)
+
+
+def veces(n):
+    return "1 vez" if n == 1 else f"{n} veces"
 
 
 def esperar(condicion, segundos, cada=0.5):
@@ -235,6 +240,18 @@ class Receptor:
     def __init__(self, protocolo, puerto, secreto, carpeta):
         self.protocolo, self.puerto, self.secreto, self.carpeta = protocolo, puerto, secreto, pathlib.Path(carpeta)
         self.n, self.p, self.archivo, self.capturas = 0, None, None, []
+        self.muestras, self.fin = [], threading.Event()     # [(instante, bytes recibidos entre todas las capturas)]
+        threading.Thread(target=self._apuntar, daemon=True).start()
+
+    def _apuntar(self):
+        while not self.fin.wait(0.5):
+            total = 0
+            for archivo in list(self.capturas):
+                try:
+                    total += archivo.stat().st_size
+                except OSError:
+                    pass
+            self.muestras.append((time.time(), total))
 
     def abrir(self):
         self.n += 1
@@ -264,6 +281,7 @@ class Receptor:
         return time.time()
 
     def cerrar(self):
+        self.fin.set()
         if self.p:
             self.p.parar()
 
@@ -371,6 +389,13 @@ def continuidad(serie, minimo=0.0):
             mayor = max(mayor, tb - desde)
     r.update(avance=round(serie[-1][1] - serie[0][1], 3), segundos=round(serie[-1][0] - serie[0][0], 2), parada_max_s=round(mayor, 1))
     return r
+
+
+def avanza(serie, segundos, minimo):
+    """¿El contador de [(instante, contador)] ha avanzado al menos `minimo` en los últimos segundos?"""
+    ahora = time.time()
+    t = tramo(serie, ahora - segundos, ahora)
+    return len(t) >= 2 and t[-1][1] - t[0][1] >= minimo
 
 
 class Navegador:
@@ -868,6 +893,7 @@ class Caso:
             "datos_s": round(t_datos - t_vuelta, 1) if t_datos else None,
             "estado_s": round(t_estado - t_vuelta, 1) if t_estado else None,
             "linea": {k: self.vigia.linea(d["destino"], t_corte - 3, t_fin) for k, d in self.r["rutas"].items()},
+            "sin_senal_s": continuidad(tramo(self.receptor.muestras, t_corte - 3, t_fin))["parada_max_s"],
             "reintento_s": args.reintento}
         self.comprobar("empuje", f"{nombre}: el hub detecta que el receptor se fue y lo enseña", bool(detecta)
                        and c["detecta_s"] <= DETECTA_MAX and durante.get("estado") in ("reconectando", "error"),
@@ -876,7 +902,8 @@ class Caso:
         otras = {k: sorted({e for t, e in self.vigia.linea(self.r["rutas"][k]["destino"], t_corte, t_vuelta)}) for k in ("hls", "webrtc")}
         if self.navegador:
             self.comprobar("", "Durante el corte, el hub sigue enseñando HLS y WebRTC como «enviando»",
-                           all(v == ["enviando"] for v in otras.values()), str(otras))
+                           all(v == ["enviando"] for v in otras.values()),
+                           " · ".join(f"{NOMBRES[k]}: {', '.join(v) or 'sin datos'}" for k, v in otras.items()))
         c["durante"] = self.medir_navegador(t_corte, t_vuelta, f"durante los {args.corte} s de corte")
         c["durante"]["lista_hls"] = self.medir_lista_hls(t_corte, t_vuelta, f"durante los {args.corte} s de corte")
         self.comprobar("empuje", f"{nombre}: la salida se recupera sola al volver el receptor",
@@ -887,14 +914,29 @@ class Caso:
         c["despues"] = self.medir_navegador(t_vuelta, t_fin, "mientras la salida cortada se recupera")
         if self.emisor.lanzamientos != self.publicaciones:
             self.comprobar("", "La cámara de pruebas publica sin cortes durante toda la prueba", False,
-                           f"tuvo que volver a publicar {self.emisor.lanzamientos - self.publicaciones} veces")
+                           f"tuvo que volver a publicar {veces(self.emisor.lanzamientos - self.publicaciones)}")
 
     # -- reinicio con las rutas activas
-    def reinicio(self, orden):
-        hub, base = self.hub, self.ctx.args.base
-        decir(f"   REINICIO con las rutas activas: {orden}")
-        antes = {"tareas": sorted((hub.pedir("GET", "/api/carga").get("tareas") or {})),
-                 "ffmpeg": ffmpeg_de_rutas(base) if base else None, "camara": self.emisor.lanzamientos}
+    def _series(self):
+        """De cada salida, un contador que crece mientras llega señal y cuánto debe crecer en 4 s."""
+        r = {"empuje": (lambda: self.receptor.muestras, 1)}
+        if self.navegador:
+            r["hls"] = (lambda: self.navegador.serie("hls", "video", "tiempo"), 2.0)
+            r["webrtc"] = (lambda: self.navegador.serie("webrtc", "rtc", "video", "fotogramas"), self.fps * 2)
+        return r
+
+    def _tareas(self):
+        """Los procesos que el hub lleva por las rutas (envíos, conversiones, entradas), sin contar MediaMTX."""
+        return {k: m for k, m in (self.hub.pedir("GET", "/api/carga").get("tareas") or {}).items() if m.get("tipo") != "motor"}
+
+    def reinicio(self, orden, suave=False):
+        """Reinicia el hub con las rutas activas. suave: solo sus servicios (como al desplegar una
+        versión), que no debe cortar ninguna señal. Si no, como reiniciar el equipo: todo cae y debe
+        volver solo, con un proceso por tarea."""
+        hub, base, series = self.hub, self.ctx.args.base, self._series()
+        decir(f"   REINICIO {'de los servicios del hub' if suave else 'completo'} con las rutas activas: {orden}")
+        antes = {"tareas": sorted(self._tareas()), "ffmpeg": ffmpeg_de_rutas(base) if base else None,
+                 "camara": self.emisor.lanzamientos}
         t0 = time.time()
         if orden == "manual":
             decir("   reinicia ahora el equipo del hub: la prueba espera a que deje de responder y a que vuelva (hasta 20 min)")
@@ -904,46 +946,54 @@ class Caso:
             salida = subprocess.run(orden, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, timeout=600).returncode
         vuelve = esperar(lambda: time.time() if hub.responde() else None, 1200 if orden == "manual" else 180, cada=1)
-        r = {"orden": orden, "salida": salida, "t": t0, "api_s": round(vuelve - t0, 1) if vuelve else None}
+        r = {"orden": orden, "suave": suave, "salida": salida, "t": t0, "api_s": round(vuelve - t0, 1) if vuelve else None}
         self.r["reinicios"].append(r)
         if not self.comprobar("", "Tras el reinicio, el panel del hub vuelve a responder", bool(vuelve) and salida == 0,
                               f"a los {r['api_s']} s" if vuelve else f"no respondió (la orden salió con {salida})"):
             return
-        if self.navegador:
-            time.sleep(3)
-            self.navegador.recargar()                       # como quien vuelve a abrir la página tras el reinicio
-        listos, vistas = {}, {"empuje": self._empuje_llega}
-        if self.navegador:
-            vistas.update(hls=self._hls_reproduce, webrtc=self._webrtc_reproduce)
-        marca = time.time()
+        recargas = [time.time(), 0]
 
         def todas():
             if not self.receptor.vivo():                    # el receptor se quedó sin llamada: vuelve a escuchar
                 self.receptor.abrir()
-            for k, ver in vistas.items():
-                if k not in listos and time.time() - marca > 4 and ver():
-                    listos[k] = round(time.time() - t0, 1)
-            return len(listos) == len(vistas)
-        esperar(todas, 150, cada=0.5)
-        time.sleep(6)
-        r["vuelven_s"] = listos
+            bien = {k: avanza(serie(), 4, minimo) for k, (serie, minimo) in series.items()}
+            listas = all(self.vigia.estado(self.r["rutas"][k]["destino"]).get("estado") in ("esperando_receptor", "enviando")
+                         for k in ("hls", "webrtc"))
+            if self.navegador and listas and not (bien["hls"] and bien["webrtc"]) and time.time() - recargas[0] > 15 \
+                    and recargas[1] < 5:
+                recargas[0], recargas[1] = time.time(), recargas[1] + 1
+                self.navegador.recargar()                   # como quien ve el reproductor parado con la ruta ya lista: F5
+            return all(bien.values())
+        volvieron = esperar(todas, 180, cada=1)
+        time.sleep(8)
+        t1 = time.time()
+        paradas = {k: continuidad(tramo(serie(), t0 - 2, t1), 0.05 if k == "hls" else 0)["parada_max_s"] for k, (serie, _) in series.items()}
         estados = {k: self.vigia.estado(d["destino"]).get("estado") for k, d in self.r["rutas"].items()}
-        self.comprobar("", "Tras el reinicio, las rutas que estaban activas vuelven solas", len(listos) == len(vistas)
-                       and all(e == "enviando" for e in estados.values()),
-                       " · ".join(f"{NOMBRES[self.r['rutas'][k]['protocolo']]}: " + (f"a los {listos[k]} s" if k in listos else "no volvió")
-                                  for k in vistas) + f"; estados: {estados}")
-        carga = hub.pedir("GET", "/api/carga").get("tareas") or {}
+        carga = self._tareas()
         despues = ffmpeg_de_rutas(base) if base else None
         arranque = campo(hub.pedir("GET", "/api/matriz"), "sistema", "arranque") or {}
-        r.update(tareas_antes=antes["tareas"], tareas_despues=sorted(carga), ffmpeg_antes=antes["ffmpeg"], ffmpeg_despues=despues,
-                 arranque=arranque, camara_republico=self.emisor.lanzamientos - antes["camara"])
+        mismos = None if despues is None else sum(1 for k, v in despues.items() if antes["ffmpeg"].get(k) == v)
+        r.update(paradas_s=paradas, estados=estados, recargas=recargas[1], tareas_antes=antes["tareas"], tareas_despues=sorted(carga),
+                 ffmpeg_antes=antes["ffmpeg"], ffmpeg_despues=despues, mismos_procesos=mismos, arranque=arranque,
+                 camara_republico=self.emisor.lanzamientos - antes["camara"])
+        nombres = {k: NOMBRES[self.r["rutas"][k]["protocolo"]] for k in series}
+        dicho = " · ".join(f"{nombres[k]}: {paradas[k]} s sin señal" for k in series)
+        en_marcha = bool(volvieron) and all(e == "enviando" for k, e in estados.items() if k in series)
+        if suave:
+            sigue = en_marcha and all(p is not None and p <= 2.0 for p in paradas.values()) \
+                and (despues is None or mismos == len(antes["ffmpeg"]) == len(despues))
+            self.comprobar("", "Reiniciar los servicios del hub no corta ninguna salida", sigue,
+                           dicho + (f"; los {mismos} ffmpeg de las rutas son los mismos procesos de antes" if despues is not None else "")
+                           + f"; el supervisor anotó al arrancar que {arranque.get('siguen')} seguían en marcha y que lanzó {arranque.get('lanzados')}")
+        else:
+            self.comprobar("", "Tras el reinicio, las rutas que estaban activas vuelven solas", en_marcha,
+                           dicho + "; ahora: " + ", ".join(f"{nombres[k]} {estados[k]}" for k in series)
+                           + (f"; páginas de los reproductores recargadas {veces(recargas[1])}" if recargas[1] else ""))
         unico = sorted(carga) == antes["tareas"] and all(m.get("procesos") == 2 for m in carga.values())
         detalle = f"{len(carga)} procesos del hub, los mismos que antes ({', '.join(m.get('texto', k) for k, m in carga.items())})"
         if despues is not None:
             unico = unico and all(len(v) == 1 for v in despues.values()) and sorted(despues) == sorted(antes["ffmpeg"])
-            mismos = sum(1 for k, v in despues.items() if antes["ffmpeg"].get(k) == v)
-            detalle += f"; un ffmpeg por tarea; {mismos} de {len(despues)} siguen siendo el mismo proceso de antes"
-        detalle += f"; el supervisor anotó al arrancar: {arranque.get('siguen')} seguían en marcha y lanzó {arranque.get('lanzados')}"
+            detalle += "; un solo ffmpeg por tarea"
         self.comprobar("", "Tras el reinicio no hay publicaciones ni procesos duplicados", unico, detalle)
 
     # -- desmontar y mirar las capturas
@@ -986,14 +1036,15 @@ class Caso:
                 archivo.unlink(missing_ok=True)
 
     def correr(self, reinicios=()):
+        """reinicios: [(orden, suave)] que se hacen al final, con las rutas aún activas."""
         try:
             if self.montar() and self.planes() and self.activar():
                 self.abrir_reproductores()
                 if self.esperar_medios():
                     self.estable()
                     self.corte()
-                    for orden in reinicios:
-                        self.reinicio(orden)
+                    for orden, suave in reinicios:
+                        self.reinicio(orden, suave)
         except ErrorHub as e:
             self.comprobar("", "La prueba pudo hablar con el hub hasta el final", False, str(e))
         finally:
@@ -1030,7 +1081,11 @@ def buscar_claves(secretos, carpetas, journal, desde):
     for carpeta in carpetas:
         carpeta = pathlib.Path(carpeta)
         archivos = [carpeta] if carpeta.is_file() else [a for a in carpeta.rglob("*") if a.is_file()] if carpeta.is_dir() else []
-        mirado.append(f"{carpeta} ({len(archivos)} archivos)")
+        try:
+            dicha = carpeta.resolve().relative_to(pathlib.Path.cwd())
+        except ValueError:
+            dicha = carpeta
+        mirado.append(f"{dicha} ({len(archivos)} archivos)")
         for a in archivos:
             try:
                 if a.suffix in (".db", ".db-wal", ".db-shm") or a.stat().st_size > 200 * 1024 * 1024:
@@ -1107,7 +1162,8 @@ def informe(datos):
         L += ["### Comprobaciones", "", "| Salida | Qué se comprobó | Resultado | Medida |", "|---|---|---|---|"]
         for x in c["comprobaciones"]:
             salida = NOMBRES[c["rutas"][x["ruta"]]["protocolo"]] if x["ruta"] else "Todas"
-            L.append(f"| {salida} | {x['que']} | {MARCA[x['ok']]} | {str(x['detalle']).replace('|', '/')} |")
+            que = x["que"].split(": ", 1)[1] if x["ruta"] and x["que"].startswith(salida + ": ") else x["que"]
+            L.append(f"| {salida} | {que[0].upper() + que[1:]} | {MARCA[x['ok']]} | {str(x['detalle']).replace('|', '/')} |")
         L.append("")
         k = c.get("corte")
         if k:
@@ -1116,17 +1172,26 @@ def informe(datos):
                   f"| El hub lo enseña | +{k['detecta_s']} s | La ruta pasa a «{ESTADOS.get(k['estado_durante'], k['estado_durante'])}»: "
                   f"{k.get('detalle_durante') or ''}. Evidencia: {'; '.join(k.get('evidencia_durante') or []) or '—'} |",
                   f"| Vuelve el receptor | {hora(k['vuelta'])} | A los {k['segundos']} s del corte |",
-                  f"| Vuelve la señal al receptor | +{k['datos_s']} s | El hub reintenta cada {k['reintento_s']:g} s |",
+                  f"| Vuelve la señal al receptor | +{k['datos_s']} s | El hub reintenta cada {k['reintento_s']:g} s. "
+                  f"En total el receptor estuvo {k.get('sin_senal_s')} s sin recibir |",
                   f"| El hub marca «enviando» | +{k['estado_s']} s | |", "",
                   "Estados que fue enseñando el hub en cada ruta:", ""]
             for ruta, linea in k["linea"].items():
                 L.append(f"- {NOMBRES[c['rutas'][ruta]['protocolo']]}: " + " → ".join(f"{hora(t)} {ESTADOS.get(e, e)}" for t, e in linea))
             L.append("")
         for r in c.get("reinicios") or []:
-            L += ["### Reinicio con las rutas activas", "", f"Orden: `{r['orden']}`. El panel volvió a responder a los {r.get('api_s')} s. "
-                  + "Las salidas volvieron: " + ", ".join(f"{NOMBRES[c['rutas'][x]['protocolo']]} a los {s} s" for x, s in (r.get("vuelven_s") or {}).items())
-                  + f". El supervisor anotó que {campo(r, 'arranque', 'siguen')} procesos seguían en marcha y que lanzó {campo(r, 'arranque', 'lanzados')}. "
-                  f"La cámara de pruebas tuvo que volver a publicar {r.get('camara_republico', 0)} veces.", ""]
+            sin = ", ".join(f"{NOMBRES[c['rutas'][x]['protocolo']]} {p} s" for x, p in (r.get("paradas_s") or {}).items())
+            siguen = campo(r, "arranque", "siguen")
+            L += [f"### Reinicio {'de los servicios del hub' if r.get('suave') else 'completo'} con las rutas activas", "",
+                  f"- Orden: `{r['orden']}`. El panel volvió a responder a los {r.get('api_s')} s.",
+                  f"- Tiempo sin señal en cada salida: {sin or '—'}.",
+                  f"- En su primera vuelta tras arrancar, el supervisor encontró {siguen} procesos en marcha"
+                  + (" (los conserva)" if siguen else "")
+                  + f" y lanzó {campo(r, 'arranque', 'lanzados')}; los demás los lanza cuando su fuente vuelve a tener señal."
+                  + (f" De los ffmpeg de las rutas, {r['mismos_procesos']} de {len(r.get('ffmpeg_despues') or {})} son el mismo "
+                     "proceso de antes." if r.get("mismos_procesos") is not None else ""),
+                  f"- La cámara de pruebas tuvo que volver a publicar {veces(r.get('camara_republico', 0))}"
+                  + (f" y las páginas de los reproductores se recargaron {veces(r['recargas'])}." if r.get("recargas") else "."), ""]
         g = c.get("carga")
         if g:
             L += [f"### Carga con las tres salidas en marcha ({g['segundos']:.0f} s, {g['muestras']} lecturas)", "",
@@ -1139,11 +1204,9 @@ def informe(datos):
             else:
                 L.append("- Sin tarjeta NVIDIA a la vista (nvidia-smi no responde): las conversiones de vídeo irían por CPU.")
             L += ["", "| Proceso del hub | CPU (100 % = un núcleo) | Memoria |", "|---|---|---|"]
-            for t in g["tareas"].values():
+            for t in sorted(g["tareas"].values(), key=lambda t: t.get("tipo") != "motor"):
                 L.append(f"| {t['texto']} | {_de(t.get('cpu_pct'), ' %')} | {_de(t.get('memoria_mb'), ' MB')} |")
-            if not g["tareas"]:
-                L.append("| (ninguno: todo se sirve desde MediaMTX) | — | — |")
-            L += ["", "HLS y WebRTC los sirve MediaMTX sin proceso propio; su consumo va dentro del total del equipo.", ""]
+            L += ["", "HLS y WebRTC no llevan proceso propio: los sirve MediaMTX, y su consumo es el de la fila de MediaMTX.", ""]
     k = datos["claves"]
     L += ["## Las claves", "", f"La prueba usó {k['cuantas']} claves (la de publicación de cada fuente, la passphrase SRT, la clave RTMP "
           "y la de lectura de WebRTC) y las buscó después:", ""]
@@ -1196,8 +1259,12 @@ def argumentos():
     p.add_argument("--estable", type=float, default=30, help="segundos con las tres salidas en marcha antes del corte")
     p.add_argument("--reintento", type=float, default=2, help="política de reconexión del destino cortado: segundos entre intentos")
     p.add_argument("--fotogramas-b", action="store_true", help="la cámara de pruebas emite con fotogramas B (obliga a convertir el vídeo para WebRTC)")
+    p.add_argument("--reinicio-suave", action="append", default=[], metavar="ORDEN",
+                   help="reinicia solo los servicios del hub con las rutas activas (p. ej. «sudo systemctl restart msxs-supervisor "
+                        "msxs-web») y comprueba que ninguna salida se corta")
     p.add_argument("--reinicio", action="append", default=[], metavar="ORDEN",
-                   help="reinicia el hub con las rutas activas (una orden del sistema, o «manual») y comprueba que vuelven sin duplicados")
+                   help="reinicia el hub entero con las rutas activas (una orden del sistema, o «manual» para reiniciar el equipo "
+                        "a mano desde otra máquina) y comprueba que vuelven solas y sin duplicados")
     p.add_argument("--base", default=os.environ.get("MSXS_BASE", ""), help="carpeta del hub en esta máquina, para contar sus ffmpeg")
     p.add_argument("--registros", action="append", default=[], metavar="CARPETA", help="registros del hub donde buscar las claves")
     p.add_argument("--journal", action="store_true", help="buscar las claves también en journald (servicios msxs-*)")
@@ -1224,6 +1291,7 @@ def main():
     for programa in (FFMPEG, FFPROBE):
         if not shutil.which(programa):
             sys.exit(f"Falta {programa}.")
+    args.base = str(pathlib.Path(args.base).resolve()) if args.base else ""
     ctx = Contexto()
     ctx.args, ctx.hub, ctx.secretos = args, Hub(args.hub, sesion), set()
     ctx.host_hub = args.host_hub or (urllib.parse.urlsplit(args.hub).hostname if urllib.parse.urlsplit(args.hub).hostname
@@ -1231,7 +1299,8 @@ def main():
     ctx.carpeta = pathlib.Path(args.carpeta or datetime.datetime.now().strftime("aceptacion-%Y%m%d-%H%M%S")).resolve()
     ctx.carpeta.mkdir(parents=True, exist_ok=True)
     ctx.node = None if args.sin_navegador else shutil.which(args.node)
-    if ctx.node and subprocess.run([ctx.node, "-e", "require('playwright')"], capture_output=True).returncode != 0:
+    if ctx.node and subprocess.run([ctx.node, "-e", "try { require('playwright') } catch (e) { require('playwright-core') }"],
+                                   capture_output=True).returncode != 0:
         ctx.node = None
     if not ctx.node:
         decir("AVISO: sin Node con Playwright no hay navegador: WebRTC quedará sin comprobar")
@@ -1255,7 +1324,8 @@ def main():
     try:
         for n, entrada in enumerate(pruebas):
             caso = Caso(ctx, entrada, "srt" if entrada == "rtmp" else "rtmp")
-            casos.append(caso.correr(args.reinicio if n == len(pruebas) - 1 else ()))
+            reinicios = [(o, True) for o in args.reinicio_suave] + [(o, False) for o in args.reinicio]
+            casos.append(caso.correr(reinicios if n == len(pruebas) - 1 else ()))
             time.sleep(3)
     finally:
         ctx.vigia.parar()

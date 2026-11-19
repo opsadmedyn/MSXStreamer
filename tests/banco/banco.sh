@@ -15,14 +15,21 @@
 # Hace falta ffmpeg (con libsrt) y Python 3.10 o posterior con lo de requirements.lock. Variables:
 #   MSXS_BANCO   carpeta de trabajo (por defecto .banco, en la raíz del repositorio; git la ignora)
 #   PYTHON       el Python con fastapi y uvicorn (por defecto python3)
-#   RTMP_PUERTO  puerto RTMP del hub en el banco (por defecto 1945, para no chocar con un 1935 ocupado)
-# NO lo arranques en una estación con el Streamer en marcha: usa sus mismos puertos (8095, 8888,
-# 8890, 9997). Para probar al lado de una versión en producción, ver docs/instalacion.md.
+#   DESPLAZA     número que se suma a todos los puertos (por defecto 0). Con DESPLAZA=100 el banco
+#                usa 8195 (panel), 10097 (API de MediaMTX), 8990 (SRT), 8988 (HLS), 2045 (RTMP),
+#                8989 y 8289/UDP (WebRTC): así cabe en una estación con el Streamer en producción
+#                sin tocarlo (ver docs/banco-de-pruebas.md)
+#   RTMP_PUERTO  puerto RTMP del hub en el banco (por defecto 1945 + DESPLAZA, lejos del 1935)
+# Sin DESPLAZA usa los puertos del Streamer (8095, 8888, 8890, 9997): NO lo arranques así en una
+# estación que lo tenga en marcha.
 set -euo pipefail
 RAIZ="$(cd "$(dirname "$0")/../.." && pwd)"
 BANCO="${MSXS_BANCO:-$RAIZ/.banco}"
 PYTHON="${PYTHON:-python3}"
-RTMP_PUERTO="${RTMP_PUERTO:-1945}"
+D="${DESPLAZA:-0}"
+PANEL=$((8095 + D)); MTX_API=$((9997 + D)); SRT=$((8890 + D)); HLS=$((8888 + D))
+WEBRTC=$((8889 + D)); WEBRTC_UDP=$((8189 + D)); RECORDER=$((18081 + D))
+RTMP_PUERTO="${RTMP_PUERTO:-$((1945 + D))}"
 MTX_VERSION=v1.21.1
 MTX_SHA256=653abc672a3e693f8d3b2717752492fdcfb8072291ec108d03d3dd857411b0ee    # mediamtx_v1.21.1_linux_amd64.tar.gz
 BASE="$BANCO/base"
@@ -56,21 +63,29 @@ preparar() {
     tar xzf "$tmp/$f" -C "$tmp" mediamtx && install -m 755 "$tmp/mediamtx" "$BANCO/bin/mediamtx"
     rm -rf "$tmp"
   fi
-  # la configuración de producción, con el búfer UDP que permita este equipo (en producción, 8 MB)
-  local tope; tope="$(sysctl -n net.core.rmem_max 2>/dev/null || echo 212992)"
-  if [ "$tope" -ge 8388608 ]; then cp "$RAIZ/config/mediamtx.yml" "$BANCO/mediamtx.yml"
-  else sed "s/^udpReadBufferSize:.*/udpReadBufferSize: $tope/" "$RAIZ/config/mediamtx.yml" >"$BANCO/mediamtx.yml"; fi
+  # la configuración de producción, con el búfer UDP que permita este equipo (en producción, 8 MB) y
+  # los puertos del banco. MediaMTX vigila su archivo y, si cambia estando en marcha, recarga y
+  # corta todas las señales: solo se reescribe cuando de verdad es distinto
+  local tope nuevo; tope="$(sysctl -n net.core.rmem_max 2>/dev/null || echo 212992)"
+  [ "$tope" -lt 8388608 ] || tope=8388608
+  nuevo="$(mktemp)"
+  sed -e "s/^udpReadBufferSize:.*/udpReadBufferSize: $tope/" -e "s/^apiAddress:.*/apiAddress: 127.0.0.1:$MTX_API/" \
+      -e "s/^srtAddress:.*/srtAddress: :$SRT/" -e "s/^hlsAddress:.*/hlsAddress: :$HLS/" "$RAIZ/config/mediamtx.yml" >"$nuevo"
+  if cmp -s "$nuevo" "$BANCO/mediamtx.yml"; then rm -f "$nuevo"; else mv "$nuevo" "$BANCO/mediamtx.yml"; fi
   if [ ! -f "$BASE/config.json" ]; then
     cat >"$BASE/config.json" <<JSON
 {
   "host_publico": "127.0.0.1",
   "ffmpeg": "$(command -v ffmpeg)",
   "ffprobe": "$(command -v ffprobe)",
-  "mediamtx_api": "http://127.0.0.1:9997",
-  "mediamtx_srt": "srt://127.0.0.1:8890",
-  "hls_puerto": 8888,
+  "mediamtx_api": "http://127.0.0.1:$MTX_API",
+  "mediamtx_srt": "srt://127.0.0.1:$SRT",
+  "hls_puerto": $HLS,
   "rtmp_puerto": $RTMP_PUERTO,
-  "recorder_api": "http://127.0.0.1:18081",
+  "webrtc_puerto": $WEBRTC,
+  "webrtc_udp": $WEBRTC_UDP,
+  "panel_puerto": $PANEL,
+  "recorder_api": "http://127.0.0.1:$RECORDER",
   "recorder_canales": "$BASE/sin-recorder/canales.json",
   "recorder_reposo": "$BASE/sin-recorder/reposo.json",
   "recorder_config": "$BASE/sin-recorder/config.json"
@@ -82,11 +97,11 @@ JSON
 arrancar() {
   preparar
   lanzar mediamtx "$BANCO" "$BANCO/bin/mediamtx" "$BANCO/mediamtx.yml"
-  esperar 10 curl -fs http://127.0.0.1:9997/v3/paths/list || { echo "!! MediaMTX no arranca: ver $BANCO/mediamtx.log"; exit 1; }
-  lanzar recorder "$BANCO" "$PYTHON" "$RAIZ/tests/banco/recorder_falso.py" 18081
+  esperar 10 curl -fs "http://127.0.0.1:$MTX_API/v3/paths/list" || { echo "!! MediaMTX no arranca: ver $BANCO/mediamtx.log"; exit 1; }
+  lanzar recorder "$BANCO" "$PYTHON" "$RAIZ/tests/banco/recorder_falso.py" "$RECORDER"
   lanzar supervisor "$RAIZ/streamer" "$PYTHON" supervisor.py
-  lanzar panel "$RAIZ/streamer" "$PYTHON" -m uvicorn servidor:app --host 127.0.0.1 --port 8095
-  esperar 15 curl -fs http://127.0.0.1:8095/api/version || { echo "!! el panel no arranca: ver $BANCO/panel.log"; exit 1; }
+  lanzar panel "$RAIZ/streamer" "$PYTHON" -m uvicorn servidor:app --host 127.0.0.1 --port "$PANEL"
+  esperar 15 curl -fs "http://127.0.0.1:$PANEL/api/version" || { echo "!! el panel no arranca: ver $BANCO/panel.log"; exit 1; }
   estado
 }
 
@@ -107,6 +122,7 @@ estado() {
     if vivo "$nombre"; then echo "   $nombre: en marcha (pid $(cat "$BANCO/$nombre.pid"))"; else echo "   $nombre: parado"; fi
   done
   echo "   procesos de rutas: $(pgrep -fc "$BASE/run/.*\.prog" 2>/dev/null || true)"
+  echo "   panel: http://127.0.0.1:$PANEL (cookie msr_sesion=admin)"
 }
 
 case "${1:-}" in
@@ -120,5 +136,5 @@ case "${1:-}" in
     done
     sleep 1; arrancar ;;
   estado) estado ;;
-  *) sed -n '2,22p' "$0"; exit 2 ;;
+  *) sed -n '2,27p' "$0"; exit 2 ;;
 esac

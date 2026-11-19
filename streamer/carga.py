@@ -73,6 +73,26 @@ def _memoria():
     return {"total_mb": datos.get("MemTotal"), "disponible_mb": datos.get("MemAvailable")}
 
 
+def pid_de(programa, carpetas):
+    """El proceso con ese nombre que se lanzó desde una de esas carpetas (la primera que acierte), o
+    None. Sirve para medir el MediaMTX de este hub y no el de otra instalación del mismo equipo."""
+    candidatos = []
+    for d in PROC.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            if (d / "comm").read_text().strip() != programa:
+                continue
+            candidatos.append((int(d.name), (d / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")))
+        except OSError:
+            continue
+    for carpeta in carpetas:
+        for pid, orden in candidatos:
+            if f"{str(carpeta).rstrip('/')}/" in orden:
+                return pid
+    return None
+
+
 _equipo = None
 
 

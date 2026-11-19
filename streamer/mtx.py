@@ -58,9 +58,10 @@ def paths_estado():
 # Quién está conectado a MediaMTX. De cada conexión se toma solo lo que sirve al panel: MediaMTX
 # devuelve también `query`, que en RTMP lleva el usuario y la clave con los que se publicó.
 CONEXIONES = (("srtConn", "/v3/srtconns/list"), ("rtmpConn", "/v3/rtmpconns/list"),
-              ("rtmpsConn", "/v3/rtmpsconns/list"), ("webRTCSession", "/v3/webrtcsessions/list"))
+              ("rtmpsConn", "/v3/rtmpsconns/list"), ("webRTCSession", "/v3/webrtcsessions/list"),
+              ("hlsSession", "/v3/hlssessions/list"))       # cada reproductor HLS, desde MediaMTX 1.21
 PROTOCOLO_DE = {"srtConn": "SRT", "rtmpConn": "RTMP", "rtmpsConn": "RTMPS", "webRTCSession": "WebRTC",
-                "hlsMuxer": "HLS", "rtspSession": "RTSP", "rtspsSession": "RTSPS"}
+                "hlsSession": "HLS", "hlsMuxer": "HLS", "rtspSession": "RTSP", "rtspsSession": "RTSPS"}
 
 
 def conexiones():
@@ -75,7 +76,7 @@ def conexiones():
         for x in items:
             c = {"protocolo": PROTOCOLO_DE[tipo], "remoto": x.get("remoteAddr") or "", "estado": x.get("state") or "",
                  "path": x.get("path") or "", "desde": x.get("created") or "",
-                 "recibidos": x.get("bytesReceived") or 0, "enviados": x.get("bytesSent") or 0}
+                 "recibidos": x.get("bytesReceived") or 0, "enviados": x.get("bytesSent") or x.get("outboundBytes") or 0}
             if tipo == "srtConn":
                 c.update(rtt_ms=x.get("msRTT"), perdidos=(x.get("packetsSendLoss") or 0) + (x.get("packetsReceivedLoss") or 0),
                          reenviados=(x.get("packetsRetrans") or 0) + (x.get("packetsReceivedRetrans") or 0))

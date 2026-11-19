@@ -417,6 +417,20 @@ def test_no_se_ofrece_una_direccion_antes_de_que_su_servidor_este_encendido(pane
     assert f["estado"]["estado"] == "esperando_fuente" and "encendiendo su servidor RTMP" in f["estado"]["detalle"]
 
 
+def test_de_un_destino_hls_se_dice_quien_lo_esta_viendo(panel, c, mtx_falso):
+    fid = fuente_rtmp(panel)
+    did = panel["admin"].post("/api/destinos", json={"nombre": "Web", "protocolo": "hls", "inicia": "receptor"}).json()["id"]
+    con_senal(c, mtx_falso, fid)
+    assert panel["admin"].put(f"/api/rutas/{did}", json={"fuente": fid}).status_code == 200
+    mtx_falso["paths"][did] = lista(did, source={"type": "srtSource", "id": ""}, readers=[{"type": "hlsSession", "id": "s1"}])
+    mtx_falso["conexiones"][("hlsSession", "s1")] = {"protocolo": "HLS", "remoto": "203.0.113.50:40000", "estado": "", "path": did,
+                                                      "desde": "2026-11-19T06:01:00Z", "recibidos": 0, "enviados": 5000}
+    ruta = next(d for d in panel["admin"].get("/api/destinos").json() if d["id"] == did)["ruta"]
+    assert ruta["estado"]["estado"] == "enviando"
+    assert ruta["estado"]["evidencia"][0]["que"] == "Receptores conectados: 1 (203.0.113.50)"
+    assert ruta["metricas"]["receptores"][0]["protocolo"] == "HLS"
+
+
 def test_reintentar_deja_la_orden_para_el_supervisor(panel, c, mtx_falso):
     fid, did = fuente_rtmp(panel), destino_srt(panel)
     assert panel["operador"].post(f"/api/rutas/{did}/reintentar").status_code == 404

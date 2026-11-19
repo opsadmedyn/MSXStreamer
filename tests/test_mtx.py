@@ -35,3 +35,18 @@ def test_servidores_que_pide_el_hub():
     # si ya lo tiene MediaMTX abierto en ese puerto, no hay nada que comprobar: es suyo
     conf, problemas = mtx.conf_servidores(pide, {"rtmp": True, "rtmpAddress": ":1945"}, libre=lambda puerto, tipo: False)
     assert conf["rtmp"] is True and not problemas
+
+
+def test_de_cada_conexion_solo_sale_lo_que_sirve_al_panel(monkeypatch):
+    """MediaMTX devuelve también «query», que en RTMP lleva el usuario y la clave de quien publica."""
+    listas = {"/v3/rtmpconns/list": [{"id": "c1", "remoteAddr": "203.0.113.9:51000", "state": "publish", "path": "estudio",
+                                      "query": "user=estudio&pass=clave-secreta", "created": "2026-11-19T06:00:00Z",
+                                      "bytesReceived": 1000, "bytesSent": 0}],
+              "/v3/hlssessions/list": [{"id": "s1", "remoteAddr": "203.0.113.50:40000", "path": "web", "query": "token=otra-clave",
+                                        "userAgent": "Mozilla/5.0", "created": "2026-11-19T06:01:00Z", "outboundBytes": 5000}]}
+    monkeypatch.setattr(mtx, "_todos", lambda ruta: listas.get(ruta, []))
+    c = mtx.conexiones()
+    assert c[("rtmpConn", "c1")] == {"protocolo": "RTMP", "remoto": "203.0.113.9:51000", "estado": "publish", "path": "estudio",
+                                     "desde": "2026-11-19T06:00:00Z", "recibidos": 1000, "enviados": 0}
+    assert c[("hlsSession", "s1")]["protocolo"] == "HLS" and c[("hlsSession", "s1")]["enviados"] == 5000
+    assert "clave" not in str(c)

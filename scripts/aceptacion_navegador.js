@@ -10,11 +10,13 @@
 //   node aceptacion_navegador.js '{"paginas": [{"nombre": "hls", "url": "http://…", "usuario": "", "clave": ""}]}'
 //   node aceptacion_navegador.js paginas.json        (lo mismo en un archivo: así la clave no va en la línea de órdenes)
 //
-// Necesita Playwright (npm i playwright) con su Chromium. Termina al cerrarle la entrada o con SIGTERM.
+// Necesita Playwright (playwright o playwright-core) con su Chromium; CHROMIUM=/ruta usa otro
+// navegador. Termina al cerrarle la entrada o con SIGTERM.
 // Si por la entrada le llega una línea «recargar», vuelve a cargar las páginas (como quien pulsa F5).
 
 const fs = require('fs');
-const { chromium } = require('playwright');
+let chromium;
+try { ({ chromium } = require('playwright')); } catch (e) { ({ chromium } = require('playwright-core')); }   // el de las estaciones
 
 function vigilarConexiones() {
   // La página de MediaMTX no deja a la vista su RTCPeerConnection: se guarda al crearla.
@@ -59,7 +61,9 @@ async function medir() {
 (async () => {
   const dicho = (process.argv[2] || '{}').trim();
   const config = JSON.parse(dicho.startsWith('{') ? dicho : fs.readFileSync(dicho, 'utf8'));
-  const navegador = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const opciones = { args: ['--autoplay-policy=no-user-gesture-required'] };
+  if (process.env.CHROMIUM) opciones.executablePath = process.env.CHROMIUM;     // otro navegador (p. ej. Google Chrome)
+  const navegador = await chromium.launch(opciones);
   const paginas = [];
   for (const p of config.paginas || []) {
     const contexto = await navegador.newContext(p.usuario ? { httpCredentials: { username: p.usuario, password: p.clave || '' } } : {});

@@ -1230,8 +1230,13 @@ def niveles_fuente(fid: str):
 _carga = carga.Medidor()
 
 
+MOTOR = "mediamtx"
+
+
 def _etiqueta(tarea, x):
     """Qué hace cada proceso del hub, para leer la carga sin saberse los identificadores."""
+    if tarea == MOTOR:
+        return {"tipo": "motor", "texto": "MediaMTX (recibe las fuentes y sirve SRT, RTMP, HLS y WebRTC)"}
     if tarea.startswith("ruta_"):
         return {"tipo": "envio", "texto": f"Envío a «{x.nombre('destinos', tarea[5:])}»"}
     if tarea.startswith("ent_"):
@@ -1246,7 +1251,11 @@ def ver_carga():
     """Carga del equipo y de cada proceso del hub (el porcentaje de cada proceso es de un núcleo)."""
     c = db.conectar()
     x = Contexto(c)
-    r = _carga.medir({t: e["pid"] for t, e in x.tareas.items() if e.get("pid")})
+    procesos = {t: e["pid"] for t, e in x.tareas.items() if e.get("pid")}
+    motor = carga.pid_de("mediamtx", (db.BASE, db.BASE.parent))     # lo que no lleva ffmpeg lo mueve MediaMTX
+    if motor:
+        procesos[MOTOR] = motor
+    r = _carga.medir(procesos)
     for tarea, medida in r["tareas"].items():
         medida.update(_etiqueta(tarea, x))
     return r
