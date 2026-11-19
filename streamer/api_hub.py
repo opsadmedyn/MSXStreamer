@@ -155,6 +155,23 @@ def _mediamtx():
         return foto
 
 
+_servidores = (0.0, None)
+
+
+def _servidores_mtx():
+    """Los servidores que MediaMTX tiene encendidos ({"rtmp": bool, "webrtc": bool}), o None si no
+    se sabe (no responde). Como mucho una consulta por segundo."""
+    global _servidores
+    if time.monotonic() - _servidores[0] < 1.0:
+        return _servidores[1]
+    try:
+        encendidos = mtx.servidores_encendidos()
+    except mtx.ErrorMTX:
+        encendidos = None
+    _servidores = (time.monotonic(), encendidos)
+    return encendidos
+
+
 def _tasa(clave, total, ahora):
     """kb/s a partir de un contador de bytes que crece. La primera lectura no da tasa."""
     antes = _muestras.get(clave)
@@ -193,6 +210,18 @@ class Contexto:
         self.ocultos = _ocultos(c)
         self.validaciones = validacion.leer(c)
         self.estados_fuente, self.estados_ruta = {}, {}
+        self.encendidos = _servidores_mtx()
+        self.problemas = (db.ajuste(c, "servidores") or {}).get("problemas") or {}
+
+    def servidor(self, protocolo):
+        """None si el servidor de MediaMTX de ese protocolo está encendido (o no hace falta, o no se
+        sabe); si no, {"nombre", "motivo"}: con motivo cuando el supervisor no ha podido encenderlo."""
+        if protocolo not in mtx.SERVIDORES:
+            return None                                 # SRT y HLS están siempre: vienen en mediamtx.yml
+        motivo = self.problemas.get(protocolo) or ""
+        if motivo or (self.encendidos is not None and not self.encendidos.get(protocolo)):
+            return {"nombre": P.NOMBRES[protocolo], "motivo": motivo}
+        return None
 
     def info(self, path):
         """Lo que dice MediaMTX de un path, con su «listo desde» en segundos."""
@@ -247,7 +276,8 @@ class Contexto:
         e = estados.de_fuente(f, info, tarea=(self.tareas.get(tid) or {}) if lleva else None,
                               senal=self.senales.get(f["id"]), kbps=kbps, mtx_ok=self.paths is not None,
                               impedimento=self.hub["tareas"][tid][2] if lleva else None, origen=origen,
-                              ahora=self.ahora, sin_senal=sin_senal)
+                              ahora=self.ahora, sin_senal=sin_senal,
+                              servidor=self.servidor(f["protocolo"]) if not h and matriz.publica_solo(f) else None)
         e["kbps"] = kbps
         return e
 
@@ -298,7 +328,8 @@ class Contexto:
                             conversion=(self.tareas.get(senal) or {}) if derivada else None,
                             tarea=self.tareas.get(tid) if tipo in ("empuja", "adaptador") else None,
                             info_destino=info_destino, lectores=lectores, kbps=kbps, mtx_ok=self.paths is not None,
-                            impedimento=impedimento, tipo=tipo, ahora=self.ahora)
+                            impedimento=impedimento, tipo=tipo, ahora=self.ahora,
+                            servidor=self.servidor(d["protocolo"]) if tipo in ("entrega", "whip") else None)
         e.update(senal=senal, derivada=derivada, lectores=lectores, kbps_entrega=kbps)
         return e
 

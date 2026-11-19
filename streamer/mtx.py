@@ -220,10 +220,15 @@ SERVIDORES = {
 
 
 def puerto_libre(puerto, tipo="tcp"):
-    """¿Se puede abrir ese puerto en este equipo ahora mismo?"""
+    """¿Se puede abrir ese puerto en este equipo ahora mismo? En TCP se pregunta como lo abrirá
+    MediaMTX (SO_REUSEADDR): un puerto que se acaba de cerrar guarda durante un minuto las conexiones
+    que tuvo (TIME_WAIT) y sin eso parecería ocupado, aunque nadie escuche ya en él. Si otro
+    programa escucha, sigue saliendo ocupado."""
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if tipo == "udp" else socket.SOCK_STREAM)
     try:
+        if tipo != "udp":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("0.0.0.0", int(puerto)))
         return True
     except (OSError, ValueError, OverflowError):
@@ -300,6 +305,12 @@ def asegurar_acceso(paths_hls, usuarios=(), publicar=(), servicios=None, libre=p
     actual = _pedir("GET", "/v3/config/global/get")
     servidores, problemas = conf_servidores(servicios, actual, libre)
     return _aplicar({**deseado, **servidores}, actual), problemas
+
+
+def servidores_encendidos():
+    """{"rtmp": bool, "webrtc": bool}: los servidores que MediaMTX tiene encendidos ahora mismo."""
+    g = _pedir("GET", "/v3/config/global/get")
+    return {nombre: bool(g.get(nombre)) for nombre in SERVIDORES}
 
 
 def asegurar_acceso_solo(paths_hls, usuarios=(), publicar=()):

@@ -391,6 +391,32 @@ def test_la_matriz_dice_el_estado_de_cada_ruta_con_su_evidencia(panel, c, mtx_fa
     assert not m["sistema"]["mediamtx"] and m["fuentes"][0]["estado"]["detalle"] == "MediaMTX no responde"
 
 
+def test_no_se_ofrece_una_direccion_antes_de_que_su_servidor_este_encendido(panel, c, mtx_falso, monkeypatch):
+    """Lo encontró la prueba de aceptación: el hub decía «esperando receptor» con la dirección WebRTC
+    cuando MediaMTX aún no había encendido su servidor WebRTC, y el navegador no podía abrirla."""
+    fid = fuente_rtmp(panel)
+    did = panel["admin"].post("/api/destinos", json={"nombre": "Monitor", "protocolo": "webrtc", "inicia": "receptor"}).json()["id"]
+    con_senal(c, mtx_falso, fid)
+    inspeccionar(c, fid, {"video": H264_AAC["video"], "audio": [{"codec": "opus", "canales": 2, "hz": 48000}]})
+    assert panel["admin"].put(f"/api/rutas/{did}", json={"fuente": fid}).status_code == 200
+    mtx_falso["paths"][did] = lista(did, source={"type": "srtSource", "id": ""})
+
+    def ruta():
+        return next(d for d in panel["admin"].get("/api/destinos").json() if d["id"] == did)["ruta"]["estado"]
+    monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: {"rtmp": True, "webrtc": False})
+    assert ruta()["estado"] == "reconectando" and "encendiendo su servidor WebRTC" in ruta()["detalle"]
+    monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: {"rtmp": True, "webrtc": True})
+    assert ruta()["estado"] == "esperando_receptor"
+    # el puerto del servidor es de otro programa: el supervisor lo deja anotado y la ruta lo dice como error
+    db.guardar_ajuste(c, "servidores", {"problemas": {"webrtc": "El puerto 8889/TCP está ocupado por otro programa"}, "t": time.time()})
+    assert ruta()["estado"] == "error" and "8889/TCP" in ruta()["evidencia"][0]["que"]
+    # y una fuente RTMP a la que aún no se puede publicar no dice que solo falta que alguien publique
+    monkeypatch.setattr(api_hub, "_servidores_mtx", lambda: {"rtmp": False, "webrtc": True})
+    mtx_falso["paths"].clear()
+    f = next(f for f in panel["admin"].get("/api/fuentes").json() if f["id"] == fid)
+    assert f["estado"]["estado"] == "esperando_fuente" and "encendiendo su servidor RTMP" in f["estado"]["detalle"]
+
+
 def test_reintentar_deja_la_orden_para_el_supervisor(panel, c, mtx_falso):
     fid, did = fuente_rtmp(panel), destino_srt(panel)
     assert panel["operador"].post(f"/api/rutas/{did}/reintentar").status_code == 404

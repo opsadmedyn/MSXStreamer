@@ -11,7 +11,9 @@ pasar de ahí. Se calcula entre dos lecturas, así que la primera no lo trae.
 
 import os
 import pathlib
+import platform
 import shutil
+import socket
 import subprocess
 import time
 
@@ -69,6 +71,26 @@ def _memoria():
     except (OSError, ValueError, IndexError):
         return None
     return {"total_mb": datos.get("MemTotal"), "disponible_mb": datos.get("MemAvailable")}
+
+
+_equipo = None
+
+
+def equipo():
+    """Qué equipo es (nombre, procesador, sistema): la carga que se documenta dice de qué máquina es."""
+    global _equipo
+    if _equipo is None:
+        cpu = ""
+        try:
+            for linea in (PROC / "cpuinfo").read_text().splitlines():
+                if linea.lower().startswith("model name"):
+                    cpu = " ".join(linea.partition(":")[2].split())
+                    break
+        except OSError:
+            pass
+        _equipo = {"nombre": socket.gethostname(), "cpu": cpu or platform.processor() or platform.machine(),
+                   "sistema": f"{platform.system()} {platform.release()}"}
+    return _equipo
 
 
 def leer_gpu(salida):
@@ -138,5 +160,5 @@ class Medidor:
             carga = [round(x, 2) for x in os.getloadavg()]
         except OSError:
             carga = None
-        return {"t": time.time(), "nucleos": os.cpu_count(), "cpu_pct": uso, "carga": carga, "memoria": _memoria(),
-                "gpu": self.tarjetas(), "tareas": por_tarea}
+        return {"t": time.time(), "equipo": equipo(), "nucleos": os.cpu_count(), "cpu_pct": uso, "carga": carga,
+                "memoria": _memoria(), "gpu": self.tarjetas(), "tareas": por_tarea}

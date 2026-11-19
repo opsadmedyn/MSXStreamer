@@ -162,3 +162,31 @@ def test_al_aire_y_reposo():
     web = {"id": "d", "inicia": "receptor", "protocolo": "webrtc"}
     e = E.de_ruta(web, fuente=RECIBE, info_destino=LISTO, conversion={}, tipo="entrega", ahora=AHORA)
     assert "señal convertida" in hechos(e)      # la conversión aún no tiene fila, pero la ruta lee de ella
+
+
+def test_sin_el_servidor_del_hub_no_se_dice_que_la_direccion_esta_lista():
+    # el destino WebRTC tiene la señal en su path, pero MediaMTX aún no ha encendido su servidor
+    # WebRTC: quien abriera la dirección no encontraría a nadie. No es «esperando receptor»
+    web = {"id": "d", "inicia": "receptor", "protocolo": "webrtc"}
+    e = E.de_ruta(web, fuente=RECIBE, info_destino=LISTO, tipo="entrega", ahora=AHORA,
+                  servidor={"nombre": "WebRTC", "motivo": ""})
+    assert e["estado"] == "reconectando" and e["detalle"] == "El hub está encendiendo su servidor WebRTC"
+    assert "MediaMTX aún no tiene encendido su servidor WebRTC" in hechos(e)
+    # encendido (servidor=None), la misma ruta sí espera al receptor
+    assert E.de_ruta(web, fuente=RECIBE, info_destino=LISTO, tipo="entrega", ahora=AHORA)["estado"] == "esperando_receptor"
+    # si el puerto es de otro programa no se va a arreglar solo: error, y se dice aunque falte la fuente
+    ocupado = {"nombre": "WebRTC", "motivo": "El puerto 8889/TCP está ocupado por otro programa"}
+    sin_fuente = E.de_fuente(PUBLICA, None, ahora=AHORA)
+    e = E.de_ruta(web, fuente=sin_fuente, tipo="entrega", ahora=AHORA, servidor=ocupado)
+    assert e["estado"] == "error" and "no se puede encender" in e["detalle"]
+    assert "El puerto 8889/TCP está ocupado por otro programa. Elige otro puerto en Ajustes" in hechos(e)
+    assert not E.al_aire(e)
+
+
+def test_fuente_que_publica_en_un_servidor_del_hub_aun_apagado():
+    e = E.de_fuente(PUBLICA, None, ahora=AHORA, servidor={"nombre": "RTMP", "motivo": ""})
+    assert e["estado"] == "esperando_fuente" and "encendiendo su servidor RTMP" in e["detalle"]
+    e = E.de_fuente(PUBLICA, None, ahora=AHORA, servidor={"nombre": "RTMP", "motivo": "El puerto 1935/TCP está ocupado por otro programa"})
+    assert e["estado"] == "error" and "El puerto 1935/TCP está ocupado" in hechos(e)
+    # si la señal está llegando, el servidor está encendido digan lo que digan los apuntes
+    assert E.de_fuente(PUBLICA, LISTO, ahora=AHORA, servidor={"nombre": "RTMP", "motivo": ""})["estado"] == "recibiendo"

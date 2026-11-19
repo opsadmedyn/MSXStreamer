@@ -5,6 +5,8 @@
 #   tests/banco/banco.sh arrancar     descarga MediaMTX la primera vez y lo levanta todo
 #   tests/banco/banco.sh parar        lo para todo (también los ffmpeg de las rutas)
 #   tests/banco/banco.sh reiniciar    como reiniciar el equipo: lo mata todo y lo vuelve a levantar
+#   tests/banco/banco.sh supervisor   como desplegar una versión: reinicia el supervisor y el panel y
+#                                     deja en marcha MediaMTX y los ffmpeg de las rutas (deben seguir)
 #   tests/banco/banco.sh estado       qué está en marcha
 #
 # El panel queda en http://127.0.0.1:8095 y solo ahí (127.0.0.1). Se entra con una cookie
@@ -111,6 +113,12 @@ case "${1:-}" in
   arrancar) arrancar ;;
   parar) parar; estado ;;
   reiniciar) parar; arrancar ;;
+  supervisor)
+    for nombre in panel supervisor; do
+      if vivo "$nombre"; then kill "$(cat "$BANCO/$nombre.pid")" 2>/dev/null || true; fi
+      rm -f "$BANCO/$nombre.pid"
+    done
+    sleep 1; arrancar ;;
   estado) estado ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

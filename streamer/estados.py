@@ -104,14 +104,27 @@ def caducado(tarea, ahora):
     return bool(tarea) and (not visto or ahora - visto > CADUCA)
 
 
+def _sin_servidor(servidor, extra, ahora, mientras=RECONECTANDO, luego=""):
+    """El servidor de MediaMTX por el que entra o sale la señal (RTMP, WebRTC) no está encendido.
+    servidor: {"nombre", "motivo"}. Con motivo no se va a encender solo (el puerto es de otro
+    programa): error. Sin motivo, el supervisor lo enciende en su próxima vuelta."""
+    nombre = servidor["nombre"]
+    if servidor.get("motivo"):
+        return _estado(ERROR, f"El servidor {nombre} del hub no se puede encender",
+                       [_hecho(f"{servidor['motivo']}. Elige otro puerto en Ajustes o libera ese"), *extra], ahora)
+    return _estado(mientras, f"El hub está encendiendo su servidor {nombre}" + luego,
+                   [_hecho(f"MediaMTX aún no tiene encendido su servidor {nombre}"), *extra], ahora)
+
+
 def de_fuente(f, info=None, tarea=None, senal=None, kbps=None, mtx_ok=True, impedimento=None, origen="",
-              ahora=None, sin_senal="Nadie está publicando en esta fuente"):
+              ahora=None, sin_senal="Nadie está publicando en esta fuente", servidor=None):
     """Estado de una fuente.
     info: lo que dice MediaMTX de su path (None: no existe). tarea: fila de estado_salidas de su
     proceso de entrada, si lo lleva. senal: fila de `senales` (cuándo hubo señal por última vez).
     kbps: tasa de entrada medida. impedimento: por qué no puede correr su proceso (adaptador, datos).
     origen: quién publica, si se sabe («203.0.113.9 por RTMP»). sin_senal: cómo decir que no hay
-    señal cuando no la trae un proceso del hub (un flujo heredado lo dice a su manera)."""
+    señal cuando no la trae un proceso del hub (un flujo heredado lo dice a su manera).
+    servidor: {"nombre", "motivo"} si el origen publica en un servidor del hub que no está encendido."""
     ahora = ahora or time.time()
     ultima = (senal or {}).get("ultima")
     antes = _hecho("Última señal recibida", ultima) if ultima else _hecho("Aún no se ha recibido señal de esta fuente")
@@ -121,6 +134,8 @@ def de_fuente(f, info=None, tarea=None, senal=None, kbps=None, mtx_ok=True, impe
         return _estado(ERROR, impedimento, [antes if ultima else None], ahora)
     if not mtx_ok:
         return _estado(ERROR, "MediaMTX no responde", [_hecho("La API de MediaMTX no contesta en este equipo")], ahora)
+    if servidor and not (info and info.get("ready")):
+        return _sin_servidor(servidor, [antes], ahora, mientras=ESPERANDO_FUENTE, luego=": en unos segundos se podrá publicar")
     if info and info.get("ready"):
         pistas = ", ".join(info.get("tracks") or []) or "sin pistas"
         hechos = [_hecho("MediaMTX recibe la señal" + (f" de {origen}" if origen else ""), info.get("listo_desde")),
@@ -148,19 +163,22 @@ def de_fuente(f, info=None, tarea=None, senal=None, kbps=None, mtx_ok=True, impe
 
 
 def de_ruta(d, plan=None, fuente=None, senal_lista=True, conversion=None, tarea=None, info_destino=None,
-            lectores=(), kbps=None, mtx_ok=True, impedimento=None, tipo="empuja", ahora=None):
+            lectores=(), kbps=None, mtx_ok=True, impedimento=None, tipo="empuja", ahora=None, servidor=None):
     """Estado de una ruta (una fuente conectada a un destino).
     plan: el de plan.planear. fuente: el estado de su fuente (de_fuente). senal_lista: la señal que
     lee la ruta (la fuente o una derivada) está publicada. conversion: fila de estado_salidas de la
     conversión, si la ruta usa una señal derivada. tarea: la del proceso de envío. info_destino: lo
     que dice MediaMTX del path del destino. lectores: receptores conectados a ese path.
-    tipo: 'empuja' (el hub se conecta), 'entrega' (el receptor viene), 'whip' o 'adaptador'."""
+    tipo: 'empuja' (el hub se conecta), 'entrega' (el receptor viene), 'whip' o 'adaptador'.
+    servidor: {"nombre", "motivo"} si la señal sale por un servidor del hub que no está encendido."""
     ahora = ahora or time.time()
     if impedimento:
         apagada = impedimento == FUENTE_PARADA
         return _estado(ESPERANDO_FUENTE if apagada else ERROR, impedimento, [], ahora)
     if not mtx_ok:
         return _estado(ERROR, "MediaMTX no responde", [_hecho("La API de MediaMTX no contesta en este equipo")], ahora)
+    if servidor and servidor.get("motivo"):         # no se arregla solo: se dice aunque la fuente aún no tenga señal
+        return _sin_servidor(servidor, [], ahora)
     if fuente and fuente["estado"] != RECIBIENDO:
         return _estado(ESPERANDO_FUENTE, "La fuente no tiene señal",
                        [_hecho(f"Fuente: {fuente['nombre'].lower()}. {fuente['detalle']}")], ahora)
@@ -204,6 +222,8 @@ def de_ruta(d, plan=None, fuente=None, senal_lista=True, conversion=None, tarea=
                        [_fallo(tarea), _intentos(tarea), convierte], visto)
 
     # el hub sirve la señal desde el path del destino
+    if servidor:                                # la señal puede estar lista, pero nadie podría abrirla todavía
+        return _sin_servidor(servidor, [convierte], ahora)
     if not (info_destino and info_destino.get("ready")):
         return _estado(RECONECTANDO, "El hub está preparando la señal del destino",
                        [_hecho("MediaMTX aún no tiene la señal en el path del destino"), convierte], ahora)

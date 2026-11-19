@@ -8,9 +8,12 @@
 // decodificados y la energía del audio recibido. Así la prueba no se fía de que «la página abrió».
 //
 //   node aceptacion_navegador.js '{"paginas": [{"nombre": "hls", "url": "http://…", "usuario": "", "clave": ""}]}'
+//   node aceptacion_navegador.js paginas.json        (lo mismo en un archivo: así la clave no va en la línea de órdenes)
 //
 // Necesita Playwright (npm i playwright) con su Chromium. Termina al cerrarle la entrada o con SIGTERM.
+// Si por la entrada le llega una línea «recargar», vuelve a cargar las páginas (como quien pulsa F5).
 
+const fs = require('fs');
 const { chromium } = require('playwright');
 
 function vigilarConexiones() {
@@ -54,7 +57,8 @@ async function medir() {
 }
 
 (async () => {
-  const config = JSON.parse(process.argv[2] || '{}');
+  const dicho = (process.argv[2] || '{}').trim();
+  const config = JSON.parse(dicho.startsWith('{') ? dicho : fs.readFileSync(dicho, 'utf8'));
   const navegador = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
   const paginas = [];
   for (const p of config.paginas || []) {
@@ -75,9 +79,17 @@ async function medir() {
   process.on('SIGTERM', parar);
   process.on('SIGINT', parar);
   process.stdin.on('end', parar);                     // quien lo lanzó se fue (o cerró la entrada): se acaba
-  process.stdin.on('data', () => {});
+  let recargar = false;
+  process.stdin.on('data', (d) => { if (String(d).includes('recargar')) recargar = true; });
   while (seguir) {
     const linea = { t: Date.now() / 1000 };
+    if (recargar) {
+      recargar = false;
+      linea.recargadas = true;
+      for (const p of paginas) {
+        await p.pagina.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch((e) => p.errores.push('no recarga: ' + String(e.message || e).slice(0, 200)));
+      }
+    }
     for (const p of paginas) {
       try {
         linea[p.nombre] = await p.pagina.evaluate(medir);
