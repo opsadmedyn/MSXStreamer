@@ -231,7 +231,8 @@ red no gana nada poniéndola él.
 - nginx no la anota si no se le dice. En cada `location` que lleve al hub hace falta
   `proxy_set_header X-Forwarded-For $remote_addr;` (también vale `$proxy_add_x_forwarded_for`).
 - Sin esa cabecera todo lo que entra por el proxy pasa por ser del hub. En el banco, por un proxy
-  que no la anota, la lista HLS de una fuente se lee sin clave. El hub no puede impedirlo desde
+  que no la anota, la lista HLS de una fuente se lee sin clave, y un navegador sin token ve una
+  salida WebRTC protegida y publica en una fuente WHIP protegida. El hub no puede impedirlo desde
   dentro, pero lo comprueba: «Probar la conexión» de una fuente o un destino HLS o WebRTC pide por
   la dirección pública, sin clave, la página de una fuente, y dice si se entra. Pedirla no abre
   ninguna señal.

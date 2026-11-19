@@ -259,7 +259,9 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   le llega de ahí por la dirección anotada en `X-Forwarded-For`: de fuera y sin credenciales, 401;
   sin la cabecera (el panel, los ffmpeg del hub), local como antes; y quien llama directamente
   desde la red no puede hacerse pasar por local poniéndola. El supervisor lo pide al arrancar
-  (`streamer/mtx.py`). Un proxy que no anota esa cabecera lo deja todo abierto igual.
+  (`streamer/mtx.py`). Un proxy que no anota esa cabecera lo deja todo abierto igual: por uno así,
+  un navegador sin token vio una salida WebRTC protegida (30 fps, con audio) y publicó en una fuente
+  WHIP protegida. Por uno que la anota, los dos intentos recibieron un 401.
 - Pedírselo a un MediaMTX que no lo tiene reinicia sus servidores HLS y WebRTC, una vez: un
   navegador que miraba por HLS estuvo unos 10 s sin imagen, un lector HLS de ffmpeg se cortó y un
   lector SRT no notó nada (35 s seguidos, con 33 ms como mayor hueco). Después MediaMTX devuelve las
