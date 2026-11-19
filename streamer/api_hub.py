@@ -1564,9 +1564,9 @@ def guardar_red(d: Red, request: Request):
 def guardar_webrtc(d: WebRTC, request: Request):
     """Direcciones que el hub anuncia y servidores STUN o TURN para WebRTC fuera de la red local.
     Cambiarlos reinicia el servidor WebRTC de MediaMTX: quien miraba se queda sin imagen hasta que su
-    página vuelve a conectar (unos 18 s en el banco) y quien publicaba tiene que volver a publicar. Con
-    rutas al aire por WebRTC hace falta el permiso de modificarlas y decir en `corta` qué destinos se
-    cortan."""
+    página vuelve a conectar (entre 18 y 20 s en el banco) y quien publicaba tiene que volver a
+    publicar. Con rutas al aire por WebRTC hace falta el permiso de modificarlas y decir en `corta`
+    qué destinos se cortan."""
     c = db.conectar()
     guardado = db.ajuste(c, "webrtc") or {}
     antes = {s.get("url"): s for s in guardado.get("ice") or [] if isinstance(s, dict)}

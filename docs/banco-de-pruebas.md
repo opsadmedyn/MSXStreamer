@@ -109,9 +109,9 @@ En el banco:
 MSXS_SESION=admin python3 scripts/combinaciones.py --registros .banco --sesion-operador operador
 ```
 
-Tarda unos quince minutos. Deja en `combinaciones-<fecha>/` su `informe.md` y su `datos.json`, anota
-en el hub como «verificadas en el banco de pruebas» las combinaciones por las que pasó señal, y
-sale con 0, 1 o 3 igual que la prueba de aceptación. `--casos rtmps,fuente` pasa solo algunos. El
+Tarda unos diecisiete minutos. Deja en `combinaciones-<fecha>/` su `informe.md` y su `datos.json`,
+anota en el hub como «verificadas en el banco de pruebas» las combinaciones por las que pasó señal,
+y sale con 0, 1 o 3 igual que la prueba de aceptación. `--casos rtmps,fuente` pasa solo algunos. El
 último informe del banco está en [combinaciones-banco.md](combinaciones-banco.md).
 
 Para el caso `rtmps` hace falta `openssl`: el guion crea con él el certificado de su plataforma de
@@ -271,7 +271,7 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   recibe la misma página que MediaMTX le da a él, lo dice.
 - Cambiar las direcciones que anuncia WebRTC o sus servidores ICE reinicia el servidor WebRTC de
   MediaMTX. Quien miraba se queda sin imagen un segundo después; su página da la conexión por
-  cerrada a los 16 s y vuelve a conectar sola: 18 o 19 s sin imagen. La salida SRT de la misma
+  cerrada a los 16 s y vuelve a conectar sola: entre 18 y 20 s sin imagen. La salida SRT de la misma
   fuente no se corta. Reiniciar el supervisor con esos ajustes puestos no corta nada.
 - Con un servidor TURN (coturn), un navegador obligado a salir solo por él reproduce la salida
   WebRTC a 30 fps con audio y publica por WHIP. MediaMTX entrega al navegador los servidores ICE con

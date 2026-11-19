@@ -130,8 +130,8 @@ Los tres servicios quedan habilitados en systemd (`systemctl enable`) y se reini
 Reiniciar solo el supervisor y el panel (lo que hace un despliegue normal) no corta ninguna salida:
 `KillMode=process` deja vivos los ffmpeg y el supervisor los adopta al volver. En el banco de
 pruebas, con tres salidas activas: 0 s sin señal al reiniciar los servicios, y tras un reinicio
-completo las rutas volvieron solas en unos 9 s (RTMP y HLS) y 19 s (WebRTC, tras recargar la página
-del reproductor), sin duplicados ([aceptacion-banco.md](aceptacion-banco.md)).
+completo las rutas volvieron solas en 7,5 s (RTMP), 10,1 s (HLS) y 20,3 s (WebRTC, tras recargar la
+página del reproductor), sin duplicados ([aceptacion-banco.md](aceptacion-banco.md)).
 
 ## Puertos
 
@@ -271,7 +271,7 @@ Medido en el banco con MediaMTX 1.21.1 y un coturn de pruebas:
   temporal y el secreto no sale del hub.
 - **Cambiar `hosts` o `ice` corta WebRTC.** MediaMTX reinicia su servidor WebRTC, y con él se
   cierran sus sesiones. Quien miraba se queda sin imagen hasta que su página vuelve a conectar sola
-  (18 o 19 s en el banco). Con quien publica por WHIP no se midió: volverá si su codificador
+  (entre 18 y 20 s en el banco). Con quien publica por WHIP no se midió: volverá si su codificador
   reconecta solo. Lo que va por SRT no se corta. Por eso, con rutas WebRTC al aire, el hub responde
   con la lista de las que se cortan y pide confirmarla (ver «Quién puede cambiar qué»).
 - **Un servidor TURN que no responde retrasa cada conexión.** WebRTC sigue funcionando por conexión
