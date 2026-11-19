@@ -420,11 +420,13 @@ def vista_destino(d, x):
 
 
 def _sistema(x):
-    visto = x.c.execute("SELECT max(visto) v FROM estado_salidas").fetchone()["v"]
+    """Lo que mueve el hub: MediaMTX responde y el supervisor sigue dando vueltas (anota un latido en cada una)."""
+    latido = db.ajuste(x.c, "latido")
+    hace = round(x.ahora - latido, 1) if isinstance(latido, (int, float)) else None
     servidores = db.ajuste(x.c, "servidores") or {}
-    return {"mediamtx": x.paths is not None,
+    return {"mediamtx": x.paths is not None, "supervisor": hace is not None and hace < estados.CADUCA,
+            "supervisor_visto_s": hace,
             "reposo": None if x.reposo is None else {"desde": x.reposo.get("desde"), "por": x.reposo.get("por")},
-            "supervisor_visto_s": round(x.ahora - visto, 1) if visto else None,
             "problemas": servidores.get("problemas") or {}, "arranque": db.ajuste(x.c, "arranque")}
 
 
@@ -564,7 +566,7 @@ def _puertos_ocupados(c, excepto=""):
     n = matriz.ajustes_red(c, CFG)
     usados = {matriz.red(n)["srt"]: "el SRT del hub", n["rtmp_puerto"]: "el RTMP del hub",
               n["webrtc_puerto"]: "el WebRTC del hub", n["webrtc_udp"]: "los medios de WebRTC",
-              int(CFG.get("hls_puerto", 8888)): "el HLS del hub", 8095: "el panel",
+              int(CFG.get("hls_puerto", 8888)): "el HLS del hub", int(CFG.get("panel_puerto", 8095)): "el panel",
               (urllib.parse.urlsplit(CFG.get("mediamtx_api", "http://127.0.0.1:9997")).port or 9997): "la API de MediaMTX"}
     for fila in [*matriz.fuentes(c), *matriz.destinos(c)]:
         puerto = matriz.json_de(fila.get("opciones"), {}).get("puerto")

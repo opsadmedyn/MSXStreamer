@@ -834,6 +834,7 @@ class Supervisor:
             t0 = time.time()
             try:
                 self.vuelta()
+                db.guardar_ajuste(self.c, "latido", time.time())    # el panel sabe así que el supervisor sigue vivo
             except Exception as err:        # una vuelta fallida no debe tumbar al supervisor
                 print(f"error en la vuelta: {err!r}", file=sys.stderr, flush=True)
             time.sleep(max(0.2, VUELTA - (time.time() - t0)))

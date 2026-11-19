@@ -46,6 +46,10 @@ def mtx_falso(monkeypatch):
     falso = {"paths": {}, "conexiones": {}, "hls": {}}
 
     monkeypatch.setattr(api_hub, "_mediamtx", lambda: (falso["paths"], falso["conexiones"], falso["hls"]))
+
+    def sin_mediamtx(*_, **__):             # aunque en este equipo corra un MediaMTX de verdad (el banco), aquí no se le pregunta
+        raise api_hub.mtx.ErrorMTX("MediaMTX no responde")
+    monkeypatch.setattr(api_hub.mtx, "_pedir", sin_mediamtx)
     # cada consulta mira de nuevo: las pruebas cambian el estado entre dos peticiones seguidas
     falso["con_cache"] = api_hub._estado_del_hub
     monkeypatch.setattr(api_hub, "_estado_del_hub", api_hub._estado_completo)
@@ -342,6 +346,11 @@ def test_la_matriz_dice_el_estado_de_cada_ruta_con_su_evidencia(panel, c, mtx_fa
     assert f["estado"]["estado"] == "esperando_fuente" and f["quien_inicia"] == "El codificador publica en el hub"
     assert f["sentido"] == "Hacia el hub" and f["pistas"] is None and not f["con_senal"]
     assert m["sistema"]["mediamtx"] and m["permisos"] == ["conectar_libre", "ver"]
+    assert not m["sistema"]["supervisor"] and m["sistema"]["supervisor_visto_s"] is None      # sin latido, no se da por vivo
+    db.guardar_ajuste(c, "latido", time.time() - 3)
+    assert panel["operador"].get("/api/matriz").json()["sistema"]["supervisor"]
+    db.guardar_ajuste(c, "latido", time.time() - 60)
+    assert not panel["operador"].get("/api/matriz").json()["sistema"]["supervisor"]
     con_senal(c, mtx_falso, fid)
     for d in (srt, hls, web):
         assert panel["operador"].put(f"/api/rutas/{d}", json={"fuente": fid}).status_code == 200
@@ -448,7 +457,8 @@ def test_probar_no_emite_y_dice_que_comprobo(panel, c, mtx_falso, monkeypatch):
                                                     "url": "https://cdn.example/x/master.m3u8"}).json()
     assert r["ok"] is True and r["hls"] == lista_hls and r["pasos"][1]["detalle"] == "2 declaradas: Español, Inglés"
     # lo que el hub entrega: ¿está escuchando donde dice? Aquí no hay MediaMTX, y lo dice
-    r = panel["operador"].post(f"/api/fuentes/{fid}/probar")
+    monkeypatch.setattr(sondas, "hub_escucha", lambda puerto, tipo="tcp", que="": sondas.paso(
+        f"Puerto {puerto}/{tipo.upper()} del hub", False, f"Nada escucha en el puerto {puerto}: {que} no está en marcha"))
     mtx_falso["paths"].clear()
     r = panel["operador"].post(f"/api/fuentes/{fid}/probar").json()
     assert r["ok"] is False and r["pasos"][0]["que"] == "Puerto 1935/TCP del hub"
