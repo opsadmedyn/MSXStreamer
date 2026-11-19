@@ -80,6 +80,28 @@ corto mientras se depura, `--fotogramas-b` para que la cámara de pruebas emita 
 (obliga a convertir el vídeo para WebRTC, que es la ruta que más carga), `--sin-navegador`,
 `--no-anotar` y `--conservar`. `python3 scripts/aceptacion.py -h` las lista todas.
 
+### La misma prueba, pulsando en el panel
+
+`scripts/aceptacion_panel.js` hace la primera mitad (entrada RTMP y salidas SRT, HLS y WebRTC) sin
+tocar la API: abre el panel en un Chromium sin ventana con una sesión de administrador y pulsa lo
+que pulsaría un operador. Da de alta la fuente en Fuentes y toma de ahí la dirección para el
+codificador, da de alta los tres destinos en Destinos, conecta las tres rutas en la Matriz de rutas
+leyendo lo que el panel dice que copiará y convertirá, y sigue en Monitoreo el corte del receptor
+SRT y su vuelta. Lo que comprueba fuera del panel es lo que de verdad llega: el vídeo y el audio que
+guarda el receptor SRT y lo que reproducen las páginas HLS y WebRTC en el navegador.
+
+```
+MSXS_SESION=admin node scripts/aceptacion_panel.js --capturas capturas-panel
+```
+
+Tarda algo menos de dos minutos con el corte de 60 s (`--corte 20` lo acorta). Con `--capturas`
+deja una captura del panel en cada paso. Borra lo que crea, cuyo nombre empieza por «Aceptación del
+panel», también si se la interrumpe; y si una pasada anterior se quedó a medias (un corte de luz),
+al empezar borra lo que dejó. No mide la carga ni anota validaciones: eso lo hace
+`scripts/aceptacion.py`. Conviene pasarla con el hub sin otras rutas en marcha: en un equipo
+pequeño, el navegador sin ventana se queda sin procesador si el hub ya está cargado y la prueba
+falla sin que el hub tenga la culpa.
+
 ## Las demás formas de conexión
 
 `scripts/combinaciones.py` complementa a la prueba de aceptación con lo que esta no toca. Maneja el
