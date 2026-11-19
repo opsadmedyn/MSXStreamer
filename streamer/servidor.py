@@ -32,8 +32,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import api_hub
 import composicion
 import db
+import matriz
 import mtx
 from secretos import de_filas as _secretos, limpiar as _limpiar, url_visible as _url_visible
 from supervisor import path_de_flujo
@@ -48,6 +50,7 @@ except OSError:
     VERSION = "desarrollo"
 
 app = FastAPI(title="Media Syntaxis Streamer")
+app.include_router(api_hub.router)      # el hub de señales: fuentes, destinos y rutas (cada operación, con su permiso)
 
 # ---------------------------------------------------------------- acceso
 # Se entra solo con los usuarios del Recorder de este mismo equipo, y solo por Tailscale: el panel
@@ -55,6 +58,8 @@ app = FastAPI(title="Media Syntaxis Streamer")
 # navegador trae la cookie de sesión del Recorder (mismo dominio) y se pregunta por ella a su
 # /api/auth/yo, que dice email, rol y módulos (columna G de la hoja de usuarios). Hace falta el
 # módulo "streamer". Admin: todo. Operador: ver, arrancar/parar destinos y vista previa.
+# En las direcciones del hub de señales (api_hub.PROPIAS) no decide esta regla sino el permiso que
+# declara cada operación, según la tabla de permisos por rol de Ajustes.
 RECORDER_API = CFG.get("recorder_api", "http://127.0.0.1:8081")
 COOKIE_RECORDER = "msr_sesion"
 PUBLICAS = ("/static/", "/api/version")
@@ -149,7 +154,8 @@ async def exigir_sesion(request: Request, call_next):
         if ruta.startswith("/api/"):
             return JSONResponse({"detail": "Sesión caducada", "login": _url_login(request)}, status_code=401)
         return RedirectResponse(_url_login(request), status_code=303)
-    if usuario["rol"] != "admin" and request.method != "GET" and not OPERADOR_PUEDE.match(ruta):
+    if usuario["rol"] != "admin" and request.method != "GET" and not OPERADOR_PUEDE.match(ruta) \
+            and not api_hub.PROPIAS.match(ruta):
         return JSONResponse({"detail": "Solo un administrador puede hacer esto"}, status_code=403)
     request.state.usuario = usuario
     USUARIO.set(usuario)
@@ -660,9 +666,15 @@ def accion_flujo(fid: str, accion: Literal["iniciar", "detener"]):
 @app.delete("/api/flujos/{fid}")
 def borrar_flujo(fid: str):
     c = db.conectar()
-    if not c.execute("DELETE FROM flujos WHERE id=?", (fid,)).rowcount:
+    fila = c.execute("SELECT nombre FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not fila or not c.execute("DELETE FROM flujos WHERE id=?", (fid,)).rowcount:
         raise HTTPException(404, "Ese flujo no existe")
     evento(c, "flujo borrado", flujo=fid)
+    rutas = matriz.limpiar_huerfanas(c)     # las rutas del hub que salían de este flujo se van con él
+    if rutas:
+        u = USUARIO.get() or {}
+        db.cambio(c, u.get("email", ""), u.get("rol", ""), "Borró un flujo", fila["nombre"],
+                  f"con {rutas} ruta{'s' if rutas != 1 else ''} del hub que salía{'n' if rutas != 1 else ''} de él")
     return {"ok": True}
 
 
@@ -724,7 +736,7 @@ UBICACION_HLS = re.compile(r"^/[A-Za-z0-9_.~/-]*(\?[A-Za-z0-9_.=&-]*)?\Z")
 CABECERAS_HLS = {"content-type", "cache-control", "content-length"}
 VISTAS = anyio.CapacityLimiter(VISTA_MAX)       # peticiones de vista previa en curso
 HILOS_VISTA = anyio.CapacityLimiter(4)          # sus consultas de sesión y base: no las del resto
-_paths_vista = (0.0, frozenset())
+_paths_vista = (0.0, frozenset(), frozenset())
 
 
 class _SinVistaEnRegistro(logging.Filter):
@@ -746,15 +758,18 @@ class _SinVistaEnRegistro(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_SinVistaEnRegistro())
 
 
-def _paths_con_vista():
-    """Paths que se pueden ver por el panel: el de cada flujo y el de su composición (2 s de caché)."""
+def _paths_con_vista(rol=None):
+    """Paths que se pueden ver por el panel: el de cada flujo y el de su composición y, para quien
+    puede ver el hub de señales, sus fuentes y sus señales convertidas (2 s de caché)."""
     global _paths_vista
     ahora = time.monotonic()
     if ahora - _paths_vista[0] > 2:
-        validos = set()
-        for f in db.filas(db.conectar(), "SELECT id, entrada, canal FROM flujos"):
+        c, validos = db.conectar(), set()
+        for f in db.filas(c, "SELECT id, entrada, canal FROM flujos"):
             validos |= {path_de_flujo(f), composicion.path_comp(f["id"])}
-        _paths_vista = (ahora, frozenset(validos))
+        _paths_vista = (ahora, frozenset(validos), frozenset(api_hub.paths_con_vista(c) - validos))
+    if rol is not None and "ver" in api_hub.permisos_de(db.conectar(), rol):
+        return _paths_vista[1] | _paths_vista[2]
     return _paths_vista[1]
 
 
@@ -871,7 +886,8 @@ async def vista_hls(resto: str, request: Request):
     """Vista previa por el panel: la página de MediaMTX, sus listas y sus segmentos."""
     if not RESTO_HLS.match(resto):
         raise HTTPException(404, "No existe")
-    if resto.split("/", 1)[0] not in await anyio.to_thread.run_sync(_paths_con_vista, limiter=HILOS_VISTA):
+    rol = request.state.usuario["rol"]
+    if resto.split("/", 1)[0] not in await anyio.to_thread.run_sync(_paths_con_vista, rol, limiter=HILOS_VISTA):
         raise HTTPException(404, "Ese flujo no existe")
     return _RespuestaHLS(resto, _consulta_hls(request.url.query))
 

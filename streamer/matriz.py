@@ -431,7 +431,7 @@ def _srt_entrega(n, accion, fila, clave, frase):
               _campo("Stream ID", streamid, bool(clave)), _campo("Latencia", f"{int(fila['latencia_ms'])} ms")]
     if frase:
         campos.append(_campo("Passphrase", frase, True))
-    return {"url": f"srt://{n['host']}:{n['srt']}?" + urllib.parse.urlencode(q, safe=":"), "campos": campos}
+    return {"url": f"srt://{n['host']}:{n['srt']}?" + urllib.parse.urlencode(q, safe=":*"), "campos": campos}
 
 
 def _direccion(fila, n, lado, clave, frase):
@@ -445,7 +445,7 @@ def _direccion(fila, n, lado, clave, frase):
                       _campo("Latencia", f"{int(fila['latencia_ms'])} ms")]
             if frase:
                 campos.append(_campo("Passphrase", frase, True))
-            return {"url": f"srt://{n['host']}:{int(opciones['puerto'])}?" + urllib.parse.urlencode(q), "campos": campos}
+            return {"url": f"srt://{n['host']}:{int(opciones['puerto'])}?" + urllib.parse.urlencode(q, safe="*"), "campos": campos}
         return _srt_entrega(n, "publish" if lado == "fuente" else "read", fila, clave, frase)
     if proto == "rtmp":
         llave = i + (f"?user={i}&pass={clave}" if clave else "")
