@@ -146,7 +146,8 @@ con 8289/UDP (WebRTC), y su propia carpeta. No comparte nada con la instalación
 la base de datos, ni MediaMTX, ni los servicios de systemd.
 
 Es la forma de medir la carga en la HP Z8 antes del relevo, y `scripts/medir-carga.sh` lo hace de
-una vez. En la estación, como `mediasat`, desde una copia del repositorio (nunca desde la carpeta
+una vez (la pasada del 19 de noviembre de 2026 está en [aceptacion-z8.md](aceptacion-z8.md)). En la
+estación, como `mediasat`, desde una copia del repositorio (nunca desde la carpeta
 del Streamer):
 
 ```
@@ -219,7 +220,8 @@ Los receptores y cámaras de esa prueba toman puertos libres a partir de los que
 ## Lo que el banco no puede decir
 
 - La carga de la HP Z8 con sus señales de verdad (1080i, 1080p59,94, varios audios) y con NVENC:
-  el banco de desarrollo no tiene tarjeta y codifica por CPU.
+  el banco de desarrollo no tiene tarjeta y codifica por CPU. En la estación está medida la prueba
+  de aceptación, que no convierte vídeo ([aceptacion-z8.md](aceptacion-z8.md)).
 - El comportamiento con la red de por medio: pérdidas, latencia, cortafuegos y NAT. En el banco
   todo viaja dentro del mismo equipo. El proxy HTTPS y el servidor TURN de las pruebas también
   están en él: comprueban que el hub habla bien con ellos y que no deja entrar sin clave, no que

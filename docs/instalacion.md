@@ -229,8 +229,9 @@ red no gana nada poniéndola él.
 
 - Caddy la anota solo, con la dirección de quien conecta, y descarta la que traiga la petición: no
   hay que hacer nada. Medido en el banco con Caddy 2.6.2: quien entra sin token recibe un `401` por
-  HLS y por WebRTC, también si manda él una `X-Forwarded-For: 127.0.0.1`. La versión del Caddy de
-  la estación no se ha mirado; lo dice allí «Probar la conexión».
+  HLS y por WebRTC, también si manda él una `X-Forwarded-For: 127.0.0.1`. El Caddy de la EZC80 es
+  el 2.11.4 (mirado el 19 de noviembre de 2026) y con él no está medido; lo dice allí «Probar la
+  conexión».
 - nginx no la anota si no se le dice. En cada `location` que lleve al hub hace falta
   `proxy_set_header X-Forwarded-For $remote_addr;` (también vale `$proxy_add_x_forwarded_for`).
   **Con `X-Real-IP` sola no basta**: nginx deja pasar la `X-Forwarded-For` que traiga la petición,
@@ -311,6 +312,7 @@ se reinicia.
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
 3. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
    propia estación sin tocar nada de lo que está al aire. Ver [banco-de-pruebas.md](banco-de-pruebas.md).
+   Hecho el 19 de noviembre de 2026, con señales de prueba: [aceptacion-z8.md](aceptacion-z8.md).
 4. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
 
    ```

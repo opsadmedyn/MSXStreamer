@@ -21,7 +21,10 @@ una de las seis formas de entrada se conectó a la vez a las siete formas de sal
 vídeo comprobados en cada una; es el caso `matriz` de la prueba de las otras formas de conexión
 ([combinaciones-banco.md](combinaciones-banco.md)). Las seis marcadas con una A son además las de la
 prueba de aceptación ([aceptacion-banco.md](aceptacion-banco.md)), con su corte de 60 s y sus
-reinicios.
+reinicios. Esa prueba se pasó además en la propia HP Z8 (EZC80) el 19 de noviembre de 2026, con el
+banco al lado de producción: pasa en sus dos mitades, y de ella sale la carga observada en la
+estación ([aceptacion-z8.md](aceptacion-z8.md)). Sigue siendo una verificación de banco de pruebas:
+la cámara y los receptores fueron programas.
 
 | Entrada | SRT, el hub llama al receptor | SRT, el receptor llama al hub | RTMP, el hub publica en un servidor | RTMP, un cliente lee del hub | HLS, el reproductor pide la lista | WebRTC, un navegador la pide (WHEP) | WebRTC, el hub la reenvía (WHIP) |
 |---|---|---|---|---|---|---|---|
@@ -63,7 +66,9 @@ pendiente de que se apruebe el relevo.
 Pendientes de validación:
 
 - Todo lo que el banco no puede decir: codificadores, receptores y plataformas de verdad, la red
-  de por medio y la carga de la estación (ver [banco-de-pruebas.md](banco-de-pruebas.md)).
+  de por medio y la carga de la estación con sus señales de verdad y con conversiones de vídeo (ver
+  [banco-de-pruebas.md](banco-de-pruebas.md)). Con señales de prueba y sin convertir vídeo, la carga
+  de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
 - Una fuente HLS durante muchas horas. El hub la lee al ritmo de su propio reloj, con un margen de
   tres segmentos. Si el reloj del origen va algo más despacio que el de la estación, es de esperar
   que ese margen se vaya gastando, y si va más deprisa, que el retardo crezca. En el banco, con
