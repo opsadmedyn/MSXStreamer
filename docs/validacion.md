@@ -26,6 +26,10 @@ banco al lado de producción: pasa en sus dos mitades, y de ella sale la carga o
 estación ([aceptacion-z8.md](aceptacion-z8.md)). Sigue siendo una verificación de banco de pruebas:
 la cámara y los receptores fueron programas.
 
+El panel se probó en el banco con un Chromium sin ventana: sus seis secciones, los tres roles y la
+primera mitad de la prueba de aceptación hecha pulsando en él (`scripts/aceptacion_panel.js`, que
+pasa con su corte de 60 s). No está probado en otros navegadores ni en la estación.
+
 | Entrada | SRT, el hub llama al receptor | SRT, el receptor llama al hub | RTMP, el hub publica en un servidor | RTMP, un cliente lee del hub | HLS, el reproductor pide la lista | WebRTC, un navegador la pide (WHEP) | WebRTC, el hub la reenvía (WHIP) |
 |---|---|---|---|---|---|---|---|
 | SRT, el codificador llama al hub | Sí | Sí | Sí, A | Sí | Sí, A | Sí, A | Sí |
@@ -69,6 +73,8 @@ Pendientes de validación:
   de por medio y la carga de la estación con sus señales de verdad y con conversiones de vídeo (ver
   [banco-de-pruebas.md](banco-de-pruebas.md)). Con señales de prueba y sin convertir vídeo, la carga
   de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
+- El panel en Safari y en Firefox, y en la estación con sus señales: en el banco solo se usó
+  Chromium.
 - Una fuente HLS durante muchas horas. El hub la lee al ritmo de su propio reloj, con un margen de
   tres segmentos. Si el reloj del origen va algo más despacio que el de la estación, es de esperar
   que ese margen se vaya gastando, y si va más deprisa, que el retardo crezca. En el banco, con
@@ -115,7 +121,10 @@ por buena:
    como «reconectando», que las demás salidas de esa fuente siguen, y que al volver se recupera solo.
 6. Cortar la fuente 60 segundos y comprobar que las rutas pasan a «esperando fuente» y vuelven.
 7. Apuntar la carga del equipo con la ruta en marcha (`GET /api/carga`, o Monitoreo).
-8. Anotarla como verificada, diciendo con qué equipo:
+8. Anotarla como verificada, diciendo con qué equipo. En el panel, con el permiso de ajustes: en
+   Adaptadores, la tabla «Validación de rutas» tiene una casilla por cada forma de entrada con cada
+   forma de salida; al pulsarla se elige «Verificada con equipos reales» y se escribe la nota. O por
+   la API:
 
 ```
 curl -X PUT http://127.0.0.1:8095/api/validacion -H 'Content-Type: application/json' \
@@ -127,7 +136,7 @@ curl -X PUT http://127.0.0.1:8095/api/validacion -H 'Content-Type: application/j
 El lado de la fuente se escribe `protocolo:origen` (el origen llama al hub) o `protocolo:hub` (el
 hub va a buscarla), y `flujo:hub`, `flujo:recorder` o `flujo:pull` para los flujos heredados. El
 lado del destino, `protocolo:hub` (el hub se conecta) o `protocolo:receptor` (el hub entrega una
-dirección). Cuando la interfaz esté construida se anotará desde Ajustes.
+dirección). La Matriz de rutas enseña el nivel de cada cruce al elegirlo, antes de activarlo.
 
 ## NDI y Zixi
 

@@ -407,8 +407,15 @@ def vista_fuente(f, x):
 def _metricas(d, r, e, x):
     """Lo que se mide de una ruta: lo que sale, desde cuándo, cuántas veces se ha reconectado y quién la recibe."""
     tarea = x.tareas.get(matriz.id_ruta(d["id"])) or {}
+    # desde cuándo sale la señal sin interrupción, y solo si está saliendo: un envío que aún está
+    # conectando tiene su proceso en marcha y no manda nada. Si la sirve MediaMTX, el receptor más
+    # antiguo de los que siguen conectados (de un reproductor HLS no se sabe cuándo empezó)
+    desde = None
+    if e["estado"] == estados.ENVIANDO:
+        desde = tarea.get("desde") if tarea.get("pid") else \
+            min((q["desde"] for q in e.get("lectores") or [] if q.get("desde")), default=None)
     m = {"kbps": tarea.get("kbps") if tarea.get("pid") else e.get("kbps_entrega"),
-         "enviando_desde": tarea.get("desde") if tarea.get("pid") else None,
+         "enviando_desde": desde,
          "reconexiones": tarea.get("reinicios") or 0, "intentos": tarea.get("intentos") or 0,
          "receptores": e.get("lectores") or [], "conversion": None}
     conv = x.tareas.get(e.get("senal")) if e.get("derivada") else None
@@ -1527,7 +1534,7 @@ def guardar_red(d: Red, request: Request):
     actual = matriz.ajustes_red(c, CFG)
     ocupados = _puertos_ocupados(c)
     cambios, protocolos = [], set()
-    for _, clave, tipo, usa in PUERTOS_RED:
+    for servicio, clave, tipo, usa in PUERTOS_RED:
         puerto = getattr(d, clave)
         if puerto is None or puerto == actual[clave]:
             continue
@@ -1538,21 +1545,23 @@ def guardar_red(d: Red, request: Request):
         guardado[clave] = puerto
         ocupados[puerto] = "el hub"
         protocolos.add(usa)
-        cambios.append(f"{clave.replace('_', ' ')} {puerto}")
+        cambios.append(f"puerto de {servicio}: {puerto}")
     if d.host_publico is not None:
         host = d.host_publico.strip()
         if host and not re.match(r"^[A-Za-z0-9._:\[\]-]{1,253}$", host):
             raise HTTPException(422, "La dirección pública no es válida: un nombre o una IP, sin http://")
+        if host != (guardado.get("host_publico") or ""):       # en el registro, solo lo que cambia de verdad
+            cambios.append("nombre o IP del hub")
         guardado["host_publico"] = host
-        cambios.append("dirección pública")
-    for clave in ("hls_url", "webrtc_url"):
+    for clave, nombre in (("hls_url", "dirección pública de HLS"), ("webrtc_url", "dirección pública de WebRTC")):
         valor = getattr(d, clave)
         if valor is not None:
             valor = valor.strip().rstrip("/")
             if valor and not URL_HTTP.match(valor):
                 raise HTTPException(422, "La dirección debe empezar por http:// o https://")
+            if valor != (guardado.get(clave) or ""):
+                cambios.append(nombre)
             guardado[clave] = valor
-            cambios.append(clave.replace("_", " "))
     cortadas = _exigir_corte(request, Contexto(c), protocolos, d.corta, "Ese puerto", "Cambiar ese puerto") if protocolos else []
     db.guardar_ajuste(c, "red", {k: v for k, v in guardado.items() if v not in ("", None)})
     _cambio(c, request, "Cambió los ajustes de red", "", (", ".join(cambios) or "sin cambios") + _cortadas(cortadas))
@@ -1692,6 +1701,8 @@ def anotar_validacion(d: Validacion, request: Request):
         raise HTTPException(422, "Anota con qué equipo se comprobó")
     anotado = validacion.anotar(c, d.fuente, d.destino, d.nivel, _usuario(request)["email"], nota)
     if anotado:
-        _cambio(c, request, "Anotó una validación", f"{d.fuente} → {d.destino}", f"{validacion.NIVELES[d.nivel]}. {nota}".strip())
+        formas = dict(validacion.entradas()), dict(validacion.salidas())      # en el registro, con sus nombres
+        _cambio(c, request, "Anotó una validación", f"{formas[0].get(d.fuente, d.fuente)} → {formas[1].get(d.destino, d.destino)}",
+                f"{validacion.NIVELES[d.nivel]}. {nota}".strip())
     _olvidar()
     return {"ok": True, "anotado": anotado}

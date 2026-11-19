@@ -22,6 +22,28 @@ Streamer, en `/home/mediasat/streamer`, con tres servicios de systemd:
   releases/v<versión>/  cada versión desplegada, tal como llegó
 ```
 
+## El panel
+
+Se abre en `https://<dominio del Recorder>/streamer/`, con la sesión del Recorder. Tiene la misma
+cabecera que el resto de la suite y seis secciones:
+
+| Sección | Para qué |
+|---|---|
+| Fuentes | Dar de alta cada señal que entra y ver qué trae: vista previa, resolución, códec, bitrate, pistas de audio con sus medidores. El formulario pregunta por separado quién inicia la conexión y en qué dirección viaja la señal |
+| Destinos | Dos listas: los destinos a los que el hub se conecta y las direcciones que el hub entrega para que otro equipo las abra. Cada uno con sus credenciales, su perfil de salida, su audio y su reconexión, y con «Probar conexión» |
+| Matriz de rutas | Fuentes en filas y destinos en columnas. Al elegir un cruce dice qué pistas copiará y cuáles convertirá, y por qué, antes de activar. Si el destino ya está al aire con otra fuente, la nombra y pide confirmar el cambio |
+| Monitoreo | El estado de cada entrada y de cada ruta, con la evidencia que lo respalda y la hora en que se comprobó, y la carga de la estación con el consumo de cada proceso |
+| Adaptadores | MediaMTX, FFmpeg, y lo que les falta a NDI y a Zixi para habilitarse. Abajo, la tabla de qué formas de conexión están verificadas con equipos reales, cuáles en el banco y cuáles pendientes |
+| Ajustes | WebRTC fuera de la red local, los puertos del hub, los perfiles de conversión, qué puede hacer cada rol y el registro de cambios |
+
+Los flujos de la 0.3.9, con su composición, siguen en «Flujos y composición», a la derecha de las
+secciones. Cada flujo aparece además en Fuentes como una fuente más, y se puede llevar a cualquier
+destino desde la matriz.
+
+Lo que un rol no puede hacer sale apagado o no sale, y el panel dice por qué. Las claves van ocultas:
+quien tiene el permiso las ve un minuto con «Mostrar claves», y cada consulta queda en el registro
+de cambios.
+
 ## Qué hace falta
 
 - Linux x86-64 con systemd y Python 3.10 o posterior con `venv` (la EZC80 tiene 3.10.12).
@@ -101,6 +123,7 @@ curl -s http://127.0.0.1:8095/api/version
 | `webrtc_puerto`, `webrtc_udp` | Señalización WebRTC (TCP) y medios (UDP) | `8889`, `8189` |
 | `hls_url`, `webrtc_url` | Dirección pública HTTPS de HLS y de WebRTC, si hay un proxy delante (ver más abajo) | `https://hls.ejemplo.com` |
 | `panel_puerto` | Puerto del panel (solo para avisar si una fuente lo pide) | `8095` |
+| `renderer_url` | Dirección del MSX Renderer, si esta estación lo tiene: pone su botón en la cabecera del panel, junto a los del Recorder. Vacía, el botón no sale | `https://renderer.ejemplo.com` |
 | `adaptadores` | NDI y Zixi: `{"ndi": {"activo": false, "libndi": ""}, "zixi": {"activo": false, "api": ""}}` | |
 | `recorder_canales`, `recorder_config`, `composicion_max`, `hub_tokens` | Los de la 0.3.9, sin cambios | |
 
@@ -302,7 +325,7 @@ queda habilitado al instalarlo y arranca solo en el puerto 3478: si se instala s
 
 ## Relevo de la 0.3.9 en la EZC80
 
-Se hace cuando estén aprobados el mockup y el relevo. La base de datos y `mediamtx.yml` de la 0.3.9
+Se hace cuando esté aprobado el relevo. La base de datos y `mediamtx.yml` de la 0.3.9
 sirven tal cual: el hub solo añade tablas y una columna con valor por defecto, y `config/mediamtx.yml`
 y las unidades de systemd no cambian desde la 0.3.9, así que no hace falta `--mediamtx` y MediaMTX no
 se reinicia.
@@ -383,7 +406,8 @@ fuente de un destino al aire. En el registro de cambios queda cuántas rutas cor
 
 - Pruebas del motor, en una copia del repositorio (no hace falta la estación):
   `python3 -m venv .venv && .venv/bin/pip install -r requirements.lock pytest httpx && .venv/bin/python -m pytest tests`
-- De extremo a extremo, con señales de verdad: el banco y la prueba de aceptación, ver
+- De extremo a extremo, con señales de verdad: el banco y la prueba de aceptación, por la API
+  (`scripts/aceptacion.py`) y pulsando en el panel (`scripts/aceptacion_panel.js`), ver
   [banco-de-pruebas.md](banco-de-pruebas.md).
 - Qué combinaciones están comprobadas y cómo anotar las que se prueben con equipos reales:
   [validacion.md](validacion.md).

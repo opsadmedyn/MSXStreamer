@@ -98,7 +98,8 @@ def _url_login(request: Request):
 
 
 def _usuario(request: Request):
-    """(usuario, motivo del rechazo). Usuario: {"email", "rol", "via"}."""
+    """(usuario, motivo del rechazo). Usuario: {"email", "rol", "via", "modulos"}; «modulos» son los
+    de la suite que tiene en la hoja de usuarios (None con un Recorder antiguo, que no los dice)."""
     token = request.cookies.get(COOKIE_RECORDER)
     if token:
         yo = _sesion_recorder(token)
@@ -108,7 +109,8 @@ def _usuario(request: Request):
             permitido = (yo.get("rol") == "admin") if mods is None else ("streamer" in mods)
             if not permitido:
                 return None, "sin_modulo"
-            return {"email": yo["email"], "rol": yo["rol"], "via": "recorder"}, None
+            return {"email": yo["email"], "rol": yo["rol"], "via": "recorder",
+                    "modulos": [str(m) for m in mods] if isinstance(mods, list) else None}, None
     return None, "sin_sesion"
 
 
@@ -187,8 +189,10 @@ def salir(request: Request):
 
 @app.get("/api/yo")
 def yo(request: Request):
+    """Quién mira el panel y a dónde llevan los botones de la suite: el Recorder está en la raíz del
+    mismo dominio y la web del Renderer, si la estación tiene uno, se indica en config.json."""
     u = request.state.usuario
-    return {**u, "recorder_url": "/"}
+    return {**u, "recorder_url": "/", "renderer_url": str(CFG.get("renderer_url") or "").rstrip("/")}
 
 
 # ---------------------------------------------------------------- modelos
@@ -1081,11 +1085,10 @@ def version():
 
 @app.get("/")
 def inicio():
-    """index.html con la versión en los enlaces a app.js y base.css: tras desplegar, el navegador
-    pide los nuevos en vez de usar los de su caché."""
+    """index.html con la versión en los enlaces a sus guiones y hojas de estilo: tras desplegar, el
+    navegador pide los nuevos en vez de usar los de su caché."""
     html = (ESTATICOS / "index.html").read_text()
-    for f in ("app.js", "base.css"):
-        html = html.replace(f'"static/{f}"', f'"static/{f}?v={urllib.parse.quote(VERSION)}"')
+    html = re.sub(r'"(static/[\w.-]+\.(?:js|css))"', lambda m: f'"{m.group(1)}?v={urllib.parse.quote(VERSION)}"', html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 

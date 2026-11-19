@@ -14,8 +14,9 @@ debajo del vídeo. Cada destino elige señal limpia (en copia) o compuesta.
 y NDI y Zixi por adaptadores), cada una conectable a uno o varios destinos con su protocolo, sus
 credenciales, su audio, su resolución, su bitrate y su política de reconexión. Copia lo que el
 destino acepta y convierte solo lo que no, compartiendo cada conversión entre los destinos con el
-mismo perfil, y antes de activar una ruta dice qué pistas copia, cuáles convierte y por qué. Hoy
-están el motor y la API; la interfaz espera la aprobación del mockup. Ver
+mismo perfil, y antes de activar una ruta dice qué pistas copia, cuáles convierte y por qué. Se
+opera desde el panel, en seis secciones: Fuentes, Destinos, Matriz de rutas, Monitoreo, Adaptadores
+y Ajustes; los flujos de siempre siguen en «Flujos y composición». Ver
 [instalación](docs/instalacion.md), [banco de pruebas](docs/banco-de-pruebas.md),
 [qué está comprobado](docs/validacion.md), el [informe de aceptación del banco](docs/aceptacion-banco.md),
 el de la [HP Z8 con su carga](docs/aceptacion-z8.md) y el de las
@@ -121,7 +122,11 @@ y [docs/instalacion.md](docs/instalacion.md)).
 
 ### 0.4.0-alfa
 
-Motor y API del hub de señales, sin interfaz todavía. No cambia `mediamtx.yml` ni las unidades:
+El hub de señales: motor, API y el panel para operarlo (Fuentes, Destinos, Matriz de rutas,
+Monitoreo, Adaptadores y Ajustes, descritas en [docs/instalacion.md](docs/instalacion.md)). Los
+flujos de la 0.3.9 no cambian: se editan en «Flujos y composición» y cada uno aparece además como
+una fuente del hub. La vista previa de Fuentes y Monitoreo va por HLS a través del panel, unos
+segundos por detrás del directo. No cambia `mediamtx.yml` ni las unidades:
 se despliega sin `--mediamtx` y las salidas de la 0.3.9 siguen al aire. Antes hay que poner en
 `config.json` un `rtmp_puerto` libre (en la EZC80, el 1935 es de Restreamer). `--instalar` instala
 ya las versiones de `requirements.lock`. Pasos, puertos y vuelta atrás en

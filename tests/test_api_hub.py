@@ -374,10 +374,14 @@ def test_la_matriz_dice_el_estado_de_cada_ruta_con_su_evidencia(panel, c, mtx_fa
     assert e["evidencia"][0]["que"] == "El proceso de envío manda 6 100 kb/s" and "Reconexiones desde que se activó: 2" in json.dumps(e, ensure_ascii=False)
     assert d[srt]["ruta"]["metricas"]["kbps"] == 6100.0 and d[srt]["ruta"]["metricas"]["reconexiones"] == 2
     assert d[hls]["ruta"]["estado"]["estado"] == "esperando_receptor" and d[hls]["ruta"]["al_aire"]
+    # «enviando desde» solo se dice de lo que está saliendo: desde que arrancó el envío o desde el receptor más antiguo
+    assert d[srt]["ruta"]["metricas"]["enviando_desde"] == pytest.approx(ahora - 90, abs=0.01)
+    assert d[hls]["ruta"]["metricas"]["enviando_desde"] is None
     e = d[web]["ruta"]
     assert e["estado"]["estado"] == "enviando" and e["senal"] == conv and e["vista"] == {"hls": f"hls/{conv}/"}
     assert e["metricas"]["receptores"][0]["remoto"] == "100.64.0.7" and e["metricas"]["conversion"]["id"] == conv
     assert "Receptores conectados: 1 (100.64.0.7)" in json.dumps(e, ensure_ascii=False)
+    assert e["metricas"]["enviando_desde"] == e["metricas"]["receptores"][0]["desde"] and e["metricas"]["enviando_desde"] > 0
     # un reproductor HLS cuenta mientras sigue pidiendo; MediaMTX mantiene su muxer un minuto más
     mtx_falso["paths"][hls]["readers"] = [{"type": "hlsMuxer", "id": ""}]
     mtx_falso["hls"][hls] = {"creado": "", "ultima_peticion": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "enviados": 0}
@@ -385,6 +389,10 @@ def test_la_matriz_dice_el_estado_de_cada_ruta_con_su_evidencia(panel, c, mtx_fa
     assert estado_hls()["estado"] == "enviando" and estado_hls()["evidencia"][0]["que"] == "Receptores conectados: 1 (un reproductor HLS)"
     mtx_falso["hls"][hls]["ultima_peticion"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 45))
     assert estado_hls()["estado"] == "esperando_receptor"
+    # un envío que aún está conectando tiene su proceso en marcha y no manda nada: no se dice que envía desde entonces
+    c.execute("UPDATE estado_salidas SET kbps = NULL, desde = ? WHERE salida = ?", (time.time() - 4, "ruta_" + srt))
+    ruta_srt = {x["id"]: x for x in panel["operador"].get("/api/destinos").json()}[srt]["ruta"]
+    assert ruta_srt["estado"]["estado"] == "reconectando" and ruta_srt["metricas"]["enviando_desde"] is None
     # sin MediaMTX no se inventa nada
     mtx_falso["paths"] = None
     m = panel["operador"].get("/api/matriz").json()
@@ -688,7 +696,7 @@ def test_un_ajuste_que_corta_lo_que_esta_al_aire_pide_el_permiso_y_decir_que_se_
     assert panel["manager"].put("/api/ajustes/red", json={"webrtc_puerto": puerto, "corta": [web]}).status_code == 403
     assert matriz.ajustes_red(c, {})["webrtc_puerto"] != puerto
     assert panel["admin"].put("/api/ajustes/red", json={"webrtc_puerto": puerto, "corta": [web]}).status_code == 200
-    assert cambios(c)[-1][:3] == ("Cambió los ajustes de red", "", f"webrtc puerto {puerto}; corta 1 ruta al aire")
+    assert cambios(c)[-1][:3] == ("Cambió los ajustes de red", "", f"puerto de WebRTC (señalización): {puerto}; corta 1 ruta al aire")
     # lo que no reinicia ningún servidor (una dirección pública) no pide nada
     assert panel["manager"].put("/api/ajustes/red", json={"webrtc_url": "https://webrtc.ejemplo.com"}).status_code == 200
 

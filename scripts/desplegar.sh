@@ -22,7 +22,11 @@ COMO="sudo -u mediasat"
 
 echo "== comprobaciones locales (v$VERSION)"
 python3 -m py_compile streamer/*.py
-node --check streamer/static/app.js 2>/dev/null || echo "   (node no disponible: app.js sin comprobar)"
+if command -v node >/dev/null 2>&1; then
+  for f in streamer/static/*.js; do node --check "$f"; done      # un guion del panel con un error no se despliega
+else
+  echo "   (node no disponible: los guiones del panel van sin comprobar)"
+fi
 
 if [ "$INSTALAR" = 1 ]; then
   echo "== $HOST: puertos"

@@ -33,7 +33,9 @@ class Recorder(http.server.BaseHTTPRequestHandler):
         rol = cookies.get("msr_sesion", "")
         if rol not in ROLES:
             return self._responder(401, {"detail": "Sin sesión"})
-        self._responder(200, {"email": f"{rol}@banco.invalid", "rol": rol, "modulos": ["streamer"]})
+        # el operador solo tiene el Streamer; los demás, la suite entera (para ver sus botones)
+        modulos = ["streamer"] if rol == "operador" else ["recorder", "streamer", "renderer", "showeditor"]
+        self._responder(200, {"email": f"{rol}@banco.invalid", "rol": rol, "modulos": modulos})
 
     def do_POST(self):
         self._responder(200, {"ok": True})

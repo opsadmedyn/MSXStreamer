@@ -15,6 +15,7 @@
   "hls_url": "",
   "webrtc_url": "",
   "panel_puerto": 8095,
+  "renderer_url": "",
   "adaptadores": {"ndi": {"activo": false}, "zixi": {"activo": false, "api": ""}},
   "composicion_max": 3,
   "recorder_config": "/home/mediasat/recorder/config.json",
