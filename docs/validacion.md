@@ -16,33 +16,25 @@ hasta que las pruebas se pasan en ella.
 
 ## Cómo está hoy
 
-Verificadas en el banco de pruebas: 19 de las 42 combinaciones que hay entre SRT, RTMP, HLS y
-WebRTC. Cada una de las seis formas de entrada y de las siete formas de salida ha pasado señal al
-menos una vez. Seis combinaciones son las de la prueba de aceptación
-([aceptacion-banco.md](aceptacion-banco.md)); las demás, de la prueba de las otras formas de conexión
-([combinaciones-banco.md](combinaciones-banco.md)).
+Verificadas en el banco de pruebas: las 42 combinaciones que hay entre SRT, RTMP, HLS y WebRTC. Cada
+una de las seis formas de entrada se conectó a la vez a las siete formas de salida, con audio y
+vídeo comprobados en cada una; es el caso `matriz` de la prueba de las otras formas de conexión
+([combinaciones-banco.md](combinaciones-banco.md)). Las seis marcadas con una A son además las de la
+prueba de aceptación ([aceptacion-banco.md](aceptacion-banco.md)), con su corte de 60 s y sus
+reinicios.
 
-| Entrada | Salida | Informe |
-|---|---|---|
-| RTMP, el codificador publica en el hub | SRT, el hub llama al receptor | Aceptación |
-| RTMP, el codificador publica en el hub | HLS, el reproductor pide la lista al hub | Aceptación |
-| RTMP, el codificador publica en el hub | WebRTC, el navegador pide la señal al hub (WHEP) | Aceptación |
-| RTMP, el codificador publica en el hub | RTMP, el cliente lee del hub | Formas de conexión |
-| SRT, el codificador llama al hub | RTMP, el hub publica en el servidor del destino | Aceptación |
-| SRT, el codificador llama al hub | HLS, el reproductor pide la lista al hub | Aceptación |
-| SRT, el codificador llama al hub | WebRTC, el navegador pide la señal al hub (WHEP) | Aceptación |
-| SRT, el codificador llama al hub | SRT, el hub llama al receptor | Formas de conexión |
-| SRT, el codificador llama al hub | SRT, el receptor llama al hub | Formas de conexión |
-| SRT, el codificador llama al hub | RTMP, el cliente lee del hub | Formas de conexión |
-| SRT, el codificador llama al hub | WebRTC, el hub publica en el destino (WHIP) | Formas de conexión |
-| SRT, el hub llama al origen | SRT, el hub llama al receptor | Formas de conexión |
-| SRT, el hub llama al origen | HLS, el reproductor pide la lista al hub | Formas de conexión |
-| RTMP, el hub lee del servidor de origen | SRT, el hub llama al receptor | Formas de conexión |
-| RTMP, el hub lee del servidor de origen | RTMP, el hub publica en el servidor del destino | Formas de conexión |
-| HLS, el hub lee la lista del origen | SRT, el hub llama al receptor | Formas de conexión |
-| WebRTC, el navegador publica en el hub (WHIP) | SRT, el hub llama al receptor | Formas de conexión |
-| WebRTC, el navegador publica en el hub (WHIP) | RTMP, el hub publica en el servidor del destino | Formas de conexión |
-| WebRTC, el navegador publica en el hub (WHIP) | WebRTC, el navegador pide la señal al hub (WHEP) | Formas de conexión |
+| Entrada | SRT, el hub llama al receptor | SRT, el receptor llama al hub | RTMP, el hub publica en un servidor | RTMP, un cliente lee del hub | HLS, el reproductor pide la lista | WebRTC, un navegador la pide (WHEP) | WebRTC, el hub la reenvía (WHIP) |
+|---|---|---|---|---|---|---|---|
+| SRT, el codificador llama al hub | Sí | Sí | Sí, A | Sí | Sí, A | Sí, A | Sí |
+| SRT, el hub llama al origen | Sí | Sí | Sí | Sí | Sí | Sí | Sí |
+| RTMP, el codificador publica en el hub | Sí, A | Sí | Sí | Sí | Sí, A | Sí, A | Sí |
+| RTMP, el hub lee del servidor de origen | Sí | Sí | Sí | Sí | Sí | Sí | Sí |
+| HLS, el hub lee la lista del origen | Sí | Sí | Sí | Sí | Sí | Sí | Sí |
+| WebRTC, el navegador publica en el hub (WHIP) | Sí | Sí | Sí | Sí | Sí | Sí | Sí |
+
+En el banco, el servidor RTMP y la lista HLS que el hub va a buscar los sirve el propio hub por otra
+de sus salidas, el codificador SRT a la escucha es un ffmpeg y la entrada WebRTC la publica un
+Chromium sin ventana, a 640×360.
 
 La misma prueba de las formas de conexión comprobó en el banco, además:
 
@@ -62,11 +54,13 @@ pendiente de que se apruebe el relevo.
 
 Pendientes de validación:
 
-- Las otras 23 combinaciones entre SRT, RTMP, HLS y WebRTC. El motor las monta igual, porque
-  resuelve la entrada y la salida por separado, pero ninguna se da por buena hasta que pasa señal
-  por ella.
 - Todo lo que el banco no puede decir: codificadores, receptores y plataformas de verdad, la red
   de por medio y la carga de la estación (ver [banco-de-pruebas.md](banco-de-pruebas.md)).
+- Una fuente HLS durante muchas horas. El hub la lee al ritmo de su propio reloj, con un margen de
+  tres segmentos. Si el reloj del origen va algo más despacio que el de la estación, es de esperar
+  que ese margen se vaya gastando, y si va más deprisa, que el retardo crezca. En el banco, con
+  pruebas de minutos, no se nota: no está medido cuánto tarda en notarse con un origen real ni cómo
+  se recupera.
 - RTMPS con un certificado de verdad y contra plataformas reales.
 - WebRTC y HLS fuera de la red local: HTTPS por delante y, en WebRTC, STUN o TURN.
 - Las conversiones de vídeo con NVENC, y con señales 1080i o 1080p59,94.
@@ -75,9 +69,12 @@ Pendientes de validación:
 - Los flujos de la versión anterior (Hub channel, Recorder, SRT) usados como fuente de una ruta.
 - NDI y Zixi, de entrada y de salida (ver más abajo).
 
-Un límite conocido de la entrada por HLS: el hub la lee tres segmentos por detrás del directo, para
-que salga a ritmo constante hacia SRT, RTMP y WebRTC. Con segmentos de 2 s son unos 6 s de retardo
-añadidos a los que ya trae la lista.
+Dos límites conocidos de la entrada por HLS:
+
+- El hub la lee tres segmentos por detrás del directo, para que salga a ritmo constante hacia SRT,
+  RTMP y WebRTC. Con segmentos de 2 s son unos 6 s de retardo añadidos a los que ya trae la lista.
+- Si la lista acaba de nacer, la fuente espera a que tenga esos tres segmentos antes de empezar a
+  leerla, y lo dice en su estado. En el banco, con segmentos de 2 s, son unos 4 s.
 
 Dos límites conocidos de la entrada por WebRTC:
 

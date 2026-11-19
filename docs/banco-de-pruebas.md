@@ -195,8 +195,9 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   es lo que tarda menos una ruta en arrancar y cada reintento hacia un receptor caído.
 - Cuando un codificador se cae y vuelve, el hub tiene que volver a mirar la señal (unos 5 s). Si
   para MediaMTX trae lo mismo que antes (códecs, tamaño, canales), el hub conserva lo que sabía
-  mientras lo confirma. Con eso una ruta con conversión volvió a entregar a los 6 s de regresar el
-  codificador, en vez de a los 12 s.
+  mientras lo confirma. Con eso, al regresar el codificador la señal vuelve a los receptores a los
+  3 s por una ruta en copia y entre los 6 y los 8 s por una ruta con conversión, que antes eran
+  12 s. El hub la marca como «enviando» unos 4 s después, cuando tiene dos medidas de lo que sale.
 - ffmpeg cifra hacia un servidor RTMPS pero no comprueba su certificado. «Probar la conexión» sí lo
   comprueba y avisa si no es válido, sin dar el destino por caído.
 - RTMPS en MediaMTX: con un certificado que no puede cargar, MediaMTX se cierra entero (el hub lo
