@@ -63,6 +63,8 @@ def test_entrada_rtmp_y_hls():
     assert tras(cmd, "-i") == "https://cdn.example/x/master.m3u8" and "-re" in cmd
     assert tras(cmd, "-map") == "0:p:1"                                 # la variante elegida y sus audios
     assert tras(comandos.entrada("e", fuente(protocolo="hls", url="https://x/y.m3u8"), "f1"), "-map") == "0:p:0"
+    # al ritmo de la señal y con colchón: tres segmentos por detrás del directo (con uno salía a golpes)
+    assert "-re" in cmd and tras(cmd, "-live_start_index") == "-3" and cmd.index("-re") < cmd.index("-i")
 
 
 def test_envio_srt_en_copia_con_todas_las_pistas():

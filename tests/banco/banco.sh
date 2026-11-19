@@ -17,9 +17,11 @@
 #   PYTHON       el Python con fastapi y uvicorn (por defecto python3)
 #   DESPLAZA     número que se suma a todos los puertos (por defecto 0). Con DESPLAZA=100 el banco
 #                usa 8195 (panel), 10097 (API de MediaMTX), 8990 (SRT), 8988 (HLS), 2045 (RTMP),
-#                8989 y 8289/UDP (WebRTC): así cabe en una estación con el Streamer en producción
-#                sin tocarlo (ver docs/banco-de-pruebas.md)
+#                2046 (RTMPS), 8989 y 8289/UDP (WebRTC): así cabe en una estación con el Streamer
+#                en producción sin tocarlo (ver docs/banco-de-pruebas.md)
 #   RTMP_PUERTO  puerto RTMP del hub en el banco (por defecto 1945 + DESPLAZA, lejos del 1935)
+#   RTMPS_PUERTO puerto RTMPS (por defecto 1946 + DESPLAZA). Si hay openssl, el banco se hace un
+#                certificado de pruebas, firmado por él mismo, y el hub atiende también RTMPS
 # Sin DESPLAZA usa los puertos del Streamer (8095, 8888, 8890, 9997): NO lo arranques así en una
 # estación que lo tenga en marcha.
 set -euo pipefail
@@ -30,6 +32,7 @@ D="${DESPLAZA:-0}"
 PANEL=$((8095 + D)); MTX_API=$((9997 + D)); SRT=$((8890 + D)); HLS=$((8888 + D))
 WEBRTC=$((8889 + D)); WEBRTC_UDP=$((8189 + D)); RECORDER=$((18081 + D))
 RTMP_PUERTO="${RTMP_PUERTO:-$((1945 + D))}"
+RTMPS_PUERTO="${RTMPS_PUERTO:-$((1946 + D))}"
 MTX_VERSION=v1.21.1
 MTX_SHA256=653abc672a3e693f8d3b2717752492fdcfb8072291ec108d03d3dd857411b0ee    # mediamtx_v1.21.1_linux_amd64.tar.gz
 BASE="$BANCO/base"
@@ -72,10 +75,22 @@ preparar() {
   sed -e "s/^udpReadBufferSize:.*/udpReadBufferSize: $tope/" -e "s/^apiAddress:.*/apiAddress: 127.0.0.1:$MTX_API/" \
       -e "s/^srtAddress:.*/srtAddress: :$SRT/" -e "s/^hlsAddress:.*/hlsAddress: :$HLS/" "$RAIZ/config/mediamtx.yml" >"$nuevo"
   if cmp -s "$nuevo" "$BANCO/mediamtx.yml"; then rm -f "$nuevo"; else mv "$nuevo" "$BANCO/mediamtx.yml"; fi
+  # RTMPS necesita un certificado: uno de pruebas, firmado por el propio banco (quien se conecte
+  # no lo podrá comprobar, y así lo dirá). Sin openssl, el banco se queda sin RTMPS
+  local tls=""
+  if [ ! -f "$BANCO/tls/hub.crt" ] && command -v openssl >/dev/null; then
+    mkdir -p "$BANCO/tls"
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$BANCO/tls/hub.key" -out "$BANCO/tls/hub.crt" -days 30 \
+      -subj "/CN=banco-de-pruebas" -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1 || rm -rf "$BANCO/tls"
+  fi
+  if [ -f "$BANCO/tls/hub.crt" ]; then
+    tls="\"rtmps_puerto\": $RTMPS_PUERTO, \"rtmps_cert\": \"$BANCO/tls/hub.crt\", \"rtmps_clave\": \"$BANCO/tls/hub.key\","
+  fi
   if [ ! -f "$BASE/config.json" ]; then
     cat >"$BASE/config.json" <<JSON
 {
   "host_publico": "127.0.0.1",
+  $tls
   "ffmpeg": "$(command -v ffmpeg)",
   "ffprobe": "$(command -v ffprobe)",
   "mediamtx_api": "http://127.0.0.1:$MTX_API",
@@ -105,11 +120,18 @@ arrancar() {
   estado
 }
 
+detener() {     # detener <nombre>: lo para y espera a que se haya ido (el supervisor acaba antes su vuelta)
+  local pid
+  if vivo "$1"; then
+    pid="$(cat "$BANCO/$1.pid")"
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+  fi
+  rm -f "$BANCO/$1.pid"
+}
+
 parar() {
-  for nombre in panel supervisor recorder mediamtx; do
-    if vivo "$nombre"; then kill "$(cat "$BANCO/$nombre.pid")" 2>/dev/null || true; fi
-    rm -f "$BANCO/$nombre.pid"
-  done
+  for nombre in panel supervisor recorder mediamtx; do detener "$nombre"; done
   # los ffmpeg de las rutas (y sus lanzadores) llevan la carpeta del banco en su línea de órdenes
   pkill -f "$BASE/run/" 2>/dev/null || true
   pkill -f "$BASE/logs/" 2>/dev/null || true
@@ -130,11 +152,8 @@ case "${1:-}" in
   parar) parar; estado ;;
   reiniciar) parar; arrancar ;;
   supervisor)
-    for nombre in panel supervisor; do
-      if vivo "$nombre"; then kill "$(cat "$BANCO/$nombre.pid")" 2>/dev/null || true; fi
-      rm -f "$BANCO/$nombre.pid"
-    done
-    sleep 1; arrancar ;;
+    for nombre in panel supervisor; do detener "$nombre"; done
+    arrancar ;;
   estado) estado ;;
   *) sed -n '2,27p' "$0"; exit 2 ;;
 esac

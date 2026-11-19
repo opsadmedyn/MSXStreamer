@@ -17,7 +17,8 @@ destino acepta y convierte solo lo que no, compartiendo cada conversión entre l
 mismo perfil, y antes de activar una ruta dice qué pistas copia, cuáles convierte y por qué. Hoy
 están el motor y la API; la interfaz espera la aprobación del mockup. Ver
 [instalación](docs/instalacion.md), [banco de pruebas](docs/banco-de-pruebas.md),
-[qué está comprobado](docs/validacion.md) y el [informe de aceptación del banco](docs/aceptacion-banco.md).
+[qué está comprobado](docs/validacion.md), el [informe de aceptación del banco](docs/aceptacion-banco.md)
+y el de las [demás formas de conexión](docs/combinaciones-banco.md).
 
 ## Cómo funciona
 

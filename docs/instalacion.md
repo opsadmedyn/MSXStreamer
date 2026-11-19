@@ -97,6 +97,7 @@ curl -s http://127.0.0.1:8095/api/version
 | `mediamtx_srt` | Dónde escucha el SRT de MediaMTX (su puerto es el SRT del hub) | `srt://127.0.0.1:8890` |
 | `hls_puerto` | Puerto HLS de MediaMTX | `8888` |
 | `rtmp_puerto` | Puerto RTMP del hub. **En la EZC80 no puede ser 1935**: lo usa Restreamer | `1945` |
+| `rtmps_puerto`, `rtmps_cert`, `rtmps_clave` | RTMPS del hub: su puerto y los archivos PEM del certificado y de su clave. Sin los tres, el hub atiende solo RTMP sin cifrar (ver «RTMPS») | `1946`, `/home/mediasat/streamer/tls/hub.crt`, `/home/mediasat/streamer/tls/hub.key` |
 | `webrtc_puerto`, `webrtc_udp` | Señalización WebRTC (TCP) y medios (UDP) | `8889`, `8189` |
 | `hls_url`, `webrtc_url` | Dirección pública HTTPS de HLS y de WebRTC, si hay un proxy delante (ver más abajo) | `https://hls.ejemplo.com` |
 | `panel_puerto` | Puerto del panel (solo para avisar si una fuente lo pide) | `8095` |
@@ -106,6 +107,10 @@ curl -s http://127.0.0.1:8095/api/version
 Los puertos y direcciones públicas también se cambian desde Ajustes (`PUT /api/ajustes/red`), que
 manda sobre `config.json`. El hub no pide a MediaMTX un puerto que tenga otro programa: deja ese
 servidor apagado y lo dice en el estado de las fuentes y destinos afectados.
+
+El panel y el supervisor leen `config.json` al arrancar. Después de cambiarlo hay que reiniciar los
+dos, `sudo systemctl restart msxs-supervisor msxs-web`, que no corta ninguna señal: MediaMTX y los
+ffmpeg de las rutas siguen en marcha y el supervisor los vuelve a adoptar.
 
 ## Arranque automático
 
@@ -135,6 +140,7 @@ del reproductor), sin duplicados ([aceptacion-banco.md](aceptacion-banco.md)).
 | 8890/udp | SRT del hub (fuentes que llaman y receptores que llaman, por stream ID) | Los equipos que envían o reciben SRT |
 | Los que se elijan, UDP | SRT con puerto propio de una fuente o destino | Ese equipo |
 | `rtmp_puerto`/tcp | RTMP del hub (fuentes que publican, clientes que leen) | Los codificadores y lectores RTMP |
+| `rtmps_puerto`/tcp | Lo mismo, cifrado (solo si se ha configurado RTMPS) | Los codificadores y lectores RTMPS |
 | 8888/tcp | HLS | Los reproductores (o solo el proxy HTTPS) |
 | 8889/tcp | WebRTC: WHIP y WHEP | Los navegadores (o solo el proxy HTTPS) |
 | 8189/udp | WebRTC: los medios | Los navegadores, salvo que todo vaya por TURN |
@@ -145,6 +151,44 @@ necesitan nada abierto en la estación. Para ver qué está ocupado antes de ins
 ```
 ss -Hltnu | grep -E ':(8095|9997|8890|8888|8889|8189|1945)\b'
 ```
+
+## RTMPS
+
+**Emitir** por RTMPS hacia una plataforma no necesita nada en la estación: basta escribir
+`rtmps://…` en la dirección del destino y que el ffmpeg tenga TLS (`ffmpeg -protocols | grep rtmps`).
+ffmpeg cifra la emisión pero no comprueba el certificado del servidor. «Probar la conexión» sí lo
+comprueba: si no es válido (caducado, de otro nombre, firmado por el propio servidor) lo dice, y no
+da el destino por caído, porque la emisión funcionaría igual.
+
+Para que el hub **reciba** RTMPS de un codificador y lo **entregue** a un cliente, MediaMTX necesita
+un certificado:
+
+1. Un certificado y su clave en PEM, para el nombre que va en `host_publico`, que el usuario del
+   servicio (`mediasat`) pueda leer. Vale el mismo que usa el proxy HTTPS de la estación, o una
+   copia que se actualice cuando se renueve.
+2. En `config.json`, `rtmps_puerto` (uno libre, por ejemplo 1946), `rtmps_cert` y `rtmps_clave`, y
+   reiniciar el supervisor y el panel (`sudo systemctl restart msxs-supervisor msxs-web`).
+3. Desde entonces cada fuente y cada destino RTMP que el hub entrega tiene dos direcciones, la de
+   siempre y `rtmps://…`, con la misma clave. El otro equipo usa la que quiera.
+
+Cómo se comporta, medido en el banco con MediaMTX 1.21.1 y señales en marcha:
+
+- El hub comprueba el certificado antes de pedírselo a MediaMTX, porque con uno que no puede cargar
+  MediaMTX se cierra entero. Si falta, no se puede leer, no está en PEM, su clave está cifrada con
+  contraseña o no es la suya, el hub enciende RTMP sin cifrar y Ajustes dice el motivo. Comprueba
+  que carga, no que esté vigente ni a qué nombre está: eso lo verá el codificador al conectar.
+- En cuanto el certificado vale, el hub enciende RTMPS solo (1,5 s en el banco). Encenderlo o
+  apagarlo reinicia el servidor RTMP: quien publica o lee por RTMP se corta y vuelve a conectar.
+  En el banco un lector RTMP estuvo 3,3 s sin señal, y la señal de una cámara RTMP tardó 8,5 s en
+  volver a su receptor. Lo demás no se entera: una fuente SRT siguió llegando sin ninguna parada a
+  su receptor SRT, al HLS y al WebRTC de un navegador. Conviene hacerlo sin señales RTMP al aire.
+- Renovar el certificado en los mismos archivos no corta nada: MediaMTX lo recarga solo.
+- Un RTMPS que ya está en marcha no se apaga porque lo que se le pide deje de valer. Si el
+  certificado del disco se estropea, o si `config.json` pasa a pedir otro certificado u otro puerto
+  que no valen, sigue como estaba, con el certificado que tenía cargado, y Ajustes avisa de que al
+  reiniciarse MediaMTX no volverá hasta corregirlo.
+- Cambiar solo el puerto de RTMPS reinicia RTMPS y nada más: no corta a quien publica por RTMP sin
+  cifrar.
 
 ## HLS y WebRTC fuera de la red local
 

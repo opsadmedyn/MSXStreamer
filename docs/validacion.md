@@ -6,43 +6,85 @@ salida tiene uno de tres niveles, que el hub guarda y enseña en cada ruta:
 | Nivel | Qué significa | Quién lo anota |
 |---|---|---|
 | Pendiente de validación | Nadie la ha comprobado todavía. | Es el nivel de partida de todas. |
-| Verificada en el banco de pruebas | Pasó la prueba de aceptación con programas haciendo de cámara y de receptor. | `scripts/aceptacion.py`, al pasar. |
+| Verificada en el banco de pruebas | Pasó señal de verdad por ella, con programas haciendo de cámara y de receptor. | `scripts/aceptacion.py` y `scripts/combinaciones.py`, al pasar. |
 | Verificada con equipos reales | Pasó en la estación con la cámara, el receptor o la plataforma de verdad. | Un administrador, diciendo con qué equipo. |
 
 Una prueba de banco posterior nunca rebaja lo verificado con equipos reales. Para retirar un nivel
 se vuelve a anotar «pendiente». La tabla completa (120 combinaciones) sale de `GET /api/validacion`.
+Los niveles se guardan en cada instalación: una estación recién instalada lo tiene todo pendiente
+hasta que las pruebas se pasan en ella.
 
 ## Cómo está hoy
 
-Verificadas en el banco de pruebas (ver [aceptacion-banco.md](aceptacion-banco.md)):
+Verificadas en el banco de pruebas: 19 de las 42 combinaciones que hay entre SRT, RTMP, HLS y
+WebRTC. Cada una de las seis formas de entrada y de las siete formas de salida ha pasado señal al
+menos una vez. Seis combinaciones son las de la prueba de aceptación
+([aceptacion-banco.md](aceptacion-banco.md)); las demás, de la prueba de las otras formas de conexión
+([combinaciones-banco.md](combinaciones-banco.md)).
 
-| Entrada | Salida |
-|---|---|
-| RTMP, el codificador publica en el hub | SRT, el hub llama al receptor |
-| RTMP, el codificador publica en el hub | HLS, el reproductor pide la lista al hub |
-| RTMP, el codificador publica en el hub | WebRTC, el navegador pide la señal al hub (WHEP) |
-| SRT, el codificador llama al hub | RTMP, el hub publica en el servidor del destino |
-| SRT, el codificador llama al hub | HLS, el reproductor pide la lista al hub |
-| SRT, el codificador llama al hub | WebRTC, el navegador pide la señal al hub (WHEP) |
+| Entrada | Salida | Informe |
+|---|---|---|
+| RTMP, el codificador publica en el hub | SRT, el hub llama al receptor | Aceptación |
+| RTMP, el codificador publica en el hub | HLS, el reproductor pide la lista al hub | Aceptación |
+| RTMP, el codificador publica en el hub | WebRTC, el navegador pide la señal al hub (WHEP) | Aceptación |
+| RTMP, el codificador publica en el hub | RTMP, el cliente lee del hub | Formas de conexión |
+| SRT, el codificador llama al hub | RTMP, el hub publica en el servidor del destino | Aceptación |
+| SRT, el codificador llama al hub | HLS, el reproductor pide la lista al hub | Aceptación |
+| SRT, el codificador llama al hub | WebRTC, el navegador pide la señal al hub (WHEP) | Aceptación |
+| SRT, el codificador llama al hub | SRT, el hub llama al receptor | Formas de conexión |
+| SRT, el codificador llama al hub | SRT, el receptor llama al hub | Formas de conexión |
+| SRT, el codificador llama al hub | RTMP, el cliente lee del hub | Formas de conexión |
+| SRT, el codificador llama al hub | WebRTC, el hub publica en el destino (WHIP) | Formas de conexión |
+| SRT, el hub llama al origen | SRT, el hub llama al receptor | Formas de conexión |
+| SRT, el hub llama al origen | HLS, el reproductor pide la lista al hub | Formas de conexión |
+| RTMP, el hub lee del servidor de origen | SRT, el hub llama al receptor | Formas de conexión |
+| RTMP, el hub lee del servidor de origen | RTMP, el hub publica en el servidor del destino | Formas de conexión |
+| HLS, el hub lee la lista del origen | SRT, el hub llama al receptor | Formas de conexión |
+| WebRTC, el navegador publica en el hub (WHIP) | SRT, el hub llama al receptor | Formas de conexión |
+| WebRTC, el navegador publica en el hub (WHIP) | RTMP, el hub publica en el servidor del destino | Formas de conexión |
+| WebRTC, el navegador publica en el hub (WHIP) | WebRTC, el navegador pide la señal al hub (WHEP) | Formas de conexión |
+
+La misma prueba de las formas de conexión comprobó en el banco, además:
+
+- SRT con stream ID, con passphrase y con puerto propio, de entrada y de salida.
+- RTMPS en los cuatro sentidos: un codificador publica cifrado en el hub, un cliente lee cifrado del
+  hub, el hub publica en un servidor y el hub lee de un servidor. Los certificados eran de pruebas,
+  firmados por el propio banco.
+- Un destino con su resolución y su bitrate (conversión con libx264) y una sola conversión
+  compartida por dos destinos con el mismo perfil.
+- H.264 con fotogramas B: en copia hacia HLS y convertido hacia WebRTC.
+- La selección de pistas de audio por destino, con una fuente de dos pistas.
+- El corte de la fuente con tres rutas activas, la política de reconexión con tope de intentos y el
+  cambio de la fuente de un destino al aire, con su confirmación y sus permisos.
 
 Verificadas con equipos reales: **ninguna todavía.** La prueba en la HP Z8 con señales reales está
 pendiente de que se apruebe el relevo.
 
-Pendientes de validación, aunque el motor las monta y tienen pruebas unitarias:
+Pendientes de validación:
 
-- SRT con el hub llamando al origen, y SRT con el receptor llamando al hub (con stream ID o con
-  puerto propio).
-- RTMP con el hub leyendo de un servidor de origen, y RTMP entregado por el hub a un cliente.
-- RTMPS, de entrada y de salida. Depende de que el ffmpeg de la estación tenga TLS y, para recibir
-  RTMPS, de dar un certificado a MediaMTX.
-- HLS de entrada (leer un `.m3u8` con sus variantes y pistas de audio).
-- WebRTC de entrada por WHIP y el reenvío a un destino WHIP. MediaMTX no informa de si el destino
-  WHIP recibe: el hub lo enseña como «enviando, sin confirmar».
+- Las otras 23 combinaciones entre SRT, RTMP, HLS y WebRTC. El motor las monta igual, porque
+  resuelve la entrada y la salida por separado, pero ninguna se da por buena hasta que pasa señal
+  por ella.
+- Todo lo que el banco no puede decir: codificadores, receptores y plataformas de verdad, la red
+  de por medio y la carga de la estación (ver [banco-de-pruebas.md](banco-de-pruebas.md)).
+- RTMPS con un certificado de verdad y contra plataformas reales.
 - WebRTC y HLS fuera de la red local: HTTPS por delante y, en WebRTC, STUN o TURN.
-- Conversiones de vídeo (otra resolución o bitrate, y H.264 con fotogramas B hacia WebRTC), con
-  libx264 y con NVENC.
+- Las conversiones de vídeo con NVENC, y con señales 1080i o 1080p59,94.
+- MediaMTX no informa de si un destino WHIP recibe lo que se le reenvía: el hub lo enseña como
+  «enviando, sin confirmar». En el banco se comprobó mirando el otro servidor.
 - Los flujos de la versión anterior (Hub channel, Recorder, SRT) usados como fuente de una ruta.
 - NDI y Zixi, de entrada y de salida (ver más abajo).
+
+Un límite conocido de la entrada por HLS: el hub la lee tres segmentos por detrás del directo, para
+que salga a ritmo constante hacia SRT, RTMP y WebRTC. Con segmentos de 2 s son unos 6 s de retardo
+añadidos a los que ya trae la lista.
+
+Dos límites conocidos de la entrada por WebRTC:
+
+- El vídeo tiene que llegar en H.264. VP8, VP9 y AV1 no caben en el enlace interno del hub: el plan
+  lo dice y esa pista no sale. OBS publica en H.264; a un navegador hay que pedírselo.
+- Un navegador cambia la resolución sobre la marcha según su ancho de banda. El hub lo sigue cuando
+  el tamaño nuevo lleva 10 s estable, y las conversiones entregan siempre el tamaño de su perfil.
 
 ## Prueba con equipos reales
 

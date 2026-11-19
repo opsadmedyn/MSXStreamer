@@ -257,7 +257,10 @@ class Receptor:
         self.n += 1
         self.archivo = self.carpeta / f"receptor_{self.protocolo}_{self.n}.ts"
         if self.protocolo == "srt":
-            entrada = ["-passphrase", self.secreto, "-i", f"srt://0.0.0.0:{self.puerto}?mode=listener&latency=300000"]
+            # sin -scan_all_pmts 0, ffmpeg se guarda los 5 primeros segundos antes de escribir nada, y
+            # ese retraso suyo se le apuntaría al hub como tiempo de recuperación
+            entrada = ["-passphrase", self.secreto, "-scan_all_pmts", "0", "-i",
+                       f"srt://0.0.0.0:{self.puerto}?mode=listener&latency=300000"]
         else:
             entrada = ["-listen", "1", "-i", f"rtmp://0.0.0.0:{self.puerto}/live/{self.secreto}"]
         orden = [FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", *entrada, "-map", "0", "-c", "copy",
@@ -300,6 +303,34 @@ def puerto_libre(puerto, udp):
 
 
 # ---------------------------------------------------------------- qué trae una señal
+def tramo_de_video(archivo):
+    """De una captura: cuánto dura su vídeo, del primer fotograma clave al último fotograma, y el
+    mayor hueco entre dos fotogramas seguidos. {} si no se puede saber. Un cliente que entra a mitad
+    de señal recibe audio hasta que llega un fotograma clave (hasta 2 s con la cámara de pruebas):
+    ese tramo sin imagen no cuenta como fotogramas que falten."""
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0",
+                            str(archivo)], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    tiempos, desde = [], None
+    for linea in r.stdout.decode("utf-8", "replace").splitlines():
+        partes = linea.split(",")
+        try:
+            pts = float(partes[0])
+        except ValueError:
+            continue
+        if desde is None and len(partes) > 1 and "K" in partes[1]:
+            desde = pts
+        tiempos.append(pts)
+    tiempos = sorted(x for x in tiempos if desde is not None and x >= desde)
+    if len(tiempos) < 2:
+        return {}
+    paso = (tiempos[-1] - tiempos[0]) / (len(tiempos) - 1)
+    return {"dura": round(tiempos[-1] - tiempos[0] + paso, 2),
+            "salto_max": round(max(b - a for a, b in zip(tiempos, tiempos[1:])), 3)}
+
+
 def decodificar(entrada, segundos=None, espera=180):
     """Decodifica un archivo o una dirección y dice qué trae de verdad: códecs, fotogramas, si la
     imagen se queda congelada y el volumen del audio."""
@@ -334,6 +365,8 @@ def decodificar(entrada, segundos=None, espera=180):
     if r["video"]:
         r["video"].update(fotogramas=int(fotogramas[-1]) if fotogramas else 0,
                           congelado=len(re.findall(r"freezedetect\.freeze_start", errores)))
+        if not segundos and os.path.isfile(str(entrada)):
+            r["video"].update(tramo_de_video(entrada))
     if r["audio"]:
         medio, maximo = re.search(r"mean_volume:\s*(-?[\d.]+|-inf)", errores), re.search(r"max_volume:\s*(-?[\d.]+|-inf)", errores)
         r["audio"].update(volumen_medio_db=float(medio.group(1)) if medio else None,
@@ -344,13 +377,15 @@ def decodificar(entrada, segundos=None, espera=180):
 def juzgar_senal(d, fps):
     """(¿vídeo bien?, ¿audio bien?, texto) de lo que devolvió decodificar()."""
     v, a = d.get("video"), d.get("audio")
-    tocan = max(1.0, d.get("segundos", 0) * fps)
-    video = bool(v and v.get("fotogramas", 0) >= FOTOGRAMAS_MIN * tocan and d.get("segundos", 0) >= 3 and not v.get("congelado"))
+    dura = (v or {}).get("dura") or d.get("segundos", 0)        # lo que dura el vídeo: el audio puede empezar antes
+    tocan = max(1.0, dura * fps)
+    video = bool(v and v.get("fotogramas", 0) >= FOTOGRAMAS_MIN * tocan and dura >= 3 and not v.get("congelado"))
     audio = bool(a and a.get("volumen_medio_db") is not None and a["volumen_medio_db"] > VOLUMEN_MIN_DB)
     partes = []
     if v:
         partes.append(f"vídeo {str(v.get('codec')).upper()} {v.get('ancho')}×{v.get('alto')}, {v.get('fotogramas', 0)} fotogramas "
-                      f"en {d.get('segundos', 0):.1f} s" + (", imagen congelada" if v.get("congelado") else ""))
+                      f"en {dura:.1f} s" + (", imagen congelada" if v.get("congelado") else "")
+                      + (f", con un hueco de {v['salto_max']:.1f} s" if (v.get("salto_max") or 0) > 0.2 else ""))
     else:
         partes.append("sin vídeo")
     if a:
@@ -874,9 +909,13 @@ class Caso:
         time.sleep(args.corte)
         t_vuelta = self.receptor.abrir()
         decir(f"   el receptor {nombre} vuelve; esperando a que el hub recupere la salida")
-        t_datos = esperar(lambda: time.time() if self.receptor.bytes() > 0 else None, RECUPERA_MAX + 20, cada=0.1)
-        t_estado = esperar(lambda: time.time() if self.vigia.estado(self.d_emp).get("estado") == "enviando" else None,
-                           RECUPERA_MAX + 20, cada=0.25)
+        t_datos, t_estado, limite = None, None, time.time() + RECUPERA_MAX + 20
+        while time.time() < limite and not (t_datos and t_estado):     # cada cosa por su lado: una no espera a la otra
+            if not t_datos and self.receptor.bytes() > 0:
+                t_datos = time.time()
+            if not t_estado and self.vigia.estado(self.d_emp).get("estado") == "enviando":
+                t_estado = time.time()
+            time.sleep(0.1)
         time.sleep(12)                                      # material para comprobar audio y vídeo tras la recuperación
         t_fin = time.time()
         linea = self.vigia.linea(self.d_emp, t_corte - 3, t_fin)
@@ -893,7 +932,9 @@ class Caso:
             "datos_s": round(t_datos - t_vuelta, 1) if t_datos else None,
             "estado_s": round(t_estado - t_vuelta, 1) if t_estado else None,
             "linea": {k: self.vigia.linea(d["destino"], t_corte - 3, t_fin) for k, d in self.r["rutas"].items()},
-            "sin_senal_s": continuidad(tramo(self.receptor.muestras, t_corte - 3, t_fin))["parada_max_s"],
+            # del corte al primer dato de vuelta; si no volvió, la parada que se ve en lo que fue guardando (cada 0.5 s)
+            "sin_senal_s": round(t_datos - t_corte, 1) if t_datos
+            else continuidad(tramo(self.receptor.muestras, t_corte - 3, t_fin))["parada_max_s"],
             "reintento_s": args.reintento}
         self.comprobar("empuje", f"{nombre}: el hub detecta que el receptor se fue y lo enseña", bool(detecta)
                        and c["detecta_s"] <= DETECTA_MAX and durante.get("estado") in ("reconectando", "error"),

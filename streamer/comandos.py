@@ -28,6 +28,7 @@ LATENCIA_LOCAL = "&latency=200000"          # lectura local para convertir: 200 
 # del propio hub: la señal de un origen puede traer varios programas y se abre como siempre.
 LECTURA_LOCAL = ["-scan_all_pmts", "0"]
 PAQUETE = "&pkt_size=1316"
+HLS_DESDE = "-3"                            # por qué segmento se empieza a leer una fuente HLS (ver entrada)
 
 
 def url_salida(s):
@@ -104,8 +105,11 @@ def entrada(tid, f, path):
         cmd += ["-rw_timeout", "10000000", "-i", f"{base}/{f['clave']}" if f["clave"] else base]
         mapas = ["-map", "0:v:0?", "-map", "0:a:0?"]
     elif f["protocolo"] == "hls":
-        # -re: al ritmo de la señal y no a golpes de segmento; empieza por el último segmento
-        cmd += ["-rw_timeout", "15000000", "-re", "-live_start_index", "-1", "-i", f["url"]]
+        # -re: al ritmo de la señal y no a golpes de segmento. Y tres segmentos por detrás del directo,
+        # como un reproductor: empezando por el último no queda colchón, cada segmento llega tarde y
+        # sale de golpe (en el banco, el 35 % del tiempo no salía nada, con parones de 0,9 s, y un
+        # navegador lo veía por WebRTC a 24 fps). Con dos por detrás, el 6 %; con tres sale continuo
+        cmd += ["-rw_timeout", "15000000", "-re", "-live_start_index", HLS_DESDE, "-i", f["url"]]
         mapas = ["-map", f"0:p:{int(opciones.get('variante') or 0)}"]    # la variante elegida, con sus audios
     else:
         raise ValueError(f"la entrada {f['protocolo']} no lleva proceso")

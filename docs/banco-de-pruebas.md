@@ -77,11 +77,47 @@ corto mientras se depura, `--fotogramas-b` para que la cámara de pruebas emita 
 (obliga a convertir el vídeo para WebRTC, que es la ruta que más carga), `--sin-navegador`,
 `--no-anotar` y `--conservar`. `python3 scripts/aceptacion.py -h` las lista todas.
 
+## Las demás formas de conexión
+
+`scripts/combinaciones.py` complementa a la prueba de aceptación con lo que esta no toca. Maneja el
+hub igual, por la API del panel, y hace pasar señal de verdad por cada forma de conexión. Donde
+hace falta «otro equipo» que sirva o reciba la señal (otro hub, un servidor RTMP, una lista HLS, un
+servidor WHIP, una plataforma RTMPS) lo hace el propio hub por otra de sus salidas, o un segundo
+MediaMTX que el guion levanta para la ocasión. Son diez casos:
+
+| Caso | Qué comprueba |
+|---|---|
+| `entregas` | Lo que el hub entrega para que otro equipo lo abra: SRT con stream ID y passphrase, SRT con puerto propio y RTMP. Sin nadie conectado debe decir «esperando receptor», y con alguien leyendo, «enviando». |
+| `llamadas` | El hub va a buscar la fuente: llama por SRT a un codificador a la escucha y a otro hub (con stream ID y passphrase), lee de un servidor RTMP y lee una lista HLS. Y un codificador SRT que llama a un puerto propio del hub, con passphrase. |
+| `rtmps` | RTMPS en los cuatro sentidos: un codificador publica cifrado en el hub, un cliente lee cifrado del hub, el hub publica en una plataforma y el hub lee de un servidor. |
+| `webrtc` | Un navegador publica por WHIP (H.264 y Opus). Sale por SRT en copia y por RTMP con el audio convertido a AAC, el hub sigue la subida de resolución del navegador, MediaMTX reenvía la señal por WHIP a otro servidor y otro navegador la reproduce por WHEP. |
+| `perfiles` | Un destino con su resolución y su bitrate, y dos destinos con el mismo perfil compartiendo una sola conversión. |
+| `fotogramas` | H.264 con fotogramas B: en copia hacia HLS y convertido hacia WebRTC, que no los admite. |
+| `audio` | Una fuente con dos pistas de audio: un destino con todas y otros solo con la segunda. Las pistas se distinguen por su volumen. |
+| `fuente` | Corte de la fuente durante 20 s con tres rutas activas (copia, conversión y HLS): las tres pasan a «esperando fuente», no queda ningún proceso dando vueltas y vuelven solas, sin duplicados. |
+| `reconexion` | Política de reconexión con tope de intentos: «reconectando» mientras lo intenta, «error» al agotarlos, y nada más hasta que alguien pulsa «Reintentar». |
+| `cambio` | Cambiar la fuente de un destino al aire: el hub dice cuál está al aire y pide confirmación, un operador no puede hacerlo y el cambio queda en el registro con quién lo hizo. |
+
+En el banco:
+
+```
+MSXS_SESION=admin python3 scripts/combinaciones.py --registros .banco --sesion-operador operador
+```
+
+Tarda unos quince minutos. Deja en `combinaciones-<fecha>/` su `informe.md` y su `datos.json`, anota
+en el hub como «verificadas en el banco de pruebas» las combinaciones por las que pasó señal, y
+sale con 0, 1 o 3 igual que la prueba de aceptación. `--casos rtmps,fuente` pasa solo algunos. El
+último informe del banco está en [combinaciones-banco.md](combinaciones-banco.md).
+
+Para el caso `rtmps` hace falta `openssl`: el guion crea con él el certificado de su plataforma de
+pruebas, y `banco.sh` el del propio banco (firmado por él mismo), con el que el hub atiende RTMPS en
+el puerto 1946. Sin certificado en el hub, esa parte queda «sin comprobar».
+
 ## En una estación, sin tocar lo que está en producción
 
 El banco cabe al lado del Streamer en marcha si se le desplazan los puertos. Con `DESPLAZA=100` usa
-8195 (panel), 10097 (API de MediaMTX), 8990/UDP (SRT), 8988 (HLS), 2045 (RTMP) y 8989 con 8289/UDP
-(WebRTC), y su propia carpeta. No comparte nada con la instalación de `/home/mediasat/streamer`: ni
+8195 (panel), 10097 (API de MediaMTX), 8990/UDP (SRT), 8988 (HLS), 2045 (RTMP), 2046 (RTMPS) y 8989
+con 8289/UDP (WebRTC), y su propia carpeta. No comparte nada con la instalación de `/home/mediasat/streamer`: ni
 la base de datos, ni MediaMTX, ni los servicios de systemd.
 
 Es la forma de medir la carga en la HP Z8 antes del relevo. En la estación, como `mediasat`, desde
@@ -106,12 +142,22 @@ tests/banco/banco.sh parar
 ```
 
 Antes de arrancar conviene comprobar que esos puertos están libres en la estación
-(`ss -Hltnu | grep -E ':(8195|10097|8990|8988|2045|8989|8289|9311|1960)\b'` no debe dar nada). La
+(`ss -Hltnu | grep -E ':(8195|10097|8990|8988|2045|2046|8989|8289|9311|1960)\b'` no debe dar nada). La
 señal de prueba y los reproductores corren en la misma máquina, así que el uso total de CPU que
 sale en el informe los incluye; las filas de cada proceso del hub y la de MediaMTX no.
 
 Si el Chromium del compositor no decodificara H.264, las comprobaciones del navegador fallarían
 diciéndolo; `CHROMIUM=/usr/bin/google-chrome` hace que la prueba use otro navegador.
+
+Las demás formas de conexión se pasan igual, antes de parar el banco:
+
+```
+MSXS_SESION=admin python3 scripts/combinaciones.py --hub http://127.0.0.1:8195 \
+    --registros $MSXS_BANCO --sesion-operador operador --lugar "HP Z8 (EZC80), banco al lado de producción" \
+    --puerto-srt 9331 --puerto-rtmp 1970
+```
+
+Los receptores y cámaras de esa prueba toman puertos libres a partir de los que se le indican.
 
 ## Lo que el banco no puede decir
 
@@ -137,3 +183,43 @@ Con MediaMTX 1.21.1 en el banco, y recogido en el código donde se usa:
   `desplegar.sh` solo lo toca con `--mediamtx`.
 - Reiniciar el supervisor y el panel no corta ninguna salida: los ffmpeg siguen y el supervisor los
   vuelve a adoptar. La prueba de aceptación lo mide.
+- El servidor WebRTC de MediaMTX tarda entre 0,3 y 2 s en atender desde que se crea la primera
+  fuente o destino WebRTC. Mientras tanto «Probar la conexión» dice que se está encendiendo.
+- Un navegador que publica por WHIP empieza en 320×180 y sube por escalones hasta 1280×720 en unos
+  17 s, sin volver a conectar. El hub vuelve a inspeccionar la fuente cuando el tamaño lleva 10 s
+  quieto, y toda conversión de vídeo fija el tamaño de salida para que el codificador no reciba
+  una imagen que cambia.
+- ffmpeg tardaba 5,4 s en abrir una señal del propio hub porque espera por si hay más programas en
+  el MPEG-TS. Lo que el hub lee de sí mismo trae siempre uno, y con `-scan_all_pmts 0` son 1,3 s:
+  es lo que tarda menos una ruta en arrancar y cada reintento hacia un receptor caído.
+- Cuando un codificador se cae y vuelve, el hub tiene que volver a mirar la señal (unos 5 s). Si
+  para MediaMTX trae lo mismo que antes (códecs, tamaño, canales), el hub conserva lo que sabía
+  mientras lo confirma. Con eso una ruta con conversión volvió a entregar a los 6 s de regresar el
+  codificador, en vez de a los 12 s.
+- ffmpeg cifra hacia un servidor RTMPS pero no comprueba su certificado. «Probar la conexión» sí lo
+  comprueba y avisa si no es válido, sin dar el destino por caído.
+- RTMPS en MediaMTX: con un certificado que no puede cargar, MediaMTX se cierra entero (el hub lo
+  comprueba antes de pedírselo). Encenderlo o apagarlo reinicia el servidor RTMP y corta a quien
+  publica o lee por RTMP, pero no a lo demás: con una fuente SRT entregada por SRT, HLS y WebRTC no
+  hubo ninguna parada. Cambiarle el puerto reinicia solo RTMPS. Una vez en marcha, recarga solo el
+  certificado cuando cambian sus archivos y, si lo nuevo no vale, sigue con el anterior. Por eso el
+  hub no apaga un RTMPS en marcha cuando lo que se le pide deja de valer: lo deja como está y avisa.
+- MediaMTX 1.21 trae un servidor nuevo, MoQ, que viene encendido: abre los puertos 8892 y 8893 y
+  deja un certificado suyo (`auto.crt` y `auto.key`) en la carpeta desde la que se lanza.
+  `mediamtx.yml` lo apaga con `moq: no`, y también el MediaMTX que hace de plataforma RTMPS en las
+  pruebas.
+- Una fuente HLS que el hub va a buscar salía a golpes: ffmpeg empezaba por el último segmento de
+  la lista, sin colchón, y cada segmento le llegaba tarde y lo soltaba de una vez. Midiendo lo que
+  sale cada 100 ms, el 35 % del tiempo no salía nada, con parones de 0,9 s, y un navegador veía esa
+  fuente por WebRTC a 24 fps. Empezando tres segmentos por detrás del directo, como hace un
+  reproductor, sale continuo. Cuesta dos segmentos más de retardo en una fuente que ya trae varios.
+- En lo que un cliente lee del hub por RTMP, el audio empieza hasta 2 s antes que el vídeo: MediaMTX
+  manda el audio enseguida y el vídeo desde el siguiente fotograma clave. Las pruebas miden los
+  fotogramas sobre lo que dura el vídeo, no sobre toda la captura.
+- El receptor de las pruebas también es un ffmpeg y, por lo mismo que el hub, tardaba 5 s en
+  empezar a guardar lo que le llegaba por SRT. La prueba de aceptación apuntaba ese retraso suyo
+  como tiempo de recuperación de la salida: 7 s cuando eran 1,4 s. Los receptores y lectores de
+  las pruebas abren ahora con `-scan_all_pmts 0`, y el momento en que el hub marca «enviando» se
+  mide aparte del momento en que vuelve la señal.
+- El reenvío WHIP de MediaMTX hacia otro MediaMTX funciona, y lo que entra por WHIP se reproduce
+  por WHEP sin convertir nada.
