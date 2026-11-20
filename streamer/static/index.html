@@ -8,9 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;500;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="static/base.css">
+<link rel="stylesheet" href="static/hub.css">
 <style>
-  body{margin:0}
-  .sistema{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--suave)}
   .vacio{padding:40px 16px;text-align:center;color:var(--suave)}
   .vacio .btn{margin-top:12px}
   .stats{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:18px}
@@ -30,7 +29,6 @@
   .fase2 p{color:var(--suave)}
   body.operador [data-admin]{display:none!important}
   body.operador #f-comp, body.operador #f-flujo{pointer-events:none;opacity:.75}
-  #quien{font-size:12px;color:var(--suave)}
   .copiar{cursor:pointer;border-bottom:1px dotted var(--tenue)}
   .mini{display:grid;place-items:center;color:var(--tenue);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
   .mini.aire{background:linear-gradient(135deg,#1c2a1f,#14301d);color:var(--ok)}
@@ -61,14 +59,42 @@
 </style>
 </head>
 <body>
-<header class="top">
-  <div class="marca"><span class="br">[</span><span>Media</span><b>Syntaxis</b><span class="br">]</span> <em>Streamer</em></div>
-  <nav aria-label="Secciones"><button data-ir="flujos" aria-current="page">Flujos</button></nav>
-  <div class="sistema"><span id="sis-mtx" class="pill off">MediaMTX</span><span id="sis-sup" class="pill off">Supervisor</span><span id="quien"></span><a id="lnk-recorder" class="btn peq" href="#" hidden>Recorder</a><button class="btn peq" id="b-salir">Salir</button></div>
+<header class="cabecera">
+  <div class="logo">
+    <svg role="img" aria-label="MediaSyntaxis" viewBox="0 0 1360 240"><g fill="#FF5A00"><path d="M0 0h96v34H34v172h62v34H0z"/><path d="M1360 0h-96v34h62v172h-62v34h96z"/></g><text x="680" y="158" text-anchor="middle" font-family="Montserrat, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="150" fill="#FFFFFF" letter-spacing="-2"><tspan font-weight="300">Media</tspan><tspan font-weight="800">Syntaxis</tspan></text></svg>
+    <span id="marca-modulo">Streamer</span>
+  </div>
+  <nav class="modulos" id="modulos" aria-label="Módulos de MSX" hidden></nav>
+  <small class="resumen" id="resumen" role="status"></small>
+  <span id="quien"></span>
+  <button class="bt" id="b-salir">Salir</button>
 </header>
 
+<nav class="secciones" id="secciones" aria-label="Secciones del Streamer">
+  <a href="#fuentes" data-sec="fuentes">Fuentes</a>
+  <a href="#destinos" data-sec="destinos">Destinos</a>
+  <a href="#rutas" data-sec="rutas">Matriz de rutas</a>
+  <a href="#monitoreo" data-sec="monitoreo">Monitoreo</a>
+  <a href="#adaptadores" data-sec="adaptadores">Adaptadores</a>
+  <a href="#ajustes" data-sec="ajustes">Ajustes</a>
+  <a href="#flujos" data-sec="flujos" class="aparte" title="Los flujos de siempre, con su composición: cada uno aparece también como una fuente del hub">Flujos y composición</a>
+</nav>
+
 <main>
-<p class="nota error" id="av-reposo" hidden></p>
+<p id="av-reposo" role="alert" hidden></p>
+
+<div id="hub">
+  <p class="aviso error" id="h-aviso" role="alert" hidden></p>
+  <section id="s-fuentes" class="vista" hidden></section>
+  <section id="s-destinos" class="vista" hidden></section>
+  <section id="s-rutas" class="vista" hidden></section>
+  <section id="s-monitoreo" class="vista" hidden></section>
+  <section id="s-adaptadores" class="vista" hidden></section>
+  <section id="s-ajustes" class="vista" hidden></section>
+  <dialog id="h-dlg"></dialog>
+</div>
+
+<div id="clasico" hidden>
 <section id="v-flujos">
   <div class="cab">
     <div><h1>Flujos</h1><p class="sub">Cada flujo es una entrada y sus salidas.</p></div>
@@ -202,6 +228,7 @@
     <div class="panel"><div class="reg" id="reg"></div></div>
   </div>
 </section>
+</div>
 </main>
 
 <dialog id="dlg">
@@ -231,5 +258,12 @@
 </dialog>
 
 <script src="static/app.js"></script>
+<script src="static/hub.js"></script>
+<script src="static/hub-fuentes.js"></script>
+<script src="static/hub-destinos.js"></script>
+<script src="static/hub-rutas.js"></script>
+<script src="static/hub-monitoreo.js"></script>
+<script src="static/hub-adaptadores.js"></script>
+<script src="static/hub-ajustes.js"></script>
 </body>
 </html>

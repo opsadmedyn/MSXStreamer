@@ -3,3 +3,6 @@ __pycache__/
 *.db
 *.db-*
 config.json
+.pytest_cache/
+.venv/
+.banco/

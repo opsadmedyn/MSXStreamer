@@ -2,7 +2,8 @@
 """Sube un respaldo a Google Drive: "MSX Respaldos/<estación>/<archivo>" en Mi unidad de la cuenta
 del sistema (el mismo token.json que usan el Recorder y el Transcoder). Las carpetas se crean la
 primera vez y sus IDs se guardan en /home/mediasat/respaldos/drive.json.
-    respaldo_drive.py <archivo.tar.gz> <motivo>
+    respaldo_drive.py <archivo.tar.gz.enc> <motivo>
+Solo sube archivos cifrados (.enc): los cifra respaldar.sh con la contraseña de respaldo.
 Se ejecuta con el Python del Recorder, que ya tiene las bibliotecas de Google."""
 
 import json
@@ -62,13 +63,16 @@ def estacion():
 
 def main():
     archivo, motivo = pathlib.Path(sys.argv[1]), sys.argv[2]
+    if not archivo.name.endswith(".enc"):
+        sys.exit(f"{archivo.name} no está cifrado: a Drive solo sube cifrado")
     d = drive()
     destino = carpeta_estacion(d, estacion())
     etiqueta = re.sub(r"[^a-z0-9.]+", "-", motivo.split(" · ")[0].lower()).strip("-")[:40]
     nombre = archivo.name.replace(".tar.gz", f"-{etiqueta}.tar.gz") if etiqueta else archivo.name
     meta = {"name": nombre, "parents": [destino], "description": motivo,
-            "appProperties": {"msx_respaldo": "1", "motivo": motivo[:100]}}
-    media = MediaFileUpload(str(archivo), mimetype="application/gzip", resumable=True)
+            # Drive admite 124 bytes entre el nombre y el valor de cada propiedad: se corta por bytes
+            "appProperties": {"msx_respaldo": "1", "motivo": motivo.encode()[:100].decode(errors="ignore")}}
+    media = MediaFileUpload(str(archivo), mimetype="application/octet-stream", resumable=True)
     f = d.files().create(body=meta, media_body=media, fields="id,size,webViewLink").execute()
     print(f"subido a Drive: {RAIZ}/{estacion()}/{nombre} ({int(f['size']) // 1024} KB) {f['webViewLink']}")
 

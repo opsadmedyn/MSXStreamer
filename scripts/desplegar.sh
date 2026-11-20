@@ -22,7 +22,11 @@ COMO="sudo -u mediasat"
 
 echo "== comprobaciones locales (v$VERSION)"
 python3 -m py_compile streamer/*.py
-node --check streamer/static/app.js 2>/dev/null || echo "   (node no disponible: app.js sin comprobar)"
+if command -v node >/dev/null 2>&1; then
+  for f in streamer/static/*.js; do node --check "$f"; done      # un guion del panel con un error no se despliega
+else
+  echo "   (node no disponible: los guiones del panel van sin comprobar)"
+fi
 
 if [ "$INSTALAR" = 1 ]; then
   echo "== $HOST: puertos"
@@ -40,14 +44,14 @@ curl -fsSLO https://github.com/bluenviron/mediamtx/releases/download/${MTX_VERSI
 grep "[ *]\$F\$" checksums.sha256 | sha256sum -c -
 tar xzf \$F mediamtx && install -m 755 mediamtx $DEST/bin/mediamtx
 cd / && rm -rf /tmp/msxs-mtx
-python3 -m venv $DEST/venv && $DEST/venv/bin/pip install -q fastapi uvicorn
+python3 -m venv $DEST/venv
 REMOTO
 fi
 
 echo "== $HOST: copiando v$VERSION"
 $SSH "$COMO mkdir -p $DEST/streamer $DEST/releases/v$VERSION"
 COPYFILE_DISABLE=1 tar cz --no-xattrs streamer/*.py streamer/componer.sh streamer/compositor streamer/static VERSION config systemd \
-  | $SSH "$COMO tar xz -C $DEST/releases/v$VERSION"
+  requirements.lock | $SSH "$COMO tar xz -C $DEST/releases/v$VERSION"
 # rsync sin --delete: el login.html de la clave del panel (hasta la 0.3.0) se quita aparte
 $SSH "$COMO bash -c 'rsync -a $DEST/releases/v$VERSION/streamer/ $DEST/streamer/ && rm -f $DEST/streamer/static/login.html && cp $DEST/releases/v$VERSION/VERSION $DEST/ && cd $DEST/streamer && python3 -m py_compile *.py'"
 
@@ -56,6 +60,7 @@ if [ "$INSTALAR" = 1 ]; then
   $SSH "$COMO bash -s" <<REMOTO
 set -euo pipefail
 cd $DEST
+venv/bin/pip install -q -r releases/v$VERSION/requirements.lock     # las versiones que funcionan en producción
 [ -f mediamtx.yml ] || cp releases/v$VERSION/config/mediamtx.yml mediamtx.yml
 if [ ! -f config.json ]; then
   cp releases/v$VERSION/config/config.ejemplo.json config.json    # revisar host_publico
@@ -81,9 +86,21 @@ else
 fi
 
 sleep 4
-ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '")
-VER=$($SSH "curl -s http://127.0.0.1:8095/api/version")
-echo "== $HOST: servicios [$ESTADO] versión $VER · panel en https://<dominio del Recorder>/streamer/ (solo Tailscale)"
+VER=""
+for intento in 1 2 3 4 5; do      # el panel puede tardar algo más en responder: se le espera antes de darlo por caído
+  VER=$($SSH "curl -s http://127.0.0.1:8095/api/version" || true)
+  [ "$VER" = "\"$VERSION\"" ] && break
+  sleep 2
+done
+ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '" || true)
+echo "== $HOST: servicios [$ESTADO] versión ${VER:-(el panel no responde)} · panel en https://<dominio del Recorder>/streamer/ (solo Tailscale)"
+if [ "$ESTADO" != "active active active " ] || [ "$VER" != "\"$VERSION\"" ]; then
+  echo "!! $HOST no quedó con la v$VERSION en marcha. Qué pasó:"
+  echo "!!   ssh $HOST 'sudo journalctl -u msxs-supervisor -u msxs-web -n 40 --no-pager'"
+  echo "!! Mientras el supervisor no arranque, a las salidas que sigan al aire nadie las relanza si se"
+  echo "!! caen. Para volver a la versión anterior: docs/instalacion.md."
+  exit 1
+fi
 ESCUCHA=$($SSH "ss -Hltn 'sport = :8095' | awk '{print \$4}' | sort -u | xargs")
 if [ "$ESCUCHA" != "127.0.0.1:8095" ]; then
   echo "!! el panel escucha en [$ESCUCHA] y debe ser solo 127.0.0.1:8095: revisar /etc/systemd/system/msxs-web.service"
@@ -91,5 +108,9 @@ fi
 
 # respaldo de esta versión a Google Drive (si la estación lo tiene instalado: scripts/instalar-respaldos.sh del Streamer)
 if $SSH "sudo test -x /home/mediasat/respaldos/bin/respaldar.sh"; then
+  # el guion de respaldo no viaja con el código: lo pone scripts/instalar-respaldos.sh. El anterior
+  # a la 0.4 sube a Drive sin cifrar
+  $SSH "sudo grep -q -- --crear-clave /home/mediasat/respaldos/bin/respaldar.sh" \
+    || echo "!! el guion de respaldo de $HOST es anterior a esta versión y sube a Drive sin cifrar. Lo pone al día, con su contraseña de respaldo: scripts/instalar-respaldos.sh $HOST"
   $SSH "sudo /home/mediasat/respaldos/bin/respaldar.sh --drive 'streamer-v$VERSION'" || echo "!! el respaldo a Drive falló; la versión quedó instalada igualmente"
 fi
