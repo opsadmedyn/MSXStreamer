@@ -253,7 +253,7 @@ Ejecuta tal cual el guion de respaldo, el que sube a Drive y el instalador, dent
 montaje propio en el que `/home` es un disco en memoria vacío. Ahí monta una estación de mentira con
 una clave reconocible en `streamer.db`, un Drive que es una carpeta y un `ssh` que solo apunta lo
 que se le pide. Nada de eso queda al terminar y el `/home` de verdad no se toca. Necesita Linux,
-root, `unshare`, `openssl` y `python3`, y tarda unos 10 s.
+root, `unshare`, `openssl` y `python3`, y tarda unos 15 s.
 
 Comprueba que a Drive solo llega el archivo cifrado, en el que no se lee ni la clave ni el nombre
 de la base, y que se abre con la orden de `instalacion.md` y da el mismo archivo que la copia de la
@@ -261,9 +261,12 @@ estación; que `instalar-respaldos.sh` crea la contraseña antes del primer resp
 no la cambia; y que sin contraseña, con una vacía o corta, o si el cifrado falla, el respaldo
 termina con error y a Drive no sube nada, mientras la copia de la estación se hace igual. El guion
 que sube a Drive rechaza además cualquier archivo sin cifrar. Si el Python del equipo tiene la
-biblioteca `cryptography`, abre también el archivo sin `openssl`.
+biblioteca `cryptography`, abre también el archivo sin `openssl`. El último caso lo lanza como el
+temporizador semanal: la orden de `msx-respaldo.service`, con el entorno vacío y sin terminal.
 
-No dice nada del Drive de verdad (la cuenta, sus permisos, sus límites) ni de la estación.
+No dice nada del Drive de verdad (la cuenta, sus permisos, sus límites) ni de la estación. Eso se
+comprobó aparte en la EZC80, al instalarlo: ver
+[instalacion.md](instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
 
 ## Lo que el banco no puede decir
 

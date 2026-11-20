@@ -75,9 +75,11 @@ Pendientes de validación:
   de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
 - El panel en Safari y en Firefox, y en la estación con sus señales: en el banco solo se usó
   Chromium.
-- El respaldo cifrado a Google Drive, en la estación y contra el Drive de verdad, y abrir uno con
-  el `openssl` de macOS: está probado con una estación y un Drive de mentira
-  (`tests/banco/respaldo.sh`).
+- Del respaldo cifrado a Google Drive, abrir uno con el `openssl` de macOS y, en la estación, el
+  primer respaldo semanal que lance el temporizador con el guion nuevo (el domingo 22 de noviembre
+  de 2026). Lo demás está probado con una estación y un Drive de mentira
+  (`tests/banco/respaldo.sh`) y, el 20 de noviembre de 2026, en la EZC80 contra el Drive de verdad:
+  ver [instalacion.md](instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
 - Una fuente HLS durante muchas horas. El hub la lee al ritmo de su propio reloj, con un margen de
   tres segmentos. Si el reloj del origen va algo más despacio que el de la estación, es de esperar
   que ese margen se vaya gastando, y si va más deprisa, que el retardo crezca. En el banco, con

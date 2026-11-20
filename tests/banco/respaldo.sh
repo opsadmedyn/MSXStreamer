@@ -7,7 +7,7 @@
 # carpeta (las bibliotecas de Google se cambian por unas de pega que guardan lo «subido» y lo que
 # Drive anotaría de cada archivo) y un ssh que solo apunta lo que se le pide. Nada de eso existe
 # fuera de la prueba ni queda al terminar, y el /home de verdad no se toca.
-# Hace falta Linux, root, unshare, openssl y python3. Tarda unos 10 s.
+# Hace falta Linux, root, unshare, openssl y python3. Tarda unos 15 s.
 set -uo pipefail
 SECRETO="CLAVE-DE-EMISION-DE-PRUEBA-7f3a"
 ABRIR="openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256"      # la orden de docs/instalacion.md
@@ -228,6 +228,16 @@ echo "10 · el guion que sube a Drive rechaza un archivo sin cifrar, aunque se l
 L=$(ls -1t $M/respaldos/msx-*.tar.gz | head -1)
 $M/recorder/venv/bin/python $M/respaldos/bin/respaldo_drive.py "$L" "a mano" > $M/s10.txt 2>&1; s=$?
 [ $s -ne 0 ] && [ -z "$(ls $D)" ] && grep -q "no está cifrado" $M/s10.txt && bien "salida $s, lo dice y en Drive no hay nada" || mal "salida $s o lo subió"
+vaciar
+
+echo "11 · como lo lanza el temporizador semanal: la orden de msx-respaldo.service, sin entorno ni terminal"
+ORDEN=$(sed -n 's/^ExecStart=//p' "$COPIA/systemd/msx-respaldo.service")
+# systemd lanza la unidad sin HOME, sin USER y sin terminal: aquí, con el entorno vacío salvo el PATH
+(cd / && env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin setsid $ORDEN) < /dev/null > $M/s11.txt 2>&1; s=$?
+E=$(ls $D/msx-*-semanal.tar.gz.enc 2> /dev/null | head -1); L=$(ls -1t $M/respaldos/msx-*.tar.gz | head -1)
+[ "$ORDEN" = "$R --drive semanal" ] && [ $s -eq 0 ] && [ -n "$E" ] && [ -z "$(ls $D/*.tar.gz 2> /dev/null)" ] \
+  && $ABRIR -pass file:$C -in "$E" 2> /dev/null | cmp -s - "$L" \
+  && bien "termina bien, sube solo $(basename "$E") y se abre" || mal "salida $s, no subió cifrado o no se abre"
 
 echo
 if [ $fallos -eq 0 ]; then echo "TODO BIEN"; exit 0; fi

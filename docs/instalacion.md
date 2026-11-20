@@ -335,6 +335,7 @@ se reinicia.
    la estación no la tiene y sube a Drive un respaldo ya cifrado. Esa contraseña hay que guardarla
    también fuera de la estación (ver
    [El respaldo a Google Drive y sus claves](#el-respaldo-a-google-drive-y-sus-claves)).
+   En la EZC80 está instalado desde el 20 de noviembre de 2026.
 2. Elegir el puerto RTMP del hub (no 1935) y comprobar que él, 8889/tcp y 8189/udp están libres;
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
 3. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
@@ -431,10 +432,24 @@ vector derivados de la contraseña por PBKDF2-HMAC-SHA256 con 600 000 vueltas. L
 `-pbkdf2` e `-iter` existen desde OpenSSL 1.1.1. El cifrado protege de quien lea el archivo, no de
 quien lo cambie: no lleva firma.
 
-Está probado sin estación y sin Drive, con `sudo tests/banco/respaldo.sh` (ver
-[banco-de-pruebas.md](banco-de-pruebas.md#el-respaldo-a-drive)): OpenSSL 3.0.13 en Ubuntu 24.04 y
-un Drive de mentira. No está probado en la estación, cuyo Ubuntu 22.04 trae OpenSSL de la misma
-serie 3.0, ni contra el Drive de verdad, ni abriendo un respaldo con el `openssl` de macOS.
+Está probado de dos maneras:
+
+- Sin estación y sin Drive, con `sudo tests/banco/respaldo.sh` (ver
+  [banco-de-pruebas.md](banco-de-pruebas.md#el-respaldo-a-drive)): OpenSSL 3.0.13 en Ubuntu 24.04
+  y un Drive de mentira.
+- En la EZC80 (Ubuntu 22.04.5, OpenSSL 3.0.2) y contra el Drive de verdad, al instalarlo el 20 de
+  noviembre de 2026 con `scripts/instalar-respaldos.sh`. El archivo que quedó en Drive se volvió a
+  descargar en la estación: empieza por `Salted__`, se descifra con el `openssl enc -d` de arriba
+  y la contraseña de la estación, y lo que sale es idéntico, byte a byte, a la copia que quedó en
+  la estación (127 entradas, `streamer.db` entre ellas). Los servicios del Streamer siguieron con
+  los mismos procesos, y los del Recorder también, salvo el grabador de su canal 10, que ya se
+  reiniciaba solo antes de empezar. En esa carpeta de Drive siguen los respaldos anteriores,
+  legibles.
+
+No está probado abrir un respaldo con el `openssl` de macOS. El respaldo semanal lo lanza
+`msx-respaldo.timer` sin sesión ni terminal: la prueba lo ejecuta así, con la orden de
+`msx-respaldo.service` y el entorno vacío, pero en la estación el primero con el guion nuevo toca
+el domingo 22 de noviembre de 2026.
 
 ## Quién puede cambiar qué
 
