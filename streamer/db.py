@@ -170,25 +170,33 @@ def conectar():
     return c
 
 
+def _columna(c, tabla, nombre, definicion):
+    """Añade la columna si falta y dice si la añadió. Tras un despliegue el panel y el supervisor
+    arrancan a la vez y los dos pasan por aquí: si el otro la añadió entre mirar y añadir, SQLite
+    responde que ya existe, y eso no es un fallo."""
+    if nombre in {r["name"] for r in c.execute(f"PRAGMA table_info({tabla})")}:
+        return False
+    try:
+        c.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {definicion}")
+    except sqlite3.OperationalError as err:
+        if "duplicate column name" not in str(err):
+            raise
+        return False
+    return True
+
+
 def migrar(c):
     """Columnas añadidas después de crear la base (CREATE TABLE IF NOT EXISTS no las añade)."""
-    columnas = {r["name"] for r in c.execute("PRAGMA table_info(salidas)")}
-    if "fuente" not in columnas:          # fase 2: 'limpia' (en copia) o 'compuesta'
-        c.execute("ALTER TABLE salidas ADD COLUMN fuente TEXT NOT NULL DEFAULT 'limpia'")
-    columnas = {r["name"] for r in c.execute("PRAGMA table_info(flujos)")}
+    _columna(c, "salidas", "fuente", "TEXT NOT NULL DEFAULT 'limpia'")     # fase 2: 'limpia' (en copia) o 'compuesta'
     for col in ("hub", "feed", "etiqueta"):   # 0.3.5, entrada 'hub': IP del hub, path del feed, «hub1 · 1BN INT»
-        if col not in columnas:
-            c.execute(f"ALTER TABLE flujos ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
-    if "directo" not in columnas:             # 0.3.8: 1080i del hub, los destinos leen la entrada sin MediaMTX
-        c.execute("ALTER TABLE flujos ADD COLUMN directo INTEGER NOT NULL DEFAULT 0")
+        _columna(c, "flujos", col, "TEXT NOT NULL DEFAULT ''")
+    if _columna(c, "flujos", "directo", "INTEGER NOT NULL DEFAULT 0"):     # 0.3.8: 1080i del hub, sin MediaMTX
         # los guardados con la 0.3.5-0.3.7 que leen del repetidor del hub: el repetidor solo reparte
         # feeds entrelazados («play/<feed>»), así que van directos
         c.execute("UPDATE flujos SET directo=1 WHERE entrada='hub' AND url LIKE '%streamid=play/%'")
-    if "respaldos" not in columnas:           # JSON: el mismo feed en los otros hubs y, al final, el origen
-        c.execute("ALTER TABLE flujos ADD COLUMN respaldos TEXT NOT NULL DEFAULT '[]'")
-    columnas = {r["name"] for r in c.execute("PRAGMA table_info(estado_salidas)")}
-    if "intentos" not in columnas:            # seguidos sin llegar a enviar: los cuenta la política de reconexión
-        c.execute("ALTER TABLE estado_salidas ADD COLUMN intentos INTEGER NOT NULL DEFAULT 0")
+    _columna(c, "flujos", "respaldos", "TEXT NOT NULL DEFAULT '[]'")       # JSON: el mismo feed en los otros hubs y, al final, el origen
+    # seguidos sin llegar a enviar: los cuenta la política de reconexión
+    _columna(c, "estado_salidas", "intentos", "INTEGER NOT NULL DEFAULT 0")
 
 
 _permisos_vistos = False
