@@ -75,6 +75,9 @@ Pendientes de validación:
   de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
 - El panel en Safari y en Firefox, y en la estación con sus señales: en el banco solo se usó
   Chromium.
+- El respaldo cifrado a Google Drive, en la estación y contra el Drive de verdad, y abrir uno con
+  el `openssl` de macOS: está probado con una estación y un Drive de mentira
+  (`tests/banco/respaldo.sh`).
 - Una fuente HLS durante muchas horas. El hub la lee al ritmo de su propio reloj, con un margen de
   tres segmentos. Si el reloj del origen va algo más despacio que el de la estación, es de esperar
   que ese margen se vaya gastando, y si va más deprisa, que el retardo crezca. En el banco, con

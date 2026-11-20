@@ -96,5 +96,9 @@ fi
 
 # respaldo de esta versión a Google Drive (si la estación lo tiene instalado: scripts/instalar-respaldos.sh del Streamer)
 if $SSH "sudo test -x /home/mediasat/respaldos/bin/respaldar.sh"; then
+  # el guion de respaldo no viaja con el código: lo pone scripts/instalar-respaldos.sh. El anterior
+  # a la 0.4 sube a Drive sin cifrar y sin avisarlo
+  $SSH "sudo grep -q -- --crear-clave /home/mediasat/respaldos/bin/respaldar.sh" \
+    || echo "!! el guion de respaldo de $HOST es anterior a esta versión: sube a Drive sin cifrar y no lo avisa. Lo pone al día: scripts/instalar-respaldos.sh $HOST [--cifrar]"
   $SSH "sudo /home/mediasat/respaldos/bin/respaldar.sh --drive 'streamer-v$VERSION'" || echo "!! el respaldo a Drive falló; la versión quedó instalada igualmente"
 fi

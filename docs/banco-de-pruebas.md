@@ -239,6 +239,32 @@ MSXS_SESION=admin python3 scripts/combinaciones.py --hub http://127.0.0.1:8195 \
 
 Los receptores y cámaras de esa prueba toman puertos libres a partir de los que se le indican.
 
+## El respaldo a Drive
+
+`scripts/respaldar.sh` no es parte del hub, pero lleva sus claves a Google Drive (ver
+[instalacion.md](instalacion.md#el-respaldo-a-google-drive-y-sus-claves)). Su prueba no necesita el
+banco ni una estación:
+
+```
+sudo tests/banco/respaldo.sh
+```
+
+Ejecuta tal cual el guion de respaldo, el que sube a Drive y el instalador, dentro de un espacio de
+montaje propio en el que `/home` es un disco en memoria vacío. Ahí monta una estación de mentira con
+una clave reconocible en `streamer.db`, un Drive que es una carpeta y un `ssh` que solo apunta lo
+que se le pide. Nada de eso queda al terminar y el `/home` de verdad no se toca. Necesita Linux,
+root, `unshare`, `openssl` y `python3`, y tarda unos 10 s.
+
+Comprueba que sin contraseña de respaldo todo sigue como antes (sube legible, y lo avisa); que
+`instalar-respaldos.sh --cifrar` crea la contraseña antes del primer respaldo y que repetirlo no la
+cambia; que con contraseña a Drive solo llega el archivo cifrado, en el que no se lee ni la clave
+ni el nombre de la base, y que se abre con la orden de `instalacion.md` y da el mismo archivo que
+la copia de la estación; y que si el cifrado falla, o la contraseña está vacía o es corta, el
+respaldo termina con error y no sube nada. Si el Python del equipo tiene la biblioteca
+`cryptography`, abre además el archivo sin `openssl`.
+
+No dice nada del Drive de verdad (la cuenta, sus permisos, sus límites) ni de la estación.
+
 ## Lo que el banco no puede decir
 
 - La carga de la HP Z8 con sus señales de verdad (1080i, 1080p59,94, varios audios) y con NVENC:

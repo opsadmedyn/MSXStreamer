@@ -330,7 +330,10 @@ sirven tal cual: el hub solo añade tablas y una columna con valor por defecto, 
 y las unidades de systemd no cambian desde la 0.3.9, así que no hace falta `--mediamtx` y MediaMTX no
 se reinicia.
 
-1. Respaldar: `sudo /home/mediasat/respaldos/bin/respaldar.sh` (ver el aviso sobre claves más abajo).
+1. Respaldar, con el guion de respaldo de esta versión. `desplegar.sh` no lo cambia: se instala
+   una vez con `scripts/instalar-respaldos.sh <alias ssh>`, que además hace un respaldo y lo sube a
+   Drive. Con `--cifrar`, ese respaldo y los siguientes suben cifrados (ver
+   [El respaldo a Google Drive y sus claves](#el-respaldo-a-google-drive-y-sus-claves)).
 2. Elegir el puerto RTMP del hub (no 1935) y comprobar que él, 8889/tcp y 8189/udp están libres;
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
 3. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
@@ -374,9 +377,62 @@ Las tablas nuevas se quedan en la base sin estorbar, para cuando se vuelva a la 
   token de lectura de un destino WebRTC) solo las ve quien tiene el permiso «Ver claves»; las de un
   equipo ajeno (la passphrase o la clave de emisión de un destino) se escriben y no vuelven nunca.
 - La prueba de aceptación lo comprueba buscando las suyas en los registros y en la API.
-- **Aviso:** el respaldo a Google Drive (`scripts/respaldar.sh`) copia `streamer.db` y `config.json`
-  tal cual, con las claves legibles. Con el hub, eso incluye las claves de los destinos (por ejemplo
-  la de emisión de YouTube). Está por decidir si se cifra el respaldo o se dejan fuera las claves.
+- **El respaldo a Google Drive las lleva dentro.** Sube legible mientras la estación no tenga una
+  contraseña de respaldo: ver el apartado siguiente.
+
+## El respaldo a Google Drive y sus claves
+
+`scripts/respaldar.sh`, que la estación lanza cada domingo y tras cada despliegue, sube a Google
+Drive («MSX Respaldos/<estación>/», en Mi unidad de la cuenta del sistema) la configuración y las
+bases de datos del Streamer y del Recorder. `streamer.db` lleva las claves: con el hub, las de los
+destinos (por ejemplo la de emisión de YouTube), las passphrases y las que usan los codificadores
+para publicar. Quien pueda abrir esa cuenta de Drive puede leerlas.
+
+Mientras la estación no tenga una contraseña de respaldo, ese archivo sube legible, como hasta
+ahora. Para que suba cifrado:
+
+```
+scripts/instalar-respaldos.sh <alias ssh> --cifrar
+```
+
+Instala el guion de respaldo de esta versión, crea la contraseña en
+`/home/mediasat/respaldos/clave-respaldo` (solo la lee root; si ya hay una, la conserva) y hace un
+primer respaldo, ya cifrado. Sin `--cifrar` instala el guion y lo demás sigue igual: el respaldo
+sube legible, y ahora lo avisa cada vez. El guion de respaldo no viaja con `desplegar.sh`, que solo
+lo ejecuta: si en la estación encuentra el anterior a esta versión, lo dice al terminar.
+
+Después de activarlo:
+
+- **Guardar la contraseña también fuera de la estación** (`ssh <alias ssh> sudo cat
+  /home/mediasat/respaldos/clave-respaldo`), donde se guarden las demás contraseñas de
+  administración. Sin ella los respaldos cifrados no se pueden abrir, y si la estación se pierde
+  es lo único que los abre.
+- Los respaldos que ya estaban en Drive siguen legibles: se pueden borrar desde Drive.
+- La copia que queda en la estación (`/home/mediasat/respaldos/msx-*.tar.gz`, las 30 últimas) no
+  se cifra: solo la lee root, y en esa misma estación están las bases de las que sale. Tampoco se
+  cifra el respaldo que se saca por la salida estándar hacia otro equipo.
+- La contraseña es la primera línea de `clave-respaldo`. Si se cambia a mano por una propia, tiene
+  que tener al menos 20 caracteres: con una más corta o vacía, el respaldo termina con error y no
+  sube nada. Cada respaldo se abre solo con la contraseña con la que se hizo.
+
+Con contraseña, a Drive solo sube el archivo cifrado (`.tar.gz.enc`). Si el cifrado falla, el
+respaldo termina con error y no sube nada. Para abrir uno, con la contraseña guardada en un archivo:
+
+```
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass file:clave-respaldo \
+  -in msx-AAAAMMDD-HHMMSS-semanal.tar.gz.enc | tar xz
+```
+
+La descripción de cada archivo en Drive recuerda esos parámetros. El formato es el de
+`openssl enc`: la marca `Salted__`, 8 bytes de sal y el contenido en AES-256-CBC, con la clave y el
+vector derivados de la contraseña por PBKDF2-HMAC-SHA256 con 600 000 vueltas. Las opciones
+`-pbkdf2` e `-iter` existen desde OpenSSL 1.1.1. El cifrado protege de quien lea el archivo, no de
+quien lo cambie: no lleva firma.
+
+Está probado sin estación y sin Drive, con `sudo tests/banco/respaldo.sh` (ver
+[banco-de-pruebas.md](banco-de-pruebas.md#el-respaldo-a-drive)): OpenSSL 3.0.13 en Ubuntu 24.04 y
+un Drive de mentira. No está probado en la estación, cuyo Ubuntu 22.04 trae OpenSSL de la misma
+serie 3.0, ni contra el Drive de verdad, ni abriendo un respaldo con el `openssl` de macOS.
 
 ## Quién puede cambiar qué
 
