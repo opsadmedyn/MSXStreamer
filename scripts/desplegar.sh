@@ -86,9 +86,21 @@ else
 fi
 
 sleep 4
-ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '")
-VER=$($SSH "curl -s http://127.0.0.1:8095/api/version")
-echo "== $HOST: servicios [$ESTADO] versión $VER · panel en https://<dominio del Recorder>/streamer/ (solo Tailscale)"
+VER=""
+for intento in 1 2 3 4 5; do      # el panel puede tardar algo más en responder: se le espera antes de darlo por caído
+  VER=$($SSH "curl -s http://127.0.0.1:8095/api/version" || true)
+  [ "$VER" = "\"$VERSION\"" ] && break
+  sleep 2
+done
+ESTADO=$($SSH "systemctl is-active msxs-mediamtx msxs-supervisor msxs-web | tr '\n' ' '" || true)
+echo "== $HOST: servicios [$ESTADO] versión ${VER:-(el panel no responde)} · panel en https://<dominio del Recorder>/streamer/ (solo Tailscale)"
+if [ "$ESTADO" != "active active active " ] || [ "$VER" != "\"$VERSION\"" ]; then
+  echo "!! $HOST no quedó con la v$VERSION en marcha. Qué pasó:"
+  echo "!!   ssh $HOST 'sudo journalctl -u msxs-supervisor -u msxs-web -n 40 --no-pager'"
+  echo "!! Mientras el supervisor no arranque, a las salidas que sigan al aire nadie las relanza si se"
+  echo "!! caen. Para volver a la versión anterior: docs/instalacion.md."
+  exit 1
+fi
 ESCUCHA=$($SSH "ss -Hltn 'sport = :8095' | awk '{print \$4}' | sort -u | xargs")
 if [ "$ESCUCHA" != "127.0.0.1:8095" ]; then
   echo "!! el panel escucha en [$ESCUCHA] y debe ser solo 127.0.0.1:8095: revisar /etc/systemd/system/msxs-web.service"
