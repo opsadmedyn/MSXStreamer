@@ -255,13 +255,13 @@ una clave reconocible en `streamer.db`, un Drive que es una carpeta y un `ssh` q
 que se le pide. Nada de eso queda al terminar y el `/home` de verdad no se toca. Necesita Linux,
 root, `unshare`, `openssl` y `python3`, y tarda unos 10 s.
 
-Comprueba que sin contraseña de respaldo todo sigue como antes (sube legible, y lo avisa); que
-`instalar-respaldos.sh --cifrar` crea la contraseña antes del primer respaldo y que repetirlo no la
-cambia; que con contraseña a Drive solo llega el archivo cifrado, en el que no se lee ni la clave
-ni el nombre de la base, y que se abre con la orden de `instalacion.md` y da el mismo archivo que
-la copia de la estación; y que si el cifrado falla, o la contraseña está vacía o es corta, el
-respaldo termina con error y no sube nada. Si el Python del equipo tiene la biblioteca
-`cryptography`, abre además el archivo sin `openssl`.
+Comprueba que a Drive solo llega el archivo cifrado, en el que no se lee ni la clave ni el nombre
+de la base, y que se abre con la orden de `instalacion.md` y da el mismo archivo que la copia de la
+estación; que `instalar-respaldos.sh` crea la contraseña antes del primer respaldo y que repetirlo
+no la cambia; y que sin contraseña, con una vacía o corta, o si el cifrado falla, el respaldo
+termina con error y a Drive no sube nada, mientras la copia de la estación se hace igual. El guion
+que sube a Drive rechaza además cualquier archivo sin cifrar. Si el Python del equipo tiene la
+biblioteca `cryptography`, abre también el archivo sin `openssl`.
 
 No dice nada del Drive de verdad (la cuenta, sus permisos, sus límites) ni de la estación.
 

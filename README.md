@@ -133,10 +133,10 @@ ya las versiones de `requirements.lock`. Pasos, puertos y vuelta atrás en
 [docs/instalacion.md](docs/instalacion.md).
 
 El respaldo a Google Drive lleva las claves de `streamer.db`, que con el hub incluyen las de los
-destinos. Sube legible, como hasta ahora, hasta que la estación tenga una contraseña de respaldo:
-`scripts/instalar-respaldos.sh <alias ssh> --cifrar` la crea, y desde entonces a Drive solo sube
-cifrado. Hay que guardar esa contraseña también fuera de la estación. Cómo se abre un respaldo
-cifrado, en [docs/instalacion.md](docs/instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
+destinos: desde esta versión, a Drive solo sube cifrado. El guion de respaldo no viaja con
+`desplegar.sh`: `scripts/instalar-respaldos.sh <alias ssh>` instala el de esta versión y crea en la
+estación la contraseña de respaldo, que hay que guardar también fuera de ella. Cómo se abre un
+respaldo, en [docs/instalacion.md](docs/instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
 
 ### 0.3.9
 

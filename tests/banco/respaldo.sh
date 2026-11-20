@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prueba del respaldo a Google Drive, con y sin cifrado, sin estación y sin Drive:
+# Prueba del respaldo a Google Drive y de su cifrado, sin estación y sin Drive:
 #   sudo tests/banco/respaldo.sh
 # Ejecuta scripts/respaldar.sh, scripts/respaldo_drive.py y scripts/instalar-respaldos.sh tal cual,
 # dentro de un espacio de montaje propio en el que /home es un disco en memoria vacío. Ahí monta una
@@ -131,22 +131,22 @@ subido() { python3 -c "import json, sys; print(json.loads(open(sys.argv[1]).read
 vaciar() { rm -f $D/*; sleep 1; }      # el nombre de cada respaldo lleva la hora al segundo
 instalar() { (cd "$COPIA" && PATH=$M/ssh-falso:$PATH scripts/instalar-respaldos.sh estacion "$@") < /dev/null; }
 
-echo "1 · sin contraseña: sube legible, como hasta ahora, y lo avisa"
+echo "1 · sin contraseña de respaldo: a Drive no sube nada, y la copia de la estación se hace igual"
 $R --drive prueba > $M/s1.txt 2>&1; s=$?
-[ $s -eq 0 ] && grep -q "aviso: este respaldo sube a Drive sin cifrar" $M/s1.txt && bien "termina bien y avisa" || mal "salida $s o sin aviso"
-A=$(ls $D/msx-*-prueba.tar.gz 2> /dev/null | head -1)
-[ -n "$A" ] && [ "$(subido tipo)" = application/gzip ] \
-  && tar xzOf "$A" --wildcards '*/home/mediasat/streamer/streamer.db' | grep -a "$SECRETO" > /dev/null \
-  && bien "en Drive queda $(basename "$A"): un tar legible, con la clave dentro" || mal "en Drive no está el tar esperado"
-[ -z "$(ls $D/*.enc 2> /dev/null)" ] && bien "nada cifrado" || mal "subió algo cifrado sin contraseña"
+[ $s -ne 0 ] && [ -z "$(ls $D)" ] && grep -q "no tiene contraseña de respaldo" $M/s1.txt && grep -q -- "--crear-clave" $M/s1.txt \
+  && bien "salida $s, dice cómo crearla y en Drive no hay nada" || mal "salida $s, subió algo o no dice cómo crearla"
+L=$(ls -1t $M/respaldos/msx-*.tar.gz 2> /dev/null | head -1)
+[ -n "$L" ] && [ "$(stat -c %a "$L")" = 600 ] \
+  && tar xzOf "$L" --wildcards '*/home/mediasat/streamer/streamer.db' | grep -a "$SECRETO" > /dev/null \
+  && bien "en la estación queda $(basename "$L"), con permisos 600 y la base dentro" || mal "no quedó la copia de la estación"
 vaciar
 
 echo "2 · crear la contraseña con openssl fallando: da error y no deja ninguna a medias"
 PATH=$M/sin-openssl:$PATH $R --crear-clave > $M/s2.txt 2>&1; s=$?
 [ $s -ne 0 ] && [ -z "$(ls $C* 2> /dev/null)" ] && bien "salida $s y ningún archivo de contraseña" || mal "salida $s o quedó un archivo"
 
-echo "3 · instalar-respaldos.sh --cifrar: crea la contraseña antes del primer respaldo, que ya sube cifrado"
-instalar --cifrar > $M/s3.txt 2>&1; s=$?
+echo "3 · instalar-respaldos.sh: crea la contraseña antes del primer respaldo, que sube cifrado"
+instalar > $M/s3.txt 2>&1; s=$?
 [ $s -eq 0 ] && [ "$(grep -n -- "--crear-clave" $P | cut -d: -f1)" -lt "$(grep -n -- "--drive instalacion" $P | cut -d: -f1)" ] 2> /dev/null \
   && bien "termina bien: pide la contraseña y después el primer respaldo" || mal "salida $s o en otro orden"
 [ "$(stat -c %a $C 2> /dev/null)" = 600 ] && [ "$(wc -c < $C)" -ge 40 ] \
@@ -157,11 +157,15 @@ vaciar
 
 echo "4 · repetir no cambia la contraseña, que es la que abre los respaldos anteriores"
 H1=$(sha256sum < $C); $R --crear-clave > $M/s4.txt 2>&1; H2=$(sha256sum < $C)
-[ "$H1" = "$H2" ] && grep -q "se conserva" $M/s4.txt && bien "se conserva la misma" || mal "la cambió"
+[ "$H1" = "$H2" ] && grep -q "se conserva" $M/s4.txt && bien "--crear-clave conserva la que hay" || mal "--crear-clave la cambió"
+instalar > $M/s4b.txt 2>&1; s=$?; H3=$(sha256sum < $C)
+[ $s -eq 0 ] && [ "$H1" = "$H3" ] && [ -n "$(ls $D/msx-*-instalacion.tar.gz.enc 2> /dev/null)" ] \
+  && bien "instalar otra vez también la conserva, y su respaldo sube cifrado" || mal "salida $s o el instalador la cambió"
+vaciar
 
 echo "5 · con contraseña: a Drive solo sube cifrado, y se abre con la orden de docs/instalacion.md"
 $R --drive prueba > $M/s5.txt 2>&1; s=$?
-[ $s -eq 0 ] && ! grep -q "aviso" $M/s5.txt && bien "termina bien y sin aviso" || mal "salida $s o avisa sin motivo"
+[ $s -eq 0 ] && bien "termina bien" || mal "salida $s"
 E=$(ls $D/msx-*-prueba.tar.gz.enc 2> /dev/null | head -1); L=$(ls -1t $M/respaldos/msx-*.tar.gz | head -1)
 [ -n "$E" ] && [ -z "$(ls $D/*.tar.gz 2> /dev/null)" ] && [ "$(subido tipo)" = application/octet-stream ] \
   && bien "en Drive queda solo $(basename "$E")" || mal "no subió solo el cifrado"
@@ -208,9 +212,11 @@ $R --drive prueba > $M/s7.txt 2>&1; s=$?
 [ $s -ne 0 ] && [ -z "$(ls $D)" ] && grep -q "menos de 20 caracteres" $M/s7.txt && bien "salida $s, lo dice y en Drive no hay nada" || mal "salida $s o subió algo"
 cp -p $M/clave-buena $C; vaciar
 
-echo "8 · sin --drive: sale por la salida estándar, legible, como siempre"
+echo "8 · sin --drive: sale por la salida estándar, legible, tenga o no contraseña la estación"
 $R > $M/s8.tar.gz 2> $M/s8.txt; s=$?
-[ $s -eq 0 ] && tar tzf $M/s8.tar.gz > /dev/null 2>&1 && [ -z "$(ls $D)" ] && bien "un tar legible, y a Drive no va nada" || mal "salida $s o no es un tar"
+mv $C $M/clave-buena; sleep 1; $R > $M/s8b.tar.gz 2> $M/s8b.txt; s2=$?; mv $M/clave-buena $C
+[ $s -eq 0 ] && [ $s2 -eq 0 ] && tar tzf $M/s8.tar.gz > /dev/null 2>&1 && tar tzf $M/s8b.tar.gz > /dev/null 2>&1 && [ -z "$(ls $D)" ] \
+  && bien "las dos veces un tar legible, y a Drive no va nada" || mal "salidas $s y $s2, o no es un tar"
 vaciar
 
 echo "9 · un motivo largo y con acentos cabe en lo que Drive admite anotar"
@@ -218,12 +224,10 @@ $R --drive "ñandú ñandú ñandú ñandú ñandú ñandú ñandú ñandú ñan
 [ $s -eq 0 ] && [ -n "$(ls $D/msx-*.tar.gz.enc 2> /dev/null)" ] && bien "sube, con el nombre $(basename $D/msx-*.enc)" || mal "salida $s: Drive lo habría rechazado"
 vaciar
 
-echo "10 · instalar-respaldos.sh sin --cifrar no crea contraseña"
-rm -f $C $P
-instalar > $M/s10.txt 2>&1; s=$?
-[ $s -eq 0 ] && ! grep -q -- "--crear-clave" $P && [ ! -e $C ] && [ -n "$(ls $D/msx-*-instalacion.tar.gz 2> /dev/null)" ] \
-  && grep -q "aviso: este respaldo sube a Drive sin cifrar" $M/s10.txt \
-  && bien "no la pide: el primer respaldo sube legible y lo avisa" || mal "salida $s, creó una contraseña o no avisó"
+echo "10 · el guion que sube a Drive rechaza un archivo sin cifrar, aunque se le pida a mano"
+L=$(ls -1t $M/respaldos/msx-*.tar.gz | head -1)
+$M/recorder/venv/bin/python $M/respaldos/bin/respaldo_drive.py "$L" "a mano" > $M/s10.txt 2>&1; s=$?
+[ $s -ne 0 ] && [ -z "$(ls $D)" ] && grep -q "no está cifrado" $M/s10.txt && bien "salida $s, lo dice y en Drive no hay nada" || mal "salida $s o lo subió"
 
 echo
 if [ $fallos -eq 0 ]; then echo "TODO BIEN"; exit 0; fi

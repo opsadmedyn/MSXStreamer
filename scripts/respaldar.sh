@@ -12,10 +12,10 @@
 # msx-respaldo.timer, desde /home/mediasat/respaldos/bin), en vez de sacarlo por la salida estándar
 # lo sube a Google Drive: "MSX Respaldos/<estación>/" en Mi unidad de la cuenta del sistema.
 #
-# Lo que sube a Drive va cifrado si la estación tiene una contraseña de respaldo
-# (/home/mediasat/respaldos/clave-respaldo, que crea --crear-clave). Sin ella sube legible, con sus
-# claves, y lo avisa. La copia que queda en la estación no se cifra: está tan protegida como las
-# bases de datos de las que sale. Para abrir uno cifrado:
+# A Drive solo sube cifrado, con la contraseña de respaldo de la estación
+# (/home/mediasat/respaldos/clave-respaldo, que crea --crear-clave). Sin ella, o si el cifrado
+# falla, no sube nada. La copia que queda en la estación y la que sale por la salida estándar no
+# se cifran. Para abrir uno de Drive:
 #   openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass file:clave-respaldo -in <archivo>.tar.gz.enc | tar xz
 set -euo pipefail
 DIR=/home/mediasat/respaldos
@@ -27,13 +27,13 @@ if [ "${1:-}" = "--crear-clave" ]; then      # una sola vez; nunca cambia la que
   else
     if ! (umask 077; openssl rand -base64 33 > "$CLAVE.nueva") || [ "$(wc -c < "$CLAVE.nueva")" -lt 40 ]; then
       rm -f "$CLAVE.nueva"
-      echo "no se pudo crear la contraseña de respaldo (¿falta openssl?): nada cambia, los respaldos siguen subiendo sin cifrar" >&2
+      echo "no se pudo crear la contraseña de respaldo (¿falta openssl?): sin ella no sube nada a Drive" >&2
       exit 1
     fi
     mv "$CLAVE.nueva" "$CLAVE"
-    echo "contraseña de respaldo creada en $(hostname):$CLAVE: desde ahora, lo que sube a Drive va cifrado" >&2
+    echo "contraseña de respaldo creada en $(hostname):$CLAVE: con ella se cifra lo que sube a Drive" >&2
   fi
-  echo "guárdala también fuera de la estación (sudo cat $CLAVE): sin ella, los respaldos cifrados no se pueden abrir" >&2
+  echo "guárdala también fuera de la estación (sudo cat $CLAVE): sin ella, los respaldos de Drive no se pueden abrir" >&2
   exit 0
 fi
 DRIVE=""; [ "${1:-}" = "--drive" ] && DRIVE="${2:-manual}"
@@ -80,22 +80,20 @@ tar czf "$DIR/msx-$FECHA.tar.gz" -C "$TMP" "msx-$FECHA"
 chmod 600 "$DIR/msx-$FECHA.tar.gz"
 ls -1t "$DIR"/msx-*.tar.gz | tail -n +31 | xargs -r rm -f       # se conservan los 30 últimos
 echo "respaldo guardado en $(hostname):$DIR/msx-$FECHA.tar.gz ($(du -h "$DIR/msx-$FECHA.tar.gz" | cut -f1))" >&2
-if [ -n "$DRIVE" ]; then
-  SUBE="$DIR/msx-$FECHA.tar.gz"; COMO=""
-  if [ -s "$CLAVE" ]; then      # con contraseña, a Drive solo sube cifrado: si el cifrado falla, no sube nada
-    # openssl toma como contraseña la primera línea: una vacía o muy corta cifraría sin proteger
-    if [ "$(head -n 1 "$CLAVE" | tr -d '[:space:]' | wc -c)" -lt 20 ]; then
-      echo "la primera línea de $CLAVE tiene menos de 20 caracteres: no sirve de contraseña y no se sube nada a Drive" >&2
-      exit 1
-    fi
-    SUBE="$TMP/msx-$FECHA.tar.gz.enc"
-    openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass "file:$CLAVE" -in "$DIR/msx-$FECHA.tar.gz" -out "$SUBE"
-    COMO=" · cifrado: openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256"
-  else
-    echo "aviso: este respaldo sube a Drive sin cifrar, con las claves legibles (sudo $DIR/bin/respaldar.sh --crear-clave lo cifra desde el siguiente)" >&2
+if [ -n "$DRIVE" ]; then      # a Drive solo sube cifrado: sin contraseña, o si el cifrado falla, no sube nada
+  if [ ! -s "$CLAVE" ]; then
+    echo "esta estación no tiene contraseña de respaldo y a Drive solo sube cifrado: no se sube nada (la crea: sudo $DIR/bin/respaldar.sh --crear-clave)" >&2
+    exit 1
   fi
-  /home/mediasat/recorder/venv/bin/python -W ignore::FutureWarning /home/mediasat/respaldos/bin/respaldo_drive.py \
-    "$SUBE" "$DRIVE · Streamer $(cat /home/mediasat/streamer/VERSION 2>/dev/null) · Recorder $(cat /home/mediasat/recorder/VERSION 2>/dev/null)$COMO" >&2
+  # openssl toma como contraseña la primera línea: una vacía o muy corta cifraría sin proteger
+  if [ "$(head -n 1 "$CLAVE" | tr -d '[:space:]' | wc -c)" -lt 20 ]; then
+    echo "la primera línea de $CLAVE tiene menos de 20 caracteres: no sirve de contraseña y no se sube nada a Drive" >&2
+    exit 1
+  fi
+  SUBE="$TMP/msx-$FECHA.tar.gz.enc"
+  openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -salt -pass "file:$CLAVE" -in "$DIR/msx-$FECHA.tar.gz" -out "$SUBE"
+  /home/mediasat/recorder/venv/bin/python -W ignore::FutureWarning /home/mediasat/respaldos/bin/respaldo_drive.py "$SUBE" \
+    "$DRIVE · Streamer $(cat /home/mediasat/streamer/VERSION 2>/dev/null) · Recorder $(cat /home/mediasat/recorder/VERSION 2>/dev/null) · cifrado: openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256" >&2
 else
   cat "$DIR/msx-$FECHA.tar.gz"
 fi

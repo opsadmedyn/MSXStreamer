@@ -331,8 +331,9 @@ y las unidades de systemd no cambian desde la 0.3.9, así que no hace falta `--m
 se reinicia.
 
 1. Respaldar, con el guion de respaldo de esta versión. `desplegar.sh` no lo cambia: se instala
-   una vez con `scripts/instalar-respaldos.sh <alias ssh>`, que además hace un respaldo y lo sube a
-   Drive. Con `--cifrar`, ese respaldo y los siguientes suben cifrados (ver
+   una vez con `scripts/instalar-respaldos.sh <alias ssh>`, que crea la contraseña de respaldo si
+   la estación no la tiene y sube a Drive un respaldo ya cifrado. Esa contraseña hay que guardarla
+   también fuera de la estación (ver
    [El respaldo a Google Drive y sus claves](#el-respaldo-a-google-drive-y-sus-claves)).
 2. Elegir el puerto RTMP del hub (no 1935) y comprobar que él, 8889/tcp y 8189/udp están libres;
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
@@ -377,8 +378,8 @@ Las tablas nuevas se quedan en la base sin estorbar, para cuando se vuelva a la 
   token de lectura de un destino WebRTC) solo las ve quien tiene el permiso «Ver claves»; las de un
   equipo ajeno (la passphrase o la clave de emisión de un destino) se escriben y no vuelven nunca.
 - La prueba de aceptación lo comprueba buscando las suyas en los registros y en la API.
-- **El respaldo a Google Drive las lleva dentro.** Sube legible mientras la estación no tenga una
-  contraseña de respaldo: ver el apartado siguiente.
+- **El respaldo a Google Drive las lleva dentro**, y por eso a Drive solo sube cifrado: ver el
+  apartado siguiente.
 
 ## El respaldo a Google Drive y sus claves
 
@@ -386,28 +387,29 @@ Las tablas nuevas se quedan en la base sin estorbar, para cuando se vuelva a la 
 Drive («MSX Respaldos/<estación>/», en Mi unidad de la cuenta del sistema) la configuración y las
 bases de datos del Streamer y del Recorder. `streamer.db` lleva las claves: con el hub, las de los
 destinos (por ejemplo la de emisión de YouTube), las passphrases y las que usan los codificadores
-para publicar. Quien pueda abrir esa cuenta de Drive puede leerlas.
+para publicar.
 
-Mientras la estación no tenga una contraseña de respaldo, ese archivo sube legible, como hasta
-ahora. Para que suba cifrado:
+Por eso a Drive solo sube cifrado, con una contraseña de respaldo que vive en la estación
+(`/home/mediasat/respaldos/clave-respaldo`, que solo lee root). Sin esa contraseña, o si el cifrado
+falla, el respaldo termina con error y a Drive no sube nada; la copia de la estación se hace igual.
 
 ```
-scripts/instalar-respaldos.sh <alias ssh> --cifrar
+scripts/instalar-respaldos.sh <alias ssh>
 ```
 
-Instala el guion de respaldo de esta versión, crea la contraseña en
-`/home/mediasat/respaldos/clave-respaldo` (solo la lee root; si ya hay una, la conserva) y hace un
-primer respaldo, ya cifrado. Sin `--cifrar` instala el guion y lo demás sigue igual: el respaldo
-sube legible, y ahora lo avisa cada vez. El guion de respaldo no viaja con `desplegar.sh`, que solo
-lo ejecuta: si en la estación encuentra el anterior a esta versión, lo dice al terminar.
+Instala el guion de respaldo de esta versión, crea la contraseña si la estación no la tiene (si la
+tiene, la conserva) y hace un primer respaldo. El guion de respaldo no viaja con `desplegar.sh`,
+que solo lo ejecuta: una estación con el guion anterior a esta versión sigue subiendo legible hasta
+que se le instala este, y `desplegar.sh` lo dice al terminar.
 
-Después de activarlo:
+Al instalarlo:
 
 - **Guardar la contraseña también fuera de la estación** (`ssh <alias ssh> sudo cat
   /home/mediasat/respaldos/clave-respaldo`), donde se guarden las demás contraseñas de
-  administración. Sin ella los respaldos cifrados no se pueden abrir, y si la estación se pierde
-  es lo único que los abre.
-- Los respaldos que ya estaban en Drive siguen legibles: se pueden borrar desde Drive.
+  administración. Sin ella los respaldos de Drive no se pueden abrir, y si la estación se pierde
+  es lo único que los abre. Al rehacer una estación, poner antes ese mismo archivo en su sitio
+  (de root, con permisos 600) hace que el instalador lo conserve y se siga con la misma.
+- Los respaldos que subieron antes siguen legibles en Drive: se pueden borrar desde Drive.
 - La copia que queda en la estación (`/home/mediasat/respaldos/msx-*.tar.gz`, las 30 últimas) no
   se cifra: solo la lee root, y en esa misma estación están las bases de las que sale. Tampoco se
   cifra el respaldo que se saca por la salida estándar hacia otro equipo.
@@ -415,8 +417,8 @@ Después de activarlo:
   que tener al menos 20 caracteres: con una más corta o vacía, el respaldo termina con error y no
   sube nada. Cada respaldo se abre solo con la contraseña con la que se hizo.
 
-Con contraseña, a Drive solo sube el archivo cifrado (`.tar.gz.enc`). Si el cifrado falla, el
-respaldo termina con error y no sube nada. Para abrir uno, con la contraseña guardada en un archivo:
+Lo que queda en Drive es el archivo cifrado (`.tar.gz.enc`). Para abrir uno, con la contraseña
+guardada en un archivo:
 
 ```
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass file:clave-respaldo \
