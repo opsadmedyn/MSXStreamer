@@ -268,6 +268,86 @@ No dice nada del Drive de verdad (la cuenta, sus permisos, sus límites) ni de l
 comprobó aparte en la EZC80, al instalarlo: ver
 [instalacion.md](instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
 
+## El relevo desde la 0.3.9
+
+Desplegar esta versión encima de la 0.3.9 no debe cortar lo que está al aire (ver
+[instalacion.md](instalacion.md#relevo-de-la-039-en-la-ezc80)). El ensayo tampoco necesita una
+estación, pero sí el MediaMTX del banco (lo descarga `tests/banco/banco.sh arrancar`) y un Python
+con lo que usa el panel:
+
+```
+sudo PYTHON=.venv/bin/python tests/banco/relevo.sh
+```
+
+Necesita además Linux, root, `unshare`, `ip`, `ss`, `rsync`, `curl`, `git` y `ffmpeg`, y un
+repositorio que tenga el commit de la 0.3.9; si le falta algo, lo dice al empezar y no sigue.
+
+Corre en espacios propios de montaje, de red y de procesos: `/home` y `/etc/systemd/system` son
+discos en memoria, los puertos son solo de la prueba y al terminar no queda ningún proceso. Ahí
+monta una estación de mentira con la 0.3.9 tal como está en el repositorio (el commit `7094db7`),
+instalada con su propio `desplegar.sh`, y pone al aire con ella cuatro flujos, uno por cada clase
+de entrada de esa versión: uno que MediaMTX va a buscar por SRT, uno de un canal del Recorder, uno
+de hub con dirección de respaldo y uno 1080i directo. Entre los cuatro llevan seis salidas con
+proceso (SRT llamando, con passphrase y stream ID; SRT a la escucha; RTMP con clave; y una SRT por
+cada uno de los otros tres flujos) y una HLS. A cada entrada le da señal un ffmpeg que termina si
+lo sueltan, y cada una de esas seis salidas la recibe otro que apunta cada segundo cuánto le llegó
+y el mayor hueco entre dos llegadas.
+
+Con eso al aire hace el relevo como lo da la guía: añade `rtmp_puerto` a `config.json` y ejecuta
+el `scripts/desplegar.sh` de esta versión, tal cual. Y comprueba:
+
+- que cada salida sigue siendo el mismo proceso, que MediaMTX no se reinició y que no soltó
+  ninguna de sus tres entradas;
+- que a los seis receptores les siguió llegando señal, sin ningún hueco de más de medio segundo, y
+  que las cuatro cámaras de prueba siguen conectadas. Estas señales llegan a ráfagas, una cada
+  cuarto de segundo más o menos, y por eso la prueba da el mayor hueco de cada paso junto al que
+  había con todo en reposo;
+- que el supervisor nuevo anota «arranque: 6 procesos seguían en marcha y se conservan, 0
+  lanzados», que no para, relanza ni vuelve a declarar nada, que no escribe nada en su registro
+  (solo lo hace cuando algo le falla) y que el panel no anota ningún error;
+- que MediaMTX sigue sin RTMP ni WebRTC, que nadie usa todavía, y cuánto estuvo sin avanzar la
+  lista HLS para un lector que la pide dos veces por segundo;
+- que el panel nuevo responde, con los cuatro flujos de antes, y que la base sigue con permisos
+  600.
+
+Después, con la versión nueva, para y vuelve a iniciar una de las salidas que venían de la 0.3.9,
+y mira que lo que se anota al lanzarla ya no lleva la passphrase ni el stream ID. Vuelve a la
+0.3.9 con el `desplegar.sh` de la 0.3.9, repite el relevo (esta vez la lista HLS no debe pararse)
+y vuelve otra vez por el atajo que da la guía para hacerlo en la propia estación, con las mismas
+comprobaciones en cada paso.
+
+Por último ensaya un relevo que sale mal: despliega una versión nueva estropeada a propósito, en
+la que ni el supervisor ni el panel arrancan. `desplegar.sh` tiene que terminar con error y decir
+que la versión no quedó en marcha, lo que está al aire tiene que seguir igual, y de ahí se tiene
+que poder volver a la 0.3.9 sin cortarlo.
+
+Tarda unos 3 minutos. Con `CONSERVAR=<carpeta>` deja ahí lo que dijo cada paso, las medidas y los
+registros.
+
+`ssh`, `sudo` y `systemctl` son de mentira (`tests/banco/relevo_ayuda.py`): la «estación» es el
+propio equipo dentro de la prueba, y el `systemctl` de la prueba para y arranca cada servicio como
+diga su unidad, que son las del repositorio sin cambiar. En la del supervisor eso es
+`KillMode=process`: al reiniciarlo se le avisa solo a él, no a los ffmpeg que lanzó. Las salidas
+siguen gracias a eso, y la prueba falla si la unidad no lo tiene.
+
+Lo que `desplegar.sh` dice y cómo termina según le responda la estación se prueba aparte y en
+seco, con un `ssh` que no se conecta a nada: `tests/banco/despliegue_en_seco.sh`. Son ocho casos:
+con el guion de respaldo de esta versión, con uno anterior (avisa de que sube sin cifrar), sin
+respaldo, con el respaldo fallando, con el panel escuchando fuera de `127.0.0.1` y los tres en que
+la versión no queda en marcha (el panel no responde, responde la versión anterior o el supervisor
+no arranca), en los que termina con error y no lanza el respaldo. Tarda un minuto.
+
+Sin señal, `tests/test_relevo.py` fija lo mismo desde el otro lado: la orden que el supervisor
+arma para ocho salidas guardadas como las guarda la 0.3.9 tiene la misma firma que les daba la
+0.3.9. El supervisor conserva un proceso solo si esa firma coincide, y lo relanza si no.
+
+No dice nada de lo que no está en ella: el systemd, el `sudo` y el `ssh` de verdad, el Caddy y el
+Recorder de la estación, sus señales (las de la prueba son de 640×360) y las composiciones, que no
+entran en el ensayo. Tampoco usa las mismas versiones: la EZC80 tiene Python 3.10.12 y FFmpeg 7.1,
+y el banco de desarrollo, Python 3.10.20 y FFmpeg 6.1.1. Y un lector que pide la lista HLS no es
+un navegador: lo que tarda en volver la imagen está medido aparte (ver
+[instalacion.md](instalacion.md#relevo-de-la-039-en-la-ezc80)).
+
 ## Lo que el banco no puede decir
 
 - La carga de la HP Z8 con sus señales de verdad (1080i, 1080p59,94, varios audios) y con NVENC:

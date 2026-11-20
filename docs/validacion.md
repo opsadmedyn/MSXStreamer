@@ -30,6 +30,15 @@ El panel se probó en el banco con un Chromium sin ventana: sus seis secciones, 
 primera mitad de la prueba de aceptación hecha pulsando en él (`scripts/aceptacion_panel.js`, que
 pasa con su corte de 60 s). No está probado en otros navegadores ni en la estación.
 
+El relevo desde la 0.3.9 está ensayado en el banco, no hecho en la estación
+(`tests/banco/relevo.sh`, el 20 de noviembre de 2026). Con el código de la 0.3.9 y seis salidas al
+aire, desplegar esta versión dejó las seis como los mismos procesos, a sus receptores les siguió
+llegando señal al ritmo de antes y MediaMTX no soltó ninguna entrada. Pasó lo mismo al volver a la
+0.3.9, por los dos caminos de la guía, y al desplegar una versión estropeada a propósito, que no
+arranca. La lista HLS dejó de avanzar unos 2,5 s una vez, en el primer relevo. El systemd, el
+`sudo` y el `ssh` del ensayo son de mentira, y las composiciones no entran en él: ver
+[banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039).
+
 | Entrada | SRT, el hub llama al receptor | SRT, el receptor llama al hub | RTMP, el hub publica en un servidor | RTMP, un cliente lee del hub | HLS, el reproductor pide la lista | WebRTC, un navegador la pide (WHEP) | WebRTC, el hub la reenvía (WHIP) |
 |---|---|---|---|---|---|---|---|
 | SRT, el codificador llama al hub | Sí | Sí | Sí, A | Sí | Sí, A | Sí, A | Sí |
@@ -75,6 +84,8 @@ Pendientes de validación:
   de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
 - El panel en Safari y en Firefox, y en la estación con sus señales: en el banco solo se usó
   Chromium.
+- El relevo en la propia EZC80, con su systemd, sus salidas y sus señales. En el banco está
+  ensayado con programas y con las unidades del repositorio.
 - Del respaldo cifrado a Google Drive, abrir uno con el `openssl` de macOS y, en la estación, el
   primer respaldo semanal que lance el temporizador con el guion nuevo (el domingo 22 de noviembre
   de 2026). Lo demás está probado con una estación y un Drive de mentira

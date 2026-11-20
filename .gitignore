@@ -4,4 +4,5 @@ __pycache__/
 *.db-*
 config.json
 .pytest_cache/
+.venv/
 .banco/

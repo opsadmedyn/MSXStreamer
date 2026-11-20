@@ -330,6 +330,9 @@ sirven tal cual: el hub solo añade tablas y una columna con valor por defecto, 
 y las unidades de systemd no cambian desde la 0.3.9, así que no hace falta `--mediamtx` y MediaMTX no
 se reinicia.
 
+Está ensayado sin estación, con el código de la 0.3.9 y salidas al aire: `tests/banco/relevo.sh`
+(ver [banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039)). En la EZC80 está por hacer.
+
 1. Respaldar, con el guion de respaldo de esta versión. `desplegar.sh` no lo cambia: se instala
    una vez con `scripts/instalar-respaldos.sh <alias ssh>`, que crea la contraseña de respaldo si
    la estación no la tiene y sube a Drive un respaldo ya cifrado. Esa contraseña hay que guardarla
@@ -338,24 +341,43 @@ se reinicia.
    En la EZC80 está instalado desde el 20 de noviembre de 2026.
 2. Elegir el puerto RTMP del hub (no 1935) y comprobar que él, 8889/tcp y 8189/udp están libres;
    añadir `rtmp_puerto` a `/home/mediasat/streamer/config.json`.
-3. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
+3. Comprobar que la unidad del supervisor de la estación sigue siendo la del repositorio:
+   `systemctl show -p KillMode msxs-supervisor` tiene que responder `KillMode=process`. Con eso,
+   reiniciar el supervisor no para los ffmpeg de las salidas. Con otro valor, el despliegue las
+   cortaría.
+4. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
    propia estación sin tocar nada de lo que está al aire. Ver [banco-de-pruebas.md](banco-de-pruebas.md).
    Hecho el 19 de noviembre de 2026, con señales de prueba: [aceptacion-z8.md](aceptacion-z8.md).
-4. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
+5. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
 
    ```
    scripts/desplegar.sh <alias ssh>
    ```
 
-   Las salidas siguen al aire, con una excepción la primera vez que arranca esta versión: el
-   supervisor le pide a MediaMTX que juzgue por `X-Forwarded-For` lo que le llega de un proxy de la
-   estación (ver «HTTPS por delante»), y MediaMTX reinicia una vez sus servidores HLS y WebRTC. En
-   el banco, un navegador que miraba por HLS estuvo unos 10 s sin imagen y un lector HLS hecho con
-   ffmpeg se cortó; un lector SRT no notó nada. Conviene hacer el relevo sin nadie mirando por HLS.
-   En los arranques siguientes no pasa.
+   Las salidas siguen al aire: cada una es un proceso aparte, y el supervisor nuevo se queda con
+   el que encuentra en marcha si la orden que él armaría para esa salida es la misma que lo lanzó.
+   En el ensayo, las seis salidas que venían de la 0.3.9 siguieron siendo los mismos procesos, a
+   sus receptores les siguió llegando señal y MediaMTX no soltó ninguna entrada.
 
-5. Comprobar: `curl -s http://127.0.0.1:8095/api/version` en la estación, el panel abre, los flujos
-   de la 0.3.9 siguen como estaban y `journalctl -u msxs-supervisor -n 50` no tiene errores.
+   Hay una excepción la primera vez que arranca esta versión: el supervisor le pide a MediaMTX que
+   juzgue por `X-Forwarded-For` lo que le llega de un proxy de la estación (ver «HTTPS por
+   delante»), y MediaMTX reinicia una vez sus servidores HLS y WebRTC. En el banco, un navegador
+   que miraba por HLS estuvo unos 10 s sin imagen y un lector HLS hecho con ffmpeg se cortó; un
+   lector SRT no notó nada. Conviene hacer el relevo sin nadie mirando por HLS. En los arranques
+   siguientes no pasa.
+
+   Si la versión no queda en marcha, `desplegar.sh` termina con error y lo dice. Lo que estaba al
+   aire sigue, pero mientras el supervisor no arranque nadie relanza una salida que se caiga: mirar
+   el porqué con la orden que da el aviso y, si no se arregla enseguida, volver a la 0.3.9. Eso
+   también está ensayado: con una versión que no arranca, las salidas siguieron igual y la vuelta a
+   la 0.3.9 las conservó.
+
+6. Comprobar: `curl -s http://127.0.0.1:8095/api/version` en la estación, el panel abre, los flujos
+   de la 0.3.9 siguen como estaban y en `journalctl -u msxs-supervisor -n 50` no hay nada escrito
+   por el supervisor después de su arranque: solo escribe ahí cuando algo le falla. En «Ajustes»,
+   «Arranque y restauración» dice qué encontró al arrancar: tiene que haber conservado tantos
+   procesos como había en marcha, y lanzado solo los de las salidas que en ese momento no tenían
+   proceso porque estaban reintentando.
 
 **Volver a la 0.3.9.** Primero desactivar desde el panel las rutas del hub (la 0.3.9 no las conoce
 y dejaría sus ffmpeg sin vigilar). Después, desde el repositorio, `git checkout claude/streamer-reposo`
@@ -366,7 +388,8 @@ sudo -u mediasat bash -c 'cd /home/mediasat/streamer && rsync -a releases/v0.3.9
 sudo systemctl restart msxs-supervisor msxs-web
 ```
 
-Las tablas nuevas se quedan en la base sin estorbar, para cuando se vuelva a la 0.4.
+Las tablas nuevas se quedan en la base sin estorbar, para cuando se vuelva a la 0.4. En el ensayo,
+las salidas de la 0.3.9 siguieron al aire también en la vuelta, por los dos caminos.
 
 ## Claves y registros
 
@@ -482,5 +505,8 @@ fuente de un destino al aire. En el registro de cambios queda cuántas rutas cor
 - De extremo a extremo, con señales de verdad: el banco y la prueba de aceptación, por la API
   (`scripts/aceptacion.py`) y pulsando en el panel (`scripts/aceptacion_panel.js`), ver
   [banco-de-pruebas.md](banco-de-pruebas.md).
+- El relevo desde la 0.3.9 con salidas al aire y lo que dice `desplegar.sh` en cada caso, sin
+  estación: `sudo PYTHON=.venv/bin/python tests/banco/relevo.sh` y `tests/banco/despliegue_en_seco.sh`,
+  ver [banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039).
 - Qué combinaciones están comprobadas y cómo anotar las que se prueben con equipos reales:
   [validacion.md](validacion.md).
