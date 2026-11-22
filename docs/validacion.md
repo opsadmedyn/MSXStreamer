@@ -30,7 +30,10 @@ El panel se probó en el banco con un Chromium sin ventana: sus seis secciones, 
 primera mitad de la prueba de aceptación hecha pulsando en él (`scripts/aceptacion_panel.js`, que
 pasa con su corte de 60 s). No está probado en otros navegadores ni en la estación.
 
-El relevo desde la 0.3.9 está ensayado en el banco, no hecho en la estación
+El relevo desde la 0.3.9 se hizo en la EZC80 el 22 de noviembre de 2026, sin ninguna salida al
+aire en ese momento: la versión quedó en marcha, MediaMTX no se reinició y el supervisor no anotó
+ningún error (ver [instalacion.md](instalacion.md#relevo-de-la-039-en-la-ezc80)). Que las salidas
+al aire lo sobreviven está ensayado en el banco, no visto en la estación
 (`tests/banco/relevo.sh`, el 20 de noviembre de 2026). Con el código de la 0.3.9 y seis salidas al
 aire, desplegar esta versión dejó las seis como los mismos procesos, a sus receptores les siguió
 llegando señal al ritmo de antes y MediaMTX no soltó ninguna entrada. Pasó lo mismo al volver a la
@@ -74,7 +77,7 @@ La misma prueba de las formas de conexión comprobó en el banco, además:
   confirmar qué se corta y no corta lo que va por SRT.
 
 Verificadas con equipos reales: **ninguna todavía.** La prueba en la HP Z8 con señales reales está
-pendiente de que se apruebe el relevo.
+pendiente: la 0.4.0 está instalada en la EZC80 desde el 22 de noviembre de 2026.
 
 Pendientes de validación:
 
@@ -84,8 +87,9 @@ Pendientes de validación:
   de la HP Z8 está medida: [aceptacion-z8.md](aceptacion-z8.md).
 - El panel en Safari y en Firefox, y en la estación con sus señales: en el banco solo se usó
   Chromium.
-- El relevo en la propia EZC80, con su systemd, sus salidas y sus señales. En el banco está
-  ensayado con programas y con las unidades del repositorio.
+- Un despliegue en la EZC80 con salidas al aire. El relevo se hizo con su systemd de verdad pero
+  sin nada al aire; con salidas en marcha está ensayado en el banco, con programas y con las
+  unidades del repositorio. `scripts/previo.sh` dice antes de cada despliegue qué pasaría con ellas.
 - Del respaldo cifrado a Google Drive, abrir uno con el `openssl` de macOS y, en la estación, el
   primer respaldo semanal que lance el temporizador con el guion nuevo (el domingo 22 de noviembre
   de 2026). Lo demás está probado con una estación y un Drive de mentira

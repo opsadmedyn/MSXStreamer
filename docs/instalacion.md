@@ -325,13 +325,14 @@ queda habilitado al instalarlo y arranca solo en el puerto 3478: si se instala s
 
 ## Relevo de la 0.3.9 en la EZC80
 
-Se hace cuando esté aprobado el relevo. La base de datos y `mediamtx.yml` de la 0.3.9
-sirven tal cual: el hub solo añade tablas y una columna con valor por defecto, y `config/mediamtx.yml`
-y las unidades de systemd no cambian desde la 0.3.9, así que no hace falta `--mediamtx` y MediaMTX no
-se reinicia.
+Hecho en la EZC80 el 22 de noviembre de 2026 (más abajo, cómo salió). La base de datos y
+`mediamtx.yml` de la 0.3.9 sirven tal cual: el hub solo añade tablas y una columna con valor por
+defecto, y `config/mediamtx.yml` y las unidades de systemd no cambian desde la 0.3.9, así que no hace
+falta `--mediamtx` y MediaMTX no se reinicia.
 
-Está ensayado sin estación, con el código de la 0.3.9 y salidas al aire: `tests/banco/relevo.sh`
-(ver [banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039)). En la EZC80 está por hacer.
+Que las salidas al aire lo sobreviven está ensayado sin estación, con el código de la 0.3.9:
+`tests/banco/relevo.sh` (ver [banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039)).
+Los pasos, por si hay que repetirlo en otra estación:
 
 1. Respaldar, con el guion de respaldo de esta versión. `desplegar.sh` no lo cambia: se instala
    una vez con `scripts/instalar-respaldos.sh <alias ssh>`, que crea la contraseña de respaldo si
@@ -392,6 +393,27 @@ Está ensayado sin estación, con el código de la 0.3.9 y salidas al aire: `tes
    «Arranque y restauración» dice qué encontró al arrancar: tiene que haber conservado tantos
    procesos como había en marcha, y lanzado solo los de las salidas que en ese momento no tenían
    proceso porque estaban reintentando.
+
+**Cómo salió en la EZC80.** El 22 de noviembre de 2026 a la 1:57 (hora de la estación), con
+`scripts/desplegar.sh` sin opciones desde el commit `0952017`. Antes, `scripts/previo.sh` dijo
+que no se cortaría nada: el Streamer no tenía ninguna salida al aire, MediaMTX no tenía ningún
+path, nadie miraba por HLS y a MediaMTX solo se le iban a pedir las dos listas de proxies de
+confianza. Los puertos 1945/tcp, 8889/tcp y 8189/udp estaban libres y la unidad del supervisor
+tenía `KillMode=process`. A `config.json` se le añadió `rtmp_puerto` 1945; el de antes queda al
+lado, como `config.json.antes-v0.4.0`.
+
+`desplegar.sh` terminó bien, con los tres servicios en marcha y la versión `0.4.0-alfa`, y subió a
+Drive un respaldo cifrado. MediaMTX siguió siendo el mismo proceso (en marcha desde el 8 de
+noviembre) y ahora tiene las dos listas de proxies. El supervisor anotó «claves retiradas de 12
+registros de versiones anteriores», «conversiones de vídeo con h264_nvenc» y «arranque: 0 procesos
+seguían en marcha y se conservan, 0 lanzados», y no escribió nada en el journal. La base quedó con
+permisos 600, el panel escucha solo en `127.0.0.1:8095` y responde también por el Caddy del
+Recorder. RTMP sigue apagado y nadie escucha en el 1945: MediaMTX lo abre cuando una fuente o un
+destino del hub lo usa. Un minuto después todo seguía igual.
+
+Como no había nada al aire, en la estación no se ha visto todavía un despliegue con salidas en
+marcha: eso sigue probado solo en el ensayo. Antes de cada despliegue, `scripts/previo.sh` dice
+qué pasaría con las que haya.
 
 **Volver a la 0.3.9.** Primero desactivar desde el panel las rutas del hub (la 0.3.9 no las conoce
 y dejaría sus ffmpeg sin vigilar). Después, desde el repositorio, `git checkout claude/streamer-reposo`

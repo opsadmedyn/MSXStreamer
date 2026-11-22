@@ -130,7 +130,8 @@ segundos por detrás del directo. No cambia `mediamtx.yml` ni las unidades:
 se despliega sin `--mediamtx` y las salidas de la 0.3.9 siguen al aire (ensayado con el código de
 la 0.3.9 en `tests/banco/relevo.sh`). `scripts/previo.sh <alias ssh>` dice antes, sin tocar nada,
 qué haría esta versión con lo que la estación tiene al aire. Antes de desplegar hay que poner en
-`config.json` un `rtmp_puerto` libre (en la EZC80, el 1935 es de Restreamer). `--instalar` instala
+`config.json` un `rtmp_puerto` libre (en la EZC80, el 1935 es de Restreamer; se puso el 1945). En la
+EZC80 está instalada desde el 22 de noviembre de 2026. `--instalar` instala
 ya las versiones de `requirements.lock`. Pasos, puertos y vuelta atrás en
 [docs/instalacion.md](docs/instalacion.md).
 
