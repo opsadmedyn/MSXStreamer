@@ -348,7 +348,21 @@ Está ensayado sin estación, con el código de la 0.3.9 y salidas al aire: `tes
 4. Probar antes al lado de producción, con el banco desplazado (`DESPLAZA=100`): mide la carga en la
    propia estación sin tocar nada de lo que está al aire. Ver [banco-de-pruebas.md](banco-de-pruebas.md).
    Hecho el 19 de noviembre de 2026, con señales de prueba: [aceptacion-z8.md](aceptacion-z8.md).
-5. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
+5. Preguntar antes qué pasaría con lo que está al aire, sin tocar nada:
+
+   ```
+   scripts/previo.sh <alias ssh>
+   ```
+
+   Lleva el código de esta versión a una carpeta temporal de la estación y recorre, con los datos
+   de verdad, lo que hará el supervisor nuevo en su primera vuelta. De cada proceso que está al
+   aire dice si lo conservaría, lo relanzaría o lo pararía; de MediaMTX, qué paths y qué claves de
+   su configuración le pediría cambiar; y si alguien mira ahora por HLS. Trabaja con una copia de
+   la base, a MediaMTX solo le pregunta, no escribe direcciones ni claves y borra su carpeta al
+   terminar. Termina con 0 si desplegar no cortaría nada. Si anuncia otro corte que el del HLS de
+   la primera vez (ver el paso siguiente), no desplegar. Sirve igual antes de cualquier despliegue
+   posterior.
+6. Desplegar sin opciones, que copia el código y reinicia solo el panel y el supervisor:
 
    ```
    scripts/desplegar.sh <alias ssh>
@@ -372,7 +386,7 @@ Está ensayado sin estación, con el código de la 0.3.9 y salidas al aire: `tes
    también está ensayado: con una versión que no arranca, las salidas siguieron igual y la vuelta a
    la 0.3.9 las conservó.
 
-6. Comprobar: `curl -s http://127.0.0.1:8095/api/version` en la estación, el panel abre, los flujos
+7. Comprobar: `curl -s http://127.0.0.1:8095/api/version` en la estación, el panel abre, los flujos
    de la 0.3.9 siguen como estaban y en `journalctl -u msxs-supervisor -n 50` no hay nada escrito
    por el supervisor después de su arranque: solo escribe ahí cuando algo le falla. En «Ajustes»,
    «Arranque y restauración» dice qué encontró al arrancar: tiene que haber conservado tantos
@@ -508,5 +522,7 @@ fuente de un destino al aire. En el registro de cambios queda cuántas rutas cor
 - El relevo desde la 0.3.9 con salidas al aire y lo que dice `desplegar.sh` en cada caso, sin
   estación: `sudo PYTHON=.venv/bin/python tests/banco/relevo.sh` y `tests/banco/despliegue_en_seco.sh`,
   ver [banco-de-pruebas.md](banco-de-pruebas.md#el-relevo-desde-la-039).
+- Antes de desplegar en una estación con salidas al aire, qué haría esta versión con ellas:
+  `scripts/previo.sh <alias ssh>` (no cambia nada; ver el relevo, más arriba).
 - Qué combinaciones están comprobadas y cómo anotar las que se prueben con equipos reales:
   [validacion.md](validacion.md).

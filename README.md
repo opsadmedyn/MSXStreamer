@@ -128,7 +128,8 @@ flujos de la 0.3.9 no cambian: se editan en «Flujos y composición» y cada uno
 una fuente del hub. La vista previa de Fuentes y Monitoreo va por HLS a través del panel, unos
 segundos por detrás del directo. No cambia `mediamtx.yml` ni las unidades:
 se despliega sin `--mediamtx` y las salidas de la 0.3.9 siguen al aire (ensayado con el código de
-la 0.3.9 en `tests/banco/relevo.sh`). Antes hay que poner en
+la 0.3.9 en `tests/banco/relevo.sh`). `scripts/previo.sh <alias ssh>` dice antes, sin tocar nada,
+qué haría esta versión con lo que la estación tiene al aire. Antes de desplegar hay que poner en
 `config.json` un `rtmp_puerto` libre (en la EZC80, el 1935 es de Restreamer). `--instalar` instala
 ya las versiones de `requirements.lock`. Pasos, puertos y vuelta atrás en
 [docs/instalacion.md](docs/instalacion.md).

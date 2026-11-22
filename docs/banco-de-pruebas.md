@@ -293,8 +293,13 @@ cada uno de los otros tres flujos) y una HLS. A cada entrada le da señal un ffm
 lo sueltan, y cada una de esas seis salidas la recibe otro que apunta cada segundo cuánto le llegó
 y el mayor hueco entre dos llegadas.
 
-Con eso al aire hace el relevo como lo da la guía: añade `rtmp_puerto` a `config.json` y ejecuta
-el `scripts/desplegar.sh` de esta versión, tal cual. Y comprueba:
+Con eso al aire hace el relevo como lo da la guía. Primero ejecuta `scripts/previo.sh`, que tiene
+que anunciar lo que después pasa (se conservan los seis procesos, a MediaMTX solo se le piden las
+dos listas de proxies de confianza y a quien mira por HLS se le corta unos segundos) y no tocar
+nada: la prueba compara los procesos, las señales, MediaMTX, los servicios, los eventos y los
+archivos de la carpeta del servicio de antes y de después, y mira que no escriba direcciones ni
+claves. Luego añade `rtmp_puerto` a `config.json` y ejecuta el `scripts/desplegar.sh` de esta
+versión, tal cual. Y comprueba:
 
 - que cada salida sigue siendo el mismo proceso, que MediaMTX no se reinició y que no soltó
   ninguna de sus tres entradas;
@@ -312,9 +317,9 @@ el `scripts/desplegar.sh` de esta versión, tal cual. Y comprueba:
 
 Después, con la versión nueva, para y vuelve a iniciar una de las salidas que venían de la 0.3.9,
 y mira que lo que se anota al lanzarla ya no lleva la passphrase ni el stream ID. Vuelve a la
-0.3.9 con el `desplegar.sh` de la 0.3.9, repite el relevo (esta vez la lista HLS no debe pararse)
-y vuelve otra vez por el atajo que da la guía para hacerlo en la propia estación, con las mismas
-comprobaciones en cada paso.
+0.3.9 con el `desplegar.sh` de la 0.3.9, repite el relevo (esta vez `previo.sh` no debe anunciar
+ningún corte y la lista HLS no debe pararse) y vuelve otra vez por el atajo que da la guía para
+hacerlo en la propia estación, con las mismas comprobaciones en cada paso.
 
 Por último ensaya un relevo que sale mal: despliega una versión nueva estropeada a propósito, en
 la que ni el supervisor ni el panel arrancan. `desplegar.sh` tiene que terminar con error y decir
@@ -323,6 +328,11 @@ que poder volver a la 0.3.9 sin cortarlo.
 
 Tarda unos 3 minutos. Con `CONSERVAR=<carpeta>` deja ahí lo que dijo cada paso, las medidas y los
 registros.
+
+Lo que `previo.sh` dice cuando algo sí se cortaría (un proceso que se relanzaría o se pararía, uno
+que corre sin dueño, un path de MediaMTX con señal que se cambiaría) está en `tests/test_previo.py`,
+con una carpeta de servicio y un MediaMTX de mentira que apunta todo lo que se le pide: solo le
+llegan preguntas.
 
 `ssh`, `sudo` y `systemctl` son de mentira (`tests/banco/relevo_ayuda.py`): la «estación» es el
 propio equipo dentro de la prueba, y el `systemctl` de la prueba para y arranca cada servicio como

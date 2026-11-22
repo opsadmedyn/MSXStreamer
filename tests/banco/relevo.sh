@@ -185,6 +185,29 @@ comprobar() {   # comprobar <paso> <versión que debe quedar> <T0> <T1>
   [ -z "$q" ] && bien "el supervisor no escribió nada en su registro y el panel no anotó ningún error" \
     || mal "el supervisor o el panel se quejan: $(echo "$q" | head -4 | cut -c1-220 | tr '\n' ';')"
 }
+previo() {      # previo <nombre>: scripts/previo.sh de la versión nueva, con fotos de antes y de después
+  foto "$1-antes"; (cd $E && find . | sort) > "$I/$1-archivos-antes.txt"
+  (cd "$COPIA/nueva" && scripts/previo.sh estacion) > "$I/$1.txt" 2>&1 < /dev/null
+  echo $? > "$I/$1.salida"
+  foto "$1-despues"; (cd $E && find . | sort) > "$I/$1-archivos-despues.txt"
+}
+intacto() {     # intacto <nombre>: previo.sh no tocó nada ni escribió lo que no debe
+  local dif
+  dif=$("$PY" "$AYUDA" comparar "$I/$1-antes.json" "$I/$1-despues.json" --solo-al-aire)
+  dif="$dif$("$PY" - "$I/$1-antes.json" "$I/$1-despues.json" <<'FIN'
+import json, sys
+a, d = (json.load(open(x)) for x in sys.argv[1:3])
+for que in ("eventos", "mediamtx", "servicios", "version"):
+    if a[que] != d[que]:
+        print(f"cambió: {que}")
+FIN
+)"
+  cmp -s "$I/$1-archivos-antes.txt" "$I/$1-archivos-despues.txt" || dif="$dif; hay archivos de más o de menos en la carpeta del servicio"
+  [ -z "$(ls -d /tmp/msxs-previo.* 2> /dev/null)" ] || dif="$dif; dejó su carpeta temporal"
+  grep -q "frase-de-paso-de-prueba-1\|clave-del-streamid\|clave-de-emision-de-prueba\|://" "$I/$1.txt" && dif="$dif; escribe direcciones o claves"
+  [ -z "$dif" ] && bien "previo.sh no tocó nada: mismos procesos y señales, MediaMTX y servicios como estaban, ni un evento ni un archivo nuevo, y no escribe direcciones ni claves" \
+    || mal "previo.sh tocó algo: $(echo "$dif" | tr '\n' ';')"
+}
 paso() {        # paso <nombre> <nueva|anterior|rota|atajo> [espera]: foto, despliegue, espera y foto
   foto "$1-antes"; T0=$(date +%s.%N)
   if [ "$2" = atajo ]; then       # «Volver a la 0.3.9» en la estación, como lo da docs/instalacion.md
@@ -273,7 +296,16 @@ sleep 13; en_reposo
 [ "$REPOSO" -gt 0 ] && [ "$REPOSO" -le $HUECO_MAX ] && bien "con todo en reposo, el mayor hueco entre dos llegadas a un receptor es de $REPOSO ms" \
   || mal "en reposo ya hay huecos de $REPOSO ms: la medida no sirve"
 
-echo "2 · el relevo, como en docs/instalacion.md: rtmp_puerto en config.json y desplegar.sh sin opciones"
+echo "2 · el relevo, como en docs/instalacion.md: previo.sh, rtmp_puerto en config.json y desplegar.sh sin opciones"
+previo 1-previo
+[ "$(cat "$I/1-previo.salida")" = 1 ] && grep -q "^Resumen: 6 procesos al aire; se conservan 6, se relanzarían 0, se pararían 0\. SE CORTARÍA: el HLS de quien está mirando, unos segundos\.$" "$I/1-previo.txt" \
+  && bien "previo.sh lo anuncia: la versión nueva conservaría los 6 procesos y solo cortaría unos segundos el HLS de quien mira" \
+  || mal "previo.sh no anuncia eso (salida $(cat "$I/1-previo.salida")): $(grep "Resumen\|RELANZ\|PARAR\|CORTAR\|!!" "$I/1-previo.txt" | head -4 | tr '\n' ';')"
+grep -q "paths: no le pediría crear, cambiar ni borrar ninguno" "$I/1-previo.txt" \
+  && grep -q "configuración general: le pediría cambiar hlsTrustedProxies, webrtcTrustedProxies$" "$I/1-previo.txt" \
+  && bien "y que a MediaMTX solo le pediría las dos listas de proxies de confianza" \
+  || mal "previo.sh anuncia otros cambios en MediaMTX: $(sed -n '/^MediaMTX/,/^Resumen/p' "$I/1-previo.txt" | tr '\n' ';')"
+intacto 1-previo
 "$PY" - <<'FIN'
 import json, os, pathlib
 p = pathlib.Path("/home/mediasat/streamer/config.json")
@@ -327,6 +359,11 @@ paso 4-vuelta anterior
 comprobar 4-vuelta "$VIEJA" "$T0" "$T1"
 
 echo "5 · el relevo otra vez: ya no toca el HLS"
+previo 5-previo
+[ "$(cat "$I/5-previo.salida")" = 0 ] && grep -q "^Resumen: 6 procesos al aire; se conservan 6, se relanzarían 0, se pararían 0\. No se cortaría nada\.$" "$I/5-previo.txt" \
+  && bien "previo.sh lo anuncia: esta vez no se cortaría nada" \
+  || mal "previo.sh no anuncia eso (salida $(cat "$I/5-previo.salida")): $(grep "Resumen\|RELANZ\|PARAR\|CORTAR\|!!" "$I/5-previo.txt" | head -4 | tr '\n' ';')"
+intacto 5-previo
 paso 5-relevo nueva
 comprobar 5-relevo "$NUEVA" "$T0" "$T1"
 PARADA=$("$PY" "$AYUDA" parada "$MED/hls.medida" "$T0" "$T1")
