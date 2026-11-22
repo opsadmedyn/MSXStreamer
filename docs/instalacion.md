@@ -409,7 +409,8 @@ registros de versiones anteriores», «conversiones de vídeo con h264_nvenc» y
 seguían en marcha y se conservan, 0 lanzados», y no escribió nada en el journal. La base quedó con
 permisos 600, el panel escucha solo en `127.0.0.1:8095` y responde también por el Caddy del
 Recorder. RTMP sigue apagado y nadie escucha en el 1945: MediaMTX lo abre cuando una fuente o un
-destino del hub lo usa. Un minuto después todo seguía igual.
+destino del hub lo usa. Un minuto después todo seguía igual, y a las tres horas seguían los mismos
+tres procesos, sin reinicios, con la misma versión y sin nada en el journal del supervisor.
 
 Como no había nada al aire, en la estación no se ha visto todavía un despliegue con salidas en
 marcha: eso sigue probado solo en el ensayo. Antes de cada despliegue, `scripts/previo.sh` dice
@@ -505,10 +506,14 @@ Está probado de dos maneras:
   reiniciaba solo antes de empezar. En esa carpeta de Drive siguen los respaldos anteriores,
   legibles.
 
-No está probado abrir un respaldo con el `openssl` de macOS. El respaldo semanal lo lanza
-`msx-respaldo.timer` sin sesión ni terminal: la prueba lo ejecuta así, con la orden de
-`msx-respaldo.service` y el entorno vacío, pero en la estación el primero con el guion nuevo toca
-el domingo 22 de noviembre de 2026.
+El respaldo semanal lo lanza `msx-respaldo.timer` sin sesión ni terminal: la prueba lo ejecuta así,
+con la orden de `msx-respaldo.service` y el entorno vacío. En la EZC80, el primero con el guion
+nuevo lo lanzó el temporizador el domingo 22 de noviembre de 2026 a las 4:34 (hora de la estación)
+y terminó sin error en 7 s: según su journal, guardó la copia de la estación (25 MB) y subió a
+Drive `msx-20261122-043409-semanal.tar.gz.enc` (25242 KB). Ese archivo no se volvió a descargar
+para abrirlo, como sí se hizo con el de la instalación.
+
+No está probado abrir un respaldo con el `openssl` de macOS.
 
 ## Quién puede cambiar qué
 
