@@ -120,6 +120,16 @@ MediaMTX 9997 (solo local) y, cuando el hub los usa, RTMP (`rtmp_puerto`) y WebR
 8189 (UDP). La configuración de la máquina está en `config.json` (ver `config/config.ejemplo.json`
 y [docs/instalacion.md](docs/instalacion.md)).
 
+### 0.4.1-alfa
+
+En «Flujos y composición», borrar una salida o un flujo los quita ya de la pantalla. El botón pide
+un segundo clic («¿Seguro? Borrar») y el panel no repinta con una confirmación a medias: tras
+confirmar, el botón se quedaba en «¿Seguro?», lo borrado seguía a la vista aunque ya no existía y
+la sección dejaba de ponerse al día hasta recargar la página. Ese código estaba igual en la 0.3.9.
+De paso, una lectura de los flujos que llega tarde ya no deshace en pantalla otra posterior. Solo
+cambia `streamer/static/app.js`: se despliega sin opciones. Lo prueba `tests/test_panel_navegador.py`,
+pulsando en un Chromium. Los botones de borrar de las secciones del hub no tenían el fallo.
+
 ### 0.4.0-alfa
 
 El hub de señales: motor, API y el panel para operarlo (Fuentes, Destinos, Matriz de rutas,

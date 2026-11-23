@@ -543,6 +543,8 @@ fuente de un destino al aire. En el registro de cambios queda cuántas rutas cor
 
 - Pruebas del motor, en una copia del repositorio (no hace falta la estación):
   `python3 -m venv .venv && .venv/bin/pip install -r requirements.lock pytest httpx && .venv/bin/python -m pytest tests`
+  Una de ellas (`tests/test_panel_navegador.py`) abre el panel en un Chromium y pulsa; sin Node
+  con Playwright y su Chromium, se salta.
 - De extremo a extremo, con señales de verdad: el banco y la prueba de aceptación, por la API
   (`scripts/aceptacion.py`) y pulsando en el panel (`scripts/aceptacion_panel.js`), ver
   [banco-de-pruebas.md](banco-de-pruebas.md).

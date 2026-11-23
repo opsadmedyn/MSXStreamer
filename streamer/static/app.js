@@ -663,14 +663,18 @@ function alertaEditor(txt) { const av = $('#av-flujo'); av.className = 'aviso er
 function confirmarBorrado(boton, hacer) {
   // el visor no muestra confirm(): el botón pide un segundo clic
   let t;
+  const soltar = () => { clearTimeout(t); boton.classList.remove('confirmar'); boton.textContent = boton.dataset.txt; };
   boton.onclick = async () => {
     if (!boton.classList.contains('confirmar')) {
       boton.classList.add('confirmar'); boton.dataset.txt = boton.textContent; boton.textContent = '¿Seguro? Borrar';
-      t = setTimeout(() => { boton.classList.remove('confirmar'); boton.textContent = boton.dataset.txt; }, 4000);
+      t = setTimeout(soltar, 4000);
       return;
     }
-    clearTimeout(t);
+    // Confirmado: el botón deja de pedirlo antes de borrar. refrescar() no repinta con una confirmación
+    // a medias, y si el botón se quedaba en «¿Seguro?» lo borrado seguía en pantalla hasta recargar
+    soltar(); boton.disabled = true;
     try { await hacer(); } catch (err) { alertaEditor(err.message); }
+    boton.disabled = false;
   };
 }
 
@@ -681,8 +685,13 @@ async function cargarRegistro() {
     : '<p class="nota">Sin eventos todavía.</p>';
 }
 
+let pedidas = 0, puesta = 0;      // lecturas de los flujos: las pedidas y la última puesta en pantalla
 async function refrescar() {
-  try { flujos = await api('GET', '/api/flujos'); } catch { return; }
+  const n = ++pedidas;
+  let leidos;
+  try { leidos = await api('GET', '/api/flujos'); } catch { return; }
+  if (n < puesta) return;         // llega tarde: ya hay en pantalla una lectura posterior y no se deshace
+  puesta = n; flujos = leidos;
   if ($('.confirmar') || $('#dlg').open) return;   // no repintar a mitad de una confirmación
   if ($('#v-editor').hidden) pintarLista();
   else if (actual) pintarEditor();
