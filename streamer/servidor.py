@@ -32,9 +32,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import api_hub
 import composicion
 import db
+import matriz
 import mtx
+from secretos import de_filas as _secretos, limpiar as _limpiar, url_visible as _url_visible
 from supervisor import path_de_flujo
 
 ESTATICOS = pathlib.Path(__file__).parent / "static"
@@ -47,6 +50,7 @@ except OSError:
     VERSION = "desarrollo"
 
 app = FastAPI(title="Media Syntaxis Streamer")
+app.include_router(api_hub.router)      # el hub de señales: fuentes, destinos y rutas (cada operación, con su permiso)
 
 # ---------------------------------------------------------------- acceso
 # Se entra solo con los usuarios del Recorder de este mismo equipo, y solo por Tailscale: el panel
@@ -54,6 +58,8 @@ app = FastAPI(title="Media Syntaxis Streamer")
 # navegador trae la cookie de sesión del Recorder (mismo dominio) y se pregunta por ella a su
 # /api/auth/yo, que dice email, rol y módulos (columna G de la hoja de usuarios). Hace falta el
 # módulo "streamer". Admin: todo. Operador: ver, arrancar/parar destinos y vista previa.
+# En las direcciones del hub de señales (api_hub.PROPIAS) no decide esta regla sino el permiso que
+# declara cada operación, según la tabla de permisos por rol de Ajustes.
 RECORDER_API = CFG.get("recorder_api", "http://127.0.0.1:8081")
 COOKIE_RECORDER = "msr_sesion"
 PUBLICAS = ("/static/", "/api/version")
@@ -92,7 +98,8 @@ def _url_login(request: Request):
 
 
 def _usuario(request: Request):
-    """(usuario, motivo del rechazo). Usuario: {"email", "rol", "via"}."""
+    """(usuario, motivo del rechazo). Usuario: {"email", "rol", "via", "modulos"}; «modulos» son los
+    de la suite que tiene en la hoja de usuarios (None con un Recorder antiguo, que no los dice)."""
     token = request.cookies.get(COOKIE_RECORDER)
     if token:
         yo = _sesion_recorder(token)
@@ -102,7 +109,8 @@ def _usuario(request: Request):
             permitido = (yo.get("rol") == "admin") if mods is None else ("streamer" in mods)
             if not permitido:
                 return None, "sin_modulo"
-            return {"email": yo["email"], "rol": yo["rol"], "via": "recorder"}, None
+            return {"email": yo["email"], "rol": yo["rol"], "via": "recorder",
+                    "modulos": [str(m) for m in mods] if isinstance(mods, list) else None}, None
     return None, "sin_sesion"
 
 
@@ -148,7 +156,8 @@ async def exigir_sesion(request: Request, call_next):
         if ruta.startswith("/api/"):
             return JSONResponse({"detail": "Sesión caducada", "login": _url_login(request)}, status_code=401)
         return RedirectResponse(_url_login(request), status_code=303)
-    if usuario["rol"] != "admin" and request.method != "GET" and not OPERADOR_PUEDE.match(ruta):
+    if usuario["rol"] != "admin" and request.method != "GET" and not OPERADOR_PUEDE.match(ruta) \
+            and not api_hub.PROPIAS.match(ruta):
         return JSONResponse({"detail": "Solo un administrador puede hacer esto"}, status_code=403)
     request.state.usuario = usuario
     USUARIO.set(usuario)
@@ -180,8 +189,10 @@ def salir(request: Request):
 
 @app.get("/api/yo")
 def yo(request: Request):
+    """Quién mira el panel y a dónde llevan los botones de la suite: el Recorder está en la raíz del
+    mismo dominio y la web del Renderer, si la estación tiene uno, se indica en config.json."""
     u = request.state.usuario
-    return {**u, "recorder_url": "/"}
+    return {**u, "recorder_url": "/", "renderer_url": str(CFG.get("renderer_url") or "").rstrip("/")}
 
 
 # ---------------------------------------------------------------- modelos
@@ -403,78 +414,8 @@ def _host(request: Request):
 # Un operador no ve el streamid, lo que va en las URL tras "?" o antes de "@", ni la clave RTMP
 # pegada al final de la URL (decisión 3 de la propuesta). A nadie se le enseña, en un error o en
 # el registro, la línea con la que el supervisor arranca ffmpeg (lleva todas las claves) ni un
-# valor guardado de los anteriores. Solo cambia lo que se devuelve: la base y el supervisor, no.
-OCULTO = "***"
-LINEA_ARRANQUE = re.compile(r"== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d ")     # la que escribe el supervisor al lanzar
-OPCIONES_SECRETAS = (" -srt_streamid ", " -passphrase ")
-URL_EN_TEXTO = re.compile(r"\b(srt|rtmps?)://[^\s\"'<>]+")
-PARAMS_NO_SECRETOS = {"mode", "latency", "rcvlatency", "peerlatency", "pkt_size", "payload_size", "transtype"}
-
-
-def _clave_en_ruta(ruta):
-    """Último tramo no vacío de la ruta de una URL RTMP: la clave, si no va aparte."""
-    return ruta.rstrip("/").rpartition("/")[2]
-
-
-def _url_visible(url, tipo, clave):
-    """URL sin usuario ni contraseña, sin parámetros y, en RTMP sin clave aparte, sin su último tramo."""
-    if not url:
-        return url
-    try:
-        p = urllib.parse.urlsplit(url, allow_fragments=False)
-    except ValueError:
-        return OCULTO
-    ruta = p.path
-    if tipo == "rtmp" and not clave and _clave_en_ruta(ruta):
-        sin_barra = ruta.rstrip("/")
-        ruta = sin_barra.rpartition("/")[0] + "/" + OCULTO + ruta[len(sin_barra):]
-    return urllib.parse.urlunsplit((p.scheme, p.netloc.rpartition("@")[2], ruta, OCULTO if p.query else "", ""))
-
-
-def _secretos(flujos, salidas):
-    """Valores guardados que no deben aparecer en un texto, también codificados como van en una
-    URL (mtx.conf_de_flujo los codifica, y un error de MediaMTX puede repetir esa URL)."""
-    valores = set()
-    respaldos = []
-    for f in flujos:                        # hub: el origen de respaldo (Castr) lleva la clave en el streamid
-        respaldos += [{"url": u} for u in db.fuentes({"url": "", "respaldos": f.get("respaldos")})]
-    respaldos += [{"url": c["url"]} for c in db.canales_recorder() if c.get("url")]   # canal sin reenvío
-    for fila in [*flujos, *salidas, *respaldos]:
-        valores.update(fila.get(k) or "" for k in ("streamid", "passphrase", "clave"))
-        url = fila.get("url") or ""
-        try:
-            partes = urllib.parse.urlsplit(url, allow_fragments=False)
-            valores.update(v for k, v in urllib.parse.parse_qsl(partes.query) if k not in PARAMS_NO_SECRETOS)
-            valores.add(partes.password or "")
-            ruta = partes.path
-        except ValueError:                  # URL que no se puede analizar: se usa tal cual
-            ruta = url.split("?")[0]
-        if fila.get("tipo") == "rtmp" and not fila.get("clave"):
-            valores.add(_clave_en_ruta(ruta))
-    valores |= {urllib.parse.quote_plus(v) for v in valores}
-    return sorted((v for v in valores if v), key=len, reverse=True)
-
-
-def _url_en_texto(m):
-    url = m.group(0).rstrip(":,.;)]")                   # "rtmp://…/clave: Connection refused"
-    return _url_visible(url, "srt" if m.group(1) == "srt" else "rtmp", "") + m.group(0)[len(url):]
-
-
-def _limpiar(texto, secretos):
-    """Error o texto del registro sin la línea de arranque de ffmpeg ni valores secretos. Además,
-    toda URL SRT o RTMP sale como la ve un operador: así tampoco aparecen las claves de un destino
-    o flujo ya borrado o editado, que ya no están en la base."""
-    if not texto:
-        return texto
-    m = LINEA_ARRANQUE.search(texto)
-    if m:
-        texto = texto[:m.start()] + "(línea de arranque oculta)"
-    elif any(o in texto for o in OPCIONES_SECRETAS):
-        return "(línea de arranque oculta)"
-    for s in secretos:
-        texto = texto.replace(s, OCULTO)
-    return URL_EN_TEXTO.sub(_url_en_texto, texto)
-
+# valor guardado de los anteriores. Las funciones viven en secretos.py, que también usa el lanzador
+# (correr.py) para que esas claves no lleguen a los registros.
 
 # ---------------------------------------------------------------- HLS bajo demanda
 # El HLS de un flujo solo se sirve a la red con un destino HLS activo. Las reglas las aplica el
@@ -729,9 +670,15 @@ def accion_flujo(fid: str, accion: Literal["iniciar", "detener"]):
 @app.delete("/api/flujos/{fid}")
 def borrar_flujo(fid: str):
     c = db.conectar()
-    if not c.execute("DELETE FROM flujos WHERE id=?", (fid,)).rowcount:
+    fila = c.execute("SELECT nombre FROM flujos WHERE id=?", (fid,)).fetchone()
+    if not fila or not c.execute("DELETE FROM flujos WHERE id=?", (fid,)).rowcount:
         raise HTTPException(404, "Ese flujo no existe")
     evento(c, "flujo borrado", flujo=fid)
+    rutas = matriz.limpiar_huerfanas(c)     # las rutas del hub que salían de este flujo se van con él
+    if rutas:
+        u = USUARIO.get() or {}
+        db.cambio(c, u.get("email", ""), u.get("rol", ""), "Borró un flujo", fila["nombre"],
+                  f"con {rutas} ruta{'s' if rutas != 1 else ''} del hub que salía{'n' if rutas != 1 else ''} de él")
     return {"ok": True}
 
 
@@ -793,7 +740,7 @@ UBICACION_HLS = re.compile(r"^/[A-Za-z0-9_.~/-]*(\?[A-Za-z0-9_.=&-]*)?\Z")
 CABECERAS_HLS = {"content-type", "cache-control", "content-length"}
 VISTAS = anyio.CapacityLimiter(VISTA_MAX)       # peticiones de vista previa en curso
 HILOS_VISTA = anyio.CapacityLimiter(4)          # sus consultas de sesión y base: no las del resto
-_paths_vista = (0.0, frozenset())
+_paths_vista = (0.0, frozenset(), frozenset())
 
 
 class _SinVistaEnRegistro(logging.Filter):
@@ -815,15 +762,18 @@ class _SinVistaEnRegistro(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_SinVistaEnRegistro())
 
 
-def _paths_con_vista():
-    """Paths que se pueden ver por el panel: el de cada flujo y el de su composición (2 s de caché)."""
+def _paths_con_vista(rol=None):
+    """Paths que se pueden ver por el panel: el de cada flujo y el de su composición y, para quien
+    puede ver el hub de señales, sus fuentes y sus señales convertidas (2 s de caché)."""
     global _paths_vista
     ahora = time.monotonic()
     if ahora - _paths_vista[0] > 2:
-        validos = set()
-        for f in db.filas(db.conectar(), "SELECT id, entrada, canal FROM flujos"):
+        c, validos = db.conectar(), set()
+        for f in db.filas(c, "SELECT id, entrada, canal FROM flujos"):
             validos |= {path_de_flujo(f), composicion.path_comp(f["id"])}
-        _paths_vista = (ahora, frozenset(validos))
+        _paths_vista = (ahora, frozenset(validos), frozenset(api_hub.paths_con_vista(c) - validos))
+    if rol is not None and "ver" in api_hub.permisos_de(db.conectar(), rol):
+        return _paths_vista[1] | _paths_vista[2]
     return _paths_vista[1]
 
 
@@ -940,7 +890,8 @@ async def vista_hls(resto: str, request: Request):
     """Vista previa por el panel: la página de MediaMTX, sus listas y sus segmentos."""
     if not RESTO_HLS.match(resto):
         raise HTTPException(404, "No existe")
-    if resto.split("/", 1)[0] not in await anyio.to_thread.run_sync(_paths_con_vista, limiter=HILOS_VISTA):
+    rol = request.state.usuario["rol"]
+    if resto.split("/", 1)[0] not in await anyio.to_thread.run_sync(_paths_con_vista, rol, limiter=HILOS_VISTA):
         raise HTTPException(404, "Ese flujo no existe")
     return _RespuestaHLS(resto, _consulta_hls(request.url.query))
 
@@ -1134,11 +1085,10 @@ def version():
 
 @app.get("/")
 def inicio():
-    """index.html con la versión en los enlaces a app.js y base.css: tras desplegar, el navegador
-    pide los nuevos en vez de usar los de su caché."""
+    """index.html con la versión en los enlaces a sus guiones y hojas de estilo: tras desplegar, el
+    navegador pide los nuevos en vez de usar los de su caché."""
     html = (ESTATICOS / "index.html").read_text()
-    for f in ("app.js", "base.css"):
-        html = html.replace(f'"static/{f}"', f'"static/{f}?v={urllib.parse.quote(VERSION)}"')
+    html = re.sub(r'"(static/[\w.-]+\.(?:js|css))"', lambda m: f'"{m.group(1)}?v={urllib.parse.quote(VERSION)}"', html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 

@@ -14,11 +14,27 @@ Mientras el Recorder del equipo está en reposo («Apagar servicio», su reposo.
 nada: se paran las salidas y las composiciones y se quitan los paths de MediaMTX, sin tocar qué
 flujos y salidas están activos. Al encender el Recorder vuelve todo lo activo.
 
+Hub de señales (matriz.py): además mantiene lo que piden las rutas guardadas, con las mismas reglas:
+  - los paths de las fuentes, de las señales derivadas y de los destinos que el hub entrega, y los
+    usuarios de MediaMTX con los que publica cada origen y lee cada receptor;
+  - un ffmpeg por fuente que el hub va a buscar, uno por conversión (compartida entre las rutas que
+    piden lo mismo) y uno por destino al que el hub se conecta, cada uno con la política de
+    reconexión de su destino. Si un destino falla, solo se relanza el suyo;
+  - mira qué trae cada fuente al llegar su señal (inspeccion.py), que es lo que decide qué se copia.
+
 Los ffmpeg corren en su propia sesión: si el supervisor se reinicia (por ejemplo al desplegar),
-las salidas siguen al aire y el supervisor las vuelve a adoptar por su PID.
+las salidas siguen al aire y el supervisor las vuelve a adoptar por su PID. Tras reiniciar el equipo
+no queda ninguno y se levanta uno por cada cosa habilitada: nunca dos para lo mismo (antes de lanzar
+se comprueba que no corra ya, y solo puede haber un supervisor a la vez).
+
+Ningún ffmpeg se lanza a pelo: va dentro del lanzador (correr.py), que guarda en el registro lo que
+escribe sin las claves.
 """
 
+import concurrent.futures
+import fcntl
 import hashlib
+import json
 import os
 import pathlib
 import signal
@@ -29,7 +45,12 @@ import urllib.parse
 
 import composicion
 import db
+import espera_hls
+import inspeccion
+import matriz
 import mtx
+import secretos
+from comandos import entrada_directa, url_salida      # noqa: F401  (url_salida: la usan otros módulos)
 
 FFMPEG = db.config().get("ffmpeg", "ffmpeg")
 RUN = db.BASE / "run"
@@ -39,54 +60,17 @@ PROG_MAX = 1024 * 1024                      # espacio en disco de un .prog antes
 VUELTA = 2.0
 ESPERA_MAX = 30.0
 COMPONER = pathlib.Path(__file__).parent / "componer.sh"
+CORRER = pathlib.Path(__file__).parent / "correr.py"
 COMP_MAX = composicion.maximo(db.config())
 VIDEO_PARADO = 15.0                         # composición viva con el vídeo quieto tanto tiempo: se relanza
 CAMBIO_ENTRADA = 20.0                       # entrada de hub sin señal tanto tiempo: pasa a la dirección siguiente
+ESTABLE = 60.0                              # enviando tanto tiempo seguido: los intentos vuelven a cero
+MISMO_AVISO = 600.0                         # la misma caída no se anota en los eventos más de una vez cada tanto
+REINSPECCION = 30.0                         # inspección incompleta: se repite cada tanto
+MEDIDAS_ESTABLES = 10.0                     # un tamaño de imagen nuevo se da por bueno cuando lleva tanto sin moverse
 
 
-def path_de_flujo(f):
-    return "rec_" + f["canal"] if f["entrada"] == "recorder" else f["id"]
-
-
-def url_salida(s):
-    """URL de destino y opciones de ffmpeg que van aparte.
-
-    El streamid y la passphrase van como opciones (-srt_streamid, -passphrase) y no dentro de la
-    URL: así llegan tal cual aunque lleven "#", "," o "=" (el streamid de Castr es "#!::r=…,password=…")
-    y no dependen de que la versión de ffmpeg decodifique la URL."""
-    if s["tipo"] == "rtmp":
-        base = s["url"].rstrip("/")
-        return (f"{base}/{s['clave']}" if s["clave"] else base), []
-    # srt: la latencia se expresa en microsegundos. Sin fragmentos: un "#" pegado en la URL
-    # (el streamid de Castr) es parte del valor, no un ancla.
-    partes = urllib.parse.urlsplit(s["url"], allow_fragments=False)
-    q = dict(urllib.parse.parse_qsl(partes.query))
-    streamid = s["streamid"] or q.pop("streamid", "")
-    passphrase = s["passphrase"] or q.pop("passphrase", "")
-    q.pop("streamid", None); q.pop("passphrase", None)
-    q["mode"] = "listener" if s["modo"] == "listener" else "caller"
-    q["latency"] = str(int(s["latencia_ms"]) * 1000)
-    q["pkt_size"] = "1316"
-    host = partes.netloc
-    if s["modo"] == "listener":             # escucha en todas las interfaces, en el puerto indicado
-        host = "0.0.0.0:" + (partes.port and str(partes.port) or "9000")
-    opciones = []
-    if passphrase:
-        opciones += ["-passphrase", passphrase]
-    if streamid:
-        opciones += ["-srt_streamid", streamid]
-    return urllib.parse.urlunsplit(("srt", host, "", urllib.parse.urlencode(q), "")), opciones
-
-
-def entrada_directa(url):
-    """Opciones de ffmpeg y URL para leer la entrada sin MediaMTX (flujo 1080i directo). Como en
-    url_salida, el streamid va aparte: el de Castr lleva "#", "," y "="."""
-    partes = urllib.parse.urlsplit(url, allow_fragments=False)
-    q = dict(urllib.parse.parse_qsl(partes.query))
-    opciones = ["-srt_streamid", q.pop("streamid")] if q.get("streamid") else []
-    if q.get("passphrase"):
-        opciones += ["-passphrase", q.pop("passphrase")]
-    return opciones, urllib.parse.urlunsplit(partes._replace(query=urllib.parse.urlencode(q)))
+path_de_flujo = mtx.path_de_flujo
 
 
 def comando(s, path, directa=None):
@@ -123,21 +107,106 @@ def vivo(pid, prog):
     return estado != "Z" and str(prog).encode() in linea
 
 
+def _terminado(pid):
+    """El proceso ya no existe. Si es hijo nuestro se recoge aquí mismo: mientras nadie lo recoge
+    sigue figurando (zombi) y habría que esperar el plazo entero."""
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return True
+    except ChildProcessError:               # adoptado tras un reinicio del supervisor: no es hijo
+        pass
+    except OSError:
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return True
+    try:                                    # hijo de otro (adoptado) que ya terminó y espera a que lo recojan
+        return pathlib.Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] == "Z"
+    except OSError:
+        return True
+
+
 def matar(pid):
     try:
         os.killpg(pid, signal.SIGTERM)
     except OSError:
-        return
-    for _ in range(20):
-        time.sleep(0.1)
-        try:
-            os.kill(pid, 0)
+        try:                                # no encabeza un grupo (un proceso suelto): solo a él
+            os.kill(pid, signal.SIGTERM)
         except OSError:
+            return
+    for _ in range(40):
+        time.sleep(0.05)
+        if _terminado(pid):
             return
     try:
         os.killpg(pid, signal.SIGKILL)
     except OSError:
-        pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def buscar(prog):
+    """PID del proceso que ya corre con ese .prog, o None. Es la última comprobación antes de
+    lanzar: si por lo que sea hay uno vivo que la base no conoce (el supervisor murió justo después
+    de lanzarlo, o no pudo guardar su PID), se adopta en vez de lanzar otro igual, que publicaría
+    lo mismo dos veces. De los varios procesos de una tarea, el que encabeza su grupo."""
+    marca, encontrado = str(prog).encode(), None
+    for d in pathlib.Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            if marca not in (d / "cmdline").read_bytes().split(b"\0"):
+                continue
+            campos = (d / "stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if campos[0] == "Z":
+            continue
+        pid = int(d.name)
+        if int(campos[2]) == pid:           # encabeza su grupo: el lanzador (o un ffmpeg de antes de la 0.4)
+            return pid
+        encontrado = encontrado or pid
+    return encontrado
+
+
+def procesos_de_run():
+    """{tarea: pid} de todo lo que corre con un .prog de RUN, lo conozca o no la base."""
+    prefijo, vistos = str(RUN).encode() + b"/", {}
+    for d in pathlib.Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            args = (d / "cmdline").read_bytes().split(b"\0")
+            campos = (d / "stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if campos[0] == "Z":
+            continue
+        for a in args:
+            if a.startswith(prefijo) and a.endswith(b".prog"):
+                tarea, pid = a[len(prefijo):-5].decode(errors="replace"), int(d.name)
+                if int(campos[2]) == pid or tarea not in vistos:
+                    vistos[tarea] = pid
+                break
+    return vistos
+
+
+def codificador_h264(ffmpeg):
+    """Con qué se codifica el vídeo de una conversión: NVENC si la tarjeta lo da (se prueba de
+    verdad, codificando unos fotogramas) y, si no, libx264. config.json → "codificador" lo fija."""
+    pedido = db.config().get("codificador", "auto")
+    if pedido in ("libx264", "h264_nvenc"):
+        return pedido
+    try:
+        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=black:s=640x360:r=30", "-frames:v", "5", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        return "h264_nvenc" if r.returncode == 0 else "libx264"
+    except (OSError, subprocess.TimeoutExpired):
+        return "libx264"
 
 
 def barrer(pid, prog):
@@ -242,6 +311,37 @@ def ultimo_error(log):
         return ""
 
 
+def en_espera(prog, log):
+    """Qué espera un proceso que corre y aún no ha arrancado su ffmpeg, si lo dice su registro: una
+    fuente HLS cuya lista acaba de nacer (espera_hls.py). '' si ffmpeg ya arrancó (ya existe su
+    .prog, que se borra antes de cada lanzamiento) o si no espera nada."""
+    if prog.exists():
+        return ""
+    texto = ultimo_error(log)
+    return texto if texto.startswith(espera_hls.ESPERA) else ""
+
+
+def adaptadores_del_hub():
+    """Estado de los adaptadores NDI y Zixi, si el módulo está (ver adaptadores.py)."""
+    try:
+        import adaptadores
+    except ImportError:
+        return {}
+    return adaptadores.estado()
+
+
+def _mirar_fuente(f, info):
+    """En un hilo aparte: (pistas, error) de la fuente. En HLS, con los nombres de sus pistas de
+    audio, que declara la lista del origen y MediaMTX no conserva."""
+    pistas, error = inspeccion.de_path(f["id"], info)
+    if pistas and f["protocolo"] == "hls" and f["inicia"] == "hub":
+        lista, _ = inspeccion.leer_lista_hls(f["url"])
+        if lista:
+            n = int(matriz.json_de(f.get("opciones"), {}).get("variante") or 0)
+            pistas = inspeccion.con_nombres(pistas, lista["variantes"][n] if n < len(lista["variantes"]) else None)
+    return pistas, error
+
+
 class Supervisor:
     def __init__(self):
         RUN.mkdir(parents=True, exist_ok=True)
@@ -256,17 +356,31 @@ class Supervisor:
         self.estado_paths = None            # estado de MediaMTX de la vuelta anterior
         self.indices = {}                   # flujo de hub -> dirección de su entrada en esta vuelta
         self.reposo = None                  # estación en reposo en la vuelta anterior (None: sin saber)
+        # ---- hub de señales
+        self.hub = None                     # lo que piden las rutas en esta vuelta (None: no se pudo calcular)
+        self.codificador = None             # se averigua la primera vez que hace falta
+        self.avisos = {}                    # tarea -> (texto, cuándo) de la última caída anotada
+        self.senales = {}                   # fuente -> (con señal, cuándo se guardó)
+        self.inspectores = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="inspeccion")
+        self.mirando = {}                   # fuente -> (huella, tarea en curso)
+        self.miradas = {}                   # fuente -> cuándo se intentó por última vez
+        self.medidas = {}                   # fuente -> ([ancho, alto] que MediaMTX ve ahora, desde cuándo)
+        self.primera = True                 # primera vuelta: se barre lo que corra sin que nadie lo pida
+        self.problemas = None               # servidores de MediaMTX que no se pudieron encender
+        self.config = db.config()           # config.json, leído al arrancar como hace el panel: si no, el
+        #                                     supervisor aplicaría un puerto nuevo que el panel aún no enseña
 
     def estado(self, sid):
         r = self.c.execute("SELECT * FROM estado_salidas WHERE salida=?", (sid,)).fetchone()
-        return dict(r) if r else {"salida": sid, "pid": None, "reinicios": 0, "firma": "", "desde": None}
+        return dict(r) if r else {"salida": sid, "pid": None, "reinicios": 0, "intentos": 0, "firma": "",
+                                  "desde": None}
 
     def guardar(self, e):
-        self.c.execute("""INSERT INTO estado_salidas(salida,pid,desde,reinicios,error,kbps,firma,visto)
-                          VALUES (:salida,:pid,:desde,:reinicios,:error,:kbps,:firma,:visto)
+        self.c.execute("""INSERT INTO estado_salidas(salida,pid,desde,reinicios,intentos,error,kbps,firma,visto)
+                          VALUES (:salida,:pid,:desde,:reinicios,:intentos,:error,:kbps,:firma,:visto)
                           ON CONFLICT(salida) DO UPDATE SET pid=:pid,desde=:desde,reinicios=:reinicios,
-                          error=:error,kbps=:kbps,firma=:firma,visto=:visto""",
-                       {"error": "", "kbps": None, **e, "visto": time.time()})
+                          intentos=:intentos,error=:error,kbps=:kbps,firma=:firma,visto=:visto""",
+                       {"error": "", "kbps": None, "intentos": 0, **e, "visto": time.time()})
 
     def fuente_de(self, f):
         """Entrada de hub: cuál de sus direcciones (db.fuentes) se usa. Si la que está puesta lleva
@@ -321,14 +435,19 @@ class Supervisor:
                 deseados[path_de_flujo(f)] = conf
         for fid in self.comps:                      # la composición publica ahí (desde este equipo)
             deseados[composicion.path_comp(fid)] = {"source": "publisher"}
+        del_hub = set()
+        if self.hub:                                # fuentes, señales derivadas y destinos que el hub entrega
+            del_hub = set(self.hub["paths"]) - set(deseados)
+            deseados.update({n: conf for n, conf in self.hub["paths"].items() if n in del_hub})
         try:
             actuales = mtx.paths_config()
             for nombre, conf in deseados.items():
                 self.c.execute("INSERT OR IGNORE INTO paths_mtx(nombre) VALUES (?)", (nombre,))
-                if mtx.asegurar_path(nombre, conf, actuales):
-                    db.evento(self.c, f"MediaMTX: path {nombre} declarado")
-            # solo se borran paths que creó el supervisor; los de mediamtx.yml no se tocan
-            for (nombre,) in self.c.execute("SELECT nombre FROM paths_mtx").fetchall():
+                if mtx.asegurar_path(nombre, conf, actuales) and nombre not in del_hub:
+                    db.evento(self.c, f"MediaMTX: path {nombre} declarado")     # los del hub van y vienen con la señal
+            # solo se borran paths que creó el supervisor; los de mediamtx.yml no se tocan. Si no se
+            # pudo calcular lo que pide el hub en esta vuelta, no se borra nada: podrían ser suyos
+            for (nombre,) in self.c.execute("SELECT nombre FROM paths_mtx").fetchall() if self.hub is not None else ():
                 if nombre not in deseados:
                     if nombre in actuales:
                         mtx.borrar_path(nombre)
@@ -360,8 +479,21 @@ class Supervisor:
                 paths.add(activos[f])
                 if f in comps:
                     paths.add(composicion.path_comp(f))
-        if mtx.asegurar_acceso(paths):
-            db.evento(self.c, "HLS publicado: " + (", ".join(sorted(paths)) or "ninguno"))
+        hub = self.hub or matriz.vacio()
+        abiertos = paths | hub["abiertos"]["read"]
+        # sin saber qué pide el hub (self.hub is None) no se le quitan sus servidores: se dejan como estén
+        servicios = matriz.servicios(self.c, self.config) if self.hub is not None else None
+        if self.reposo:
+            servicios = {}
+        cambio, problemas = mtx.asegurar_acceso(abiertos, hub["usuarios"], hub["abiertos"]["publish"], servicios) \
+            if servicios is not None else (mtx.asegurar_acceso_solo(abiertos, hub["usuarios"], hub["abiertos"]["publish"]), {})
+        if cambio:
+            db.evento(self.c, "Acceso de MediaMTX actualizado. Sin clave se lee: " + (", ".join(sorted(abiertos)) or "nada"))
+        if problemas != self.problemas:             # p. ej. el puerto RTMP ocupado por otro programa
+            self.problemas = problemas
+            db.guardar_ajuste(self.c, "servidores", {"problemas": problemas, "t": time.time()})
+            for nombre, motivo in problemas.items():
+                db.evento(self.c, mtx.aviso(nombre, motivo))
 
     def composiciones(self, por_id):
         """Composiciones activas de los flujos de esta vuelta, como mucho COMP_MAX: primero las que
@@ -433,10 +565,147 @@ class Supervisor:
             else:
                 path = path_de_flujo(por_id[s["flujo"]])
             tareas[s["id"]] = (comando(s, path), path, None)
+        for tid, tarea in (self.hub or {}).get("tareas", {}).items():
+            cmd = tarea[0]
+            try:                                    # una ruta mal guardada no detiene a las demás
+                if cmd is not None:
+                    firma(cmd)
+                    if any("\0" in a for a in cmd):
+                        raise ValueError("carácter nulo")
+                tareas[tid] = tarea
+            except Exception as err:
+                tareas[tid] = (None, None, f"Configuración no válida: {err!r}"[:300])
         return tareas
+
+    # ------------------------------------------------------------ hub de señales
+    def calcular_hub(self, reposo):
+        """Lo que piden las rutas guardadas. Si falla el cálculo (un dato imposible en la base), el
+        hub se queda como está en esta vuelta: ni se lanza ni se para nada suyo."""
+        if reposo:
+            return matriz.vacio()
+        if self.codificador is None:
+            self.codificador = codificador_h264(FFMPEG)
+            db.evento(self.c, f"conversiones de vídeo con {self.codificador}")
+        try:
+            return matriz.calcular(self.c, self.estado_paths, self.codificador, adaptadores_del_hub())
+        except Exception as err:
+            print(f"hub: no se pudo calcular lo que piden las rutas: {err!r}", file=sys.stderr, flush=True)
+            return None
+
+    def anotar_senales(self, estado):
+        """Cuándo hubo señal en cada fuente (para «última señal»). Se guarda al cambiar y, mientras
+        hay señal, cada 10 s: no hace falta más precisión y así no se escribe en cada vuelta."""
+        ahora = time.time()
+        for f in self.hub["fuentes"]:
+            lista = bool((estado.get(f["id"]) or {}).get("ready"))
+            antes = self.senales.get(f["id"])
+            if antes and antes[0] == lista and (not lista or ahora - antes[1] < 10):
+                continue
+            self.senales[f["id"]] = (lista, ahora)
+            if antes is None or antes[0] != lista:
+                self.c.execute("""INSERT INTO senales(path, lista, desde, ultima) VALUES (?,?,?,?)
+                                  ON CONFLICT(path) DO UPDATE SET desde=CASE WHEN lista=excluded.lista THEN desde
+                                  ELSE excluded.desde END, lista=excluded.lista,
+                                  ultima=COALESCE(excluded.ultima, ultima)""",
+                               (f["id"], int(lista), ahora, ahora if lista else None))
+            else:
+                self.c.execute("UPDATE senales SET ultima=? WHERE path=?", (ahora, f["id"]))
+        vivas = {f["id"] for f in self.hub["fuentes"]}
+        for fid in [x for x in self.senales if x not in vivas]:
+            del self.senales[fid]
+            self.c.execute("DELETE FROM senales WHERE path=?", (fid,))
+            self.c.execute("DELETE FROM inspecciones WHERE fuente=?", (fid,))
+
+    def inspeccionar(self, estado):
+        """Mira qué trae cada fuente cuando llega su señal o cambia (otra conexión del origen, otras
+        pistas). Lo que MediaMTX ya sabe se guarda al momento: las rutas que copian arrancan sin
+        esperar. El resto (fps, fotogramas B) lo mira ffprobe aparte, sin parar la vuelta.
+        Si el origen vuelve con lo mismo que traía (para MediaMTX), se conserva lo que ya se sabía,
+        marcado «sin_confirmar», hasta que ffprobe lo confirma o lo corrige: las conversiones siguen."""
+        ahora = time.time()
+        for fid, (huella, tarea) in list(self.mirando.items()):
+            if tarea.done():
+                del self.mirando[fid]
+                try:
+                    pistas, error = tarea.result()
+                except Exception as err:
+                    pistas, error = None, f"inspección fallida: {err!r}"[:300]
+                if pistas:                          # solo vale si la señal sigue siendo la misma
+                    self.c.execute("UPDATE inspecciones SET pistas=?, error='', t=? WHERE fuente=? AND huella=?",
+                                   (json.dumps(pistas, ensure_ascii=False), ahora, fid, huella))
+                else:
+                    self.c.execute("UPDATE inspecciones SET error=?, t=? WHERE fuente=? AND huella=?",
+                                   (error or "sin datos", ahora, fid, huella))
+        for f in self.hub["fuentes"]:
+            fid, info = f["id"], estado.get(f["id"])
+            huella = inspeccion.huella(info)
+            if not huella or fid in self.mirando:
+                continue
+            r = self.c.execute("SELECT huella, pistas FROM inspecciones WHERE fuente=?", (fid,)).fetchone()
+            sabido = matriz.json_de(r["pistas"], None) if r else None
+            if not r or r["huella"] != huella:
+                # el origen volvió a conectar. Si para MediaMTX trae lo mismo que la última vez, lo que
+                # se sabía sigue valiendo mientras se confirma: las conversiones no se paran a esperar
+                pistas = dict(sabido, sin_confirmar=True) if inspeccion.la_misma(sabido, info) else inspeccion.de_mediamtx(info)
+                self.c.execute("""INSERT INTO inspecciones(fuente, t, huella, pistas, error) VALUES (?,?,?,?,'')
+                                  ON CONFLICT(fuente) DO UPDATE SET t=excluded.t, huella=excluded.huella,
+                                  pistas=excluded.pistas, error=''""",
+                               (fid, ahora, huella, json.dumps(pistas, ensure_ascii=False)))
+            elif not ((sabido or {"parcial": True}).get("parcial") or sabido.get("sin_confirmar")):
+                if not self.otras_medidas(fid, sabido, info, ahora):
+                    continue                        # ya está mirada del todo y sigue igual
+            elif ahora - self.miradas.get(fid, 0) < REINSPECCION or not inspeccion.algo_pasa(info):
+                continue                            # o nada de lo que trae cabe en el enlace: no hay qué mirar
+            self.miradas[fid] = ahora
+            self.mirando[fid] = (huella, self.inspectores.submit(_mirar_fuente, dict(f), info))
+        for fid in [x for x in self.medidas if x not in {f["id"] for f in self.hub["fuentes"]}]:
+            del self.medidas[fid]
+
+    def otras_medidas(self, fid, pistas, info, ahora):
+        """¿Hay que volver a mirar una fuente ya inspeccionada porque su imagen cambió de tamaño? Un
+        navegador que publica por WebRTC lo cambia sobre la marcha, sin volver a conectar. Se espera a
+        que el tamaño nuevo lleve MEDIDAS_ESTABLES s sin moverse: lo que enseña el panel y lo que
+        deciden las conversiones no debe bailar con cada escalón de la subida."""
+        nuevas = inspeccion.medidas_nuevas(pistas, info)
+        if not nuevas:
+            self.medidas.pop(fid, None)
+            return False
+        vistas = self.medidas.get(fid)
+        if not vistas or vistas[0] != nuevas:
+            self.medidas[fid] = (nuevas, ahora)
+            return False
+        return ahora - vistas[1] >= MEDIDAS_ESTABLES and ahora - self.miradas.get(fid, 0) >= MEDIDAS_ESTABLES
+
+    def ocultos(self):
+        """Claves que el lanzador debe tapar en los registros: todas las guardadas."""
+        return secretos.ordenar(set(secretos.de_filas(
+            db.filas(self.c, "SELECT url, streamid, passphrase, respaldos FROM flujos"),
+            db.filas(self.c, "SELECT tipo, url, streamid, passphrase, clave FROM salidas"))) | matriz.secretos(self.c))
+
+    def anotar_caida(self, sid, texto):
+        """La caída va a los eventos, pero la misma (un destino apagado que se reintenta cada pocos
+        segundos) solo una vez cada MISMO_AVISO s."""
+        antes = self.avisos.get(sid)
+        if antes and antes[0] == texto and time.time() - antes[1] < MISMO_AVISO:
+            return
+        self.avisos[sid] = (texto, time.time())
+        db.evento(self.c, f"caída: {texto}", salida=sid)
+
+    def atender_ordenes(self):
+        """«Reintentar» desde el panel: la cuenta de intentos vuelve a cero y no se espera más."""
+        ordenes = db.filas(self.c, "SELECT id, orden, tarea FROM ordenes ORDER BY id")
+        for o in ordenes:
+            if o["orden"] == "reintentar":
+                self.c.execute("UPDATE estado_salidas SET intentos=0, error='' WHERE salida=?", (o["tarea"],))
+                self.espera.pop(o["tarea"], None)
+                self.avisos.pop(o["tarea"], None)
+                db.evento(self.c, "reintento pedido desde el panel", salida=o["tarea"])
+        if ordenes:
+            self.c.execute("DELETE FROM ordenes WHERE id<=?", (ordenes[-1]["id"],))
 
     def vuelta(self):
         recoger_hijos()
+        self.atender_ordenes()
         flujos = db.filas(self.c, "SELECT * FROM flujos WHERE activo=1")
         reposo = db.reposo_recorder() is not None
         if reposo != self.reposo:
@@ -451,11 +720,33 @@ class Supervisor:
         # una sola lectura por vuelta y solo de los flujos de esta vuelta (un flujo iniciado entre
         # las dos consultas ya no deja la vuelta a medias), con el tope de composiciones a la vez
         self.comps, self.comps_fuera = self.composiciones(por_id)
+        if self.estado_paths is None:               # al arrancar (o si MediaMTX no respondía): el hub decide
+            try:                                    # con el estado real, no como si nada tuviera señal
+                self.estado_paths = mtx.paths_estado()
+            except mtx.ErrorMTX:
+                pass
+        self.hub = self.calcular_hub(reposo)
         estado_paths = self.estado_paths = self.sincronizar_mediamtx(flujos)
+        if self.hub and estado_paths is not None:
+            self.anotar_senales(estado_paths)
+            self.inspeccionar(estado_paths)
         deseadas = self.tareas(flujos, por_id)
+        politicas = (self.hub or {}).get("politicas", {})
+        ocultos = None                              # se calculan solo si hay algo que lanzar
+        primera, adoptados, lanzados = self.primera, 0, 0
+
+        if self.primera:                            # lo que corre sin que la base lo conozca ni nadie lo pida
+            self.primera = False
+            conocidos = {e["salida"] for e in db.filas(self.c, "SELECT salida FROM estado_salidas")}
+            for tarea, pid in procesos_de_run().items():
+                if tarea not in conocidos and tarea not in deseadas and (self.hub is not None or not matriz.es_del_hub(tarea)):
+                    matar(pid)
+                    db.evento(self.c, "proceso sin dueño detenido", salida=tarea)
 
         # procesos que ya no deben correr (borrados, desactivados o de un flujo detenido)
         for e in db.filas(self.c, "SELECT * FROM estado_salidas"):
+            if self.hub is None and matriz.es_del_hub(e["salida"]):
+                continue                            # sin saber qué pide el hub, lo suyo no se toca
             if e["salida"] not in deseadas or deseadas[e["salida"]][0] is None:
                 if vivo(e["pid"], RUN / f"{e['salida']}.prog"):
                     matar(e["pid"])
@@ -463,6 +754,7 @@ class Supervisor:
                 if e["salida"] not in deseadas:
                     self.c.execute("DELETE FROM estado_salidas WHERE salida=?", (e["salida"],))
                 self.espera.pop(e["salida"], None)
+                self.avisos.pop(e["salida"], None)
 
         for sid, (cmd, path, impedimento) in deseadas.items():
             e = self.estado(sid)
@@ -472,12 +764,17 @@ class Supervisor:
             huella = firma(cmd)
             prog, log = RUN / f"{sid}.prog", LOGS / f"{sid}.log"
             corriendo = vivo(e["pid"], prog)
+            politica = politicas.get(sid) or matriz.RECONEXION
+            e["intentos"] = e.get("intentos") or 0
 
             if corriendo and e["firma"] != huella:          # se editó: relanzar
                 matar(e["pid"])
-                corriendo, e["pid"] = False, None
+                corriendo, e["pid"], e["intentos"] = False, None, 0
                 self.espera.pop(sid, None)
                 db.evento(self.c, "relanzada por cambio de configuración", salida=sid)
+            elif not corriendo and e["firma"] and e["firma"] != huella:
+                e["intentos"] = 0                           # se editó mientras no corría: cuenta nueva
+                self.espera.pop(sid, None)
 
             if corriendo and cmd[0] == str(COMPONER) and self.video_parado(sid, e["pid"], prog):
                 matar(e["pid"])                             # cuenta como caída (abajo) y se relanza
@@ -489,15 +786,18 @@ class Supervisor:
                 if cmd[0] == str(COMPONER):                 # composición: lo que quede de su grupo
                     barrer(e["pid"], prog)
                 e["reinicios"] += 1
+                e["intentos"] += 1
                 e["pid"] = None
-                db.evento(self.c, f"caída: {ultimo_error(log)}", salida=sid)
+                self.anotar_caida(sid, ultimo_error(log))
 
             if corriendo:
+                adoptados += 1
                 recortar(prog, log)
                 kbps = leer_kbps(prog)
-                if kbps and e["desde"] and time.time() - e["desde"] > 60:
+                if kbps and e["desde"] and time.time() - e["desde"] > ESTABLE:
                     self.espera.pop(sid, None)              # un minuto estable: se reinicia la espera
-                self.guardar({**e, "kbps": kbps, "error": ""})
+                    e["intentos"] = 0
+                self.guardar({**e, "kbps": kbps, "error": en_espera(prog, log)})
                 continue
 
             # no corre: ¿hay entrada? sin entrada no tiene sentido lanzarlo
@@ -509,36 +809,71 @@ class Supervisor:
                               "error": esperando if estado_paths is not None else "MediaMTX no responde"})
                 continue
 
+            tope = politica["max_intentos"]
+            if tope and e["intentos"] >= tope:              # política del destino: no se insiste más
+                self.guardar({**e, "pid": None, "kbps": None, "firma": huella,
+                              "error": f"Sin más intentos tras {e['intentos']} fallos seguidos: "
+                                       f"{ultimo_error(log) or 'sin detalle'}"[:300]})
+                continue
+
             espera, cuando = self.espera.get(sid, (0.0, 0.0))
             if time.time() < cuando:
-                self.guardar({**e, "pid": None, "kbps": None,
+                self.guardar({**e, "pid": None, "kbps": None, "firma": huella,
                               "error": ultimo_error(log) or "Reintentando"})
                 continue
 
+            ya = buscar(prog)                               # nunca dos procesos para lo mismo
+            if ya:
+                adoptados += 1
+                self.guardar({**e, "pid": ya, "desde": e["desde"] or time.time(), "firma": huella,
+                              "kbps": None, "error": ""})
+                db.evento(self.c, "proceso que ya corría: adoptado en vez de lanzar otro", salida=sid)
+                continue
             try:
                 if log.exists() and log.stat().st_size > LOG_MAX:
                     log.write_bytes(log.read_bytes()[-LOG_MAX // 5:])
                 prog.unlink(missing_ok=True)
-                with open(log, "ab") as salida_log:
-                    salida_log.write(f"\n== {time.strftime('%F %T')} {' '.join(cmd)}\n".encode())
-                    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=salida_log, start_new_session=True)
+                if ocultos is None:
+                    ocultos = self.ocultos()
+                # el lanzador escribe la línea de arranque y lo que diga ffmpeg, todo sin claves
+                p = subprocess.Popen([sys.executable, str(CORRER), str(log), *cmd], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, start_new_session=True,
+                                     env={**os.environ, "MSXS_SECRETOS": json.dumps(ocultos)})
             except OSError as err:
                 self.guardar({**e, "pid": None, "error": f"No se pudo lanzar: {err}"})
                 continue
-            espera = min(ESPERA_MAX, max(2.0, espera * 2))
+            cada = politica["cada_s"]                       # 0: espera creciente, como siempre
+            espera = max(1.0, cada) if cada else min(ESPERA_MAX, max(2.0, espera * 2))
             self.espera[sid] = (espera, time.time() + espera)
             self.guardar({**e, "pid": p.pid, "desde": time.time(), "firma": huella,
                           "kbps": None, "error": ""})
+            lanzados += 1
+
+        if primera:                                 # para Ajustes: qué encontró el supervisor al arrancar
+            rutas = len((self.hub or {}).get("senales", {}))
+            db.guardar_ajuste(self.c, "arranque", {"t": time.time(), "siguen": adoptados, "lanzados": lanzados,
+                                                   "rutas": rutas, "reposo": bool(reposo)})
+            db.evento(self.c, f"arranque: {adoptados} procesos seguían en marcha y se conservan, {lanzados} lanzados")
 
     def correr(self):
+        self.cerrojo = open(RUN / "supervisor.lock", "w")
+        try:                                # dos supervisores lanzarían cada cosa dos veces
+            fcntl.flock(self.cerrojo, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("ya hay otro supervisor en marcha con esta base: este no arranca", file=sys.stderr, flush=True)
+            sys.exit(3)
         db.evento(self.c, "supervisor iniciado")
+        ocultos = self.ocultos()
+        limpios = [r.name for r in LOGS.glob("*.log") if secretos.limpiar_registro(r, ocultos)]
+        if limpios:
+            db.evento(self.c, f"claves retiradas de {len(limpios)} registros de versiones anteriores")
         parar = []
         signal.signal(signal.SIGTERM, lambda *_: parar.append(1))
         while not parar:
             t0 = time.time()
             try:
                 self.vuelta()
+                db.guardar_ajuste(self.c, "latido", time.time())    # el panel sabe así que el supervisor sigue vivo
             except Exception as err:        # una vuelta fallida no debe tumbar al supervisor
                 print(f"error en la vuelta: {err!r}", file=sys.stderr, flush=True)
             time.sleep(max(0.2, VUELTA - (time.time() - t0)))

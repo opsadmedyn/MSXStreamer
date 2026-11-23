@@ -10,6 +10,18 @@ un canal de MSX Recorder del mismo equipo; salidas SRT
 y posición libre, con guías de zonas seguras) y hasta dos capas HTML5 con transparencia, encima o
 debajo del vídeo. Cada destino elige señal limpia (en copia) o compuesta.
 
+**Hub de señales (0.4.0, en desarrollo):** varias fuentes a la vez (SRT, RTMP, HLS, WebRTC por WHIP,
+y NDI y Zixi por adaptadores), cada una conectable a uno o varios destinos con su protocolo, sus
+credenciales, su audio, su resolución, su bitrate y su política de reconexión. Copia lo que el
+destino acepta y convierte solo lo que no, compartiendo cada conversión entre los destinos con el
+mismo perfil, y antes de activar una ruta dice qué pistas copia, cuáles convierte y por qué. Se
+opera desde el panel, en seis secciones: Fuentes, Destinos, Matriz de rutas, Monitoreo, Adaptadores
+y Ajustes; los flujos de siempre siguen en «Flujos y composición». Ver
+[instalación](docs/instalacion.md), [banco de pruebas](docs/banco-de-pruebas.md),
+[qué está comprobado](docs/validacion.md), el [informe de aceptación del banco](docs/aceptacion-banco.md),
+el de la [HP Z8 con su carga](docs/aceptacion-z8.md) y el de las
+[demás formas de conexión](docs/combinaciones-banco.md).
+
 ## Cómo funciona
 
 ```
@@ -104,8 +116,40 @@ scripts/desplegar.sh z8 --mediamtx   # además, mediamtx.yml y unidades nuevas (
 ```
 
 Todo queda en `/home/mediasat/streamer`. Puertos: panel 8095, HLS 8888, SRT 8890 (UDP), API de
-MediaMTX 9997 (solo local). La configuración de la máquina está en `config.json`
-(ver `config/config.ejemplo.json`).
+MediaMTX 9997 (solo local) y, cuando el hub los usa, RTMP (`rtmp_puerto`) y WebRTC 8889 (TCP) y
+8189 (UDP). La configuración de la máquina está en `config.json` (ver `config/config.ejemplo.json`
+y [docs/instalacion.md](docs/instalacion.md)).
+
+### 0.4.1-alfa
+
+En «Flujos y composición», borrar una salida o un flujo los quita ya de la pantalla. El botón pide
+un segundo clic («¿Seguro? Borrar») y el panel no repinta con una confirmación a medias: tras
+confirmar, el botón se quedaba en «¿Seguro?», lo borrado seguía a la vista aunque ya no existía y
+la sección dejaba de ponerse al día hasta recargar la página. Ese código estaba igual en la 0.3.9.
+De paso, una lectura de los flujos que llega tarde ya no deshace en pantalla otra posterior. Solo
+cambia `streamer/static/app.js`: se despliega sin opciones. Lo prueba `tests/test_panel_navegador.py`,
+pulsando en un Chromium. Los botones de borrar de las secciones del hub no tenían el fallo.
+
+### 0.4.0-alfa
+
+El hub de señales: motor, API y el panel para operarlo (Fuentes, Destinos, Matriz de rutas,
+Monitoreo, Adaptadores y Ajustes, descritas en [docs/instalacion.md](docs/instalacion.md)). Los
+flujos de la 0.3.9 no cambian: se editan en «Flujos y composición» y cada uno aparece además como
+una fuente del hub. La vista previa de Fuentes y Monitoreo va por HLS a través del panel, unos
+segundos por detrás del directo. No cambia `mediamtx.yml` ni las unidades:
+se despliega sin `--mediamtx` y las salidas de la 0.3.9 siguen al aire (ensayado con el código de
+la 0.3.9 en `tests/banco/relevo.sh`). `scripts/previo.sh <alias ssh>` dice antes, sin tocar nada,
+qué haría esta versión con lo que la estación tiene al aire. Antes de desplegar hay que poner en
+`config.json` un `rtmp_puerto` libre (en la EZC80, el 1935 es de Restreamer; se puso el 1945). En la
+EZC80 está instalada desde el 22 de noviembre de 2026. `--instalar` instala
+ya las versiones de `requirements.lock`. Pasos, puertos y vuelta atrás en
+[docs/instalacion.md](docs/instalacion.md).
+
+El respaldo a Google Drive lleva las claves de `streamer.db`, que con el hub incluyen las de los
+destinos: desde esta versión, a Drive solo sube cifrado. El guion de respaldo no viaja con
+`desplegar.sh`: `scripts/instalar-respaldos.sh <alias ssh>` instala el de esta versión y crea en la
+estación la contraseña de respaldo, que hay que guardar también fuera de ella. Cómo se abre un
+respaldo, en [docs/instalacion.md](docs/instalacion.md#el-respaldo-a-google-drive-y-sus-claves).
 
 ### 0.3.9
 

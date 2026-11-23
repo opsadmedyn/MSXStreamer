@@ -44,7 +44,7 @@ function describirEntrada(f) {
 function vista(v) {
   $('#v-flujos').hidden = v !== 'flujos';
   $('#v-editor').hidden = v !== 'editor';
-  if (v === 'flujos') { actual = null; history.replaceState(null, '', '#'); pintarLista(); }
+  if (v === 'flujos') { actual = null; history.replaceState(null, '', '#flujos'); pintarLista(); }
   seguirLienzo();
   window.scrollTo(0, 0);
 }
@@ -55,7 +55,6 @@ function irPaso(p) {
   if (p === 'registro') cargarRegistro();
   seguirLienzo();
 }
-$$('[data-ir]').forEach(b => b.onclick = () => vista(b.dataset.ir));
 $$('.pasos button').forEach(b => b.onclick = () => {
   if (!actual && b.dataset.paso !== 'entrada') return;   // primero hay que guardar la entrada
   irPaso(b.dataset.paso);
@@ -436,7 +435,7 @@ let rp = null;                                 // reproductor en marcha: {video,
 let rpClave = null, rpGen = 0, rpEspera = 0, rpReintento = null, rpSinCodec = false, rpSono = false, rpBloqueado = false;
 let sonando = false, nativoFallos = 0, cargaHls = null;
 let enPantalla = true, fueraTimer = null, ultimoUso = Date.now(), dormido = false;
-const lienzoVisible = () => paso === 'comp' && !!actual && !$('#v-editor').hidden && document.visibilityState === 'visible' && enPantalla;
+const lienzoVisible = () => paso === 'comp' && !!actual && !$('#v-editor').hidden && !$('#clasico').hidden && document.visibilityState === 'visible' && enPantalla;
 function inactivo() {              // sin tocar la página INACTIVO_MAX: el lienzo se para hasta que se vuelva a usar
   if (!dormido && Date.now() - ultimoUso > INACTIVO_MAX) dormido = true;
   return dormido;
@@ -664,14 +663,18 @@ function alertaEditor(txt) { const av = $('#av-flujo'); av.className = 'aviso er
 function confirmarBorrado(boton, hacer) {
   // el visor no muestra confirm(): el botón pide un segundo clic
   let t;
+  const soltar = () => { clearTimeout(t); boton.classList.remove('confirmar'); boton.textContent = boton.dataset.txt; };
   boton.onclick = async () => {
     if (!boton.classList.contains('confirmar')) {
       boton.classList.add('confirmar'); boton.dataset.txt = boton.textContent; boton.textContent = '¿Seguro? Borrar';
-      t = setTimeout(() => { boton.classList.remove('confirmar'); boton.textContent = boton.dataset.txt; }, 4000);
+      t = setTimeout(soltar, 4000);
       return;
     }
-    clearTimeout(t);
+    // Confirmado: el botón deja de pedirlo antes de borrar. refrescar() no repinta con una confirmación
+    // a medias, y si el botón se quedaba en «¿Seguro?» lo borrado seguía en pantalla hasta recargar
+    soltar(); boton.disabled = true;
     try { await hacer(); } catch (err) { alertaEditor(err.message); }
+    boton.disabled = false;
   };
 }
 
@@ -682,22 +685,13 @@ async function cargarRegistro() {
     : '<p class="nota">Sin eventos todavía.</p>';
 }
 
-async function sistema() {
-  try {
-    const s = await api('GET', '/api/sistema');
-    $('#sis-mtx').className = 'pill ' + (s.mediamtx ? 'ok' : 'er');
-    const sup = s.supervisor_visto_s;
-    $('#sis-sup').className = 'pill ' + (sup == null ? 'off' : sup < 10 ? 'ok' : 'er');
-    $('#sis-sup').title = sup == null ? 'Sin datos del supervisor' : `Última revisión hace ${sup} s`;
-    const av = $('#av-reposo');
-    av.hidden = !s.reposo;
-    if (s.reposo) av.textContent = 'El servicio de esta estación está apagado desde el System Monitor del Recorder' +
-      (s.reposo.por ? ` (${s.reposo.por})` : '') + ': no sale ningún flujo. Al encenderlo vuelven solos los flujos y destinos activos.';
-  } catch {}
-}
-
+let pedidas = 0, puesta = 0;      // lecturas de los flujos: las pedidas y la última puesta en pantalla
 async function refrescar() {
-  try { flujos = await api('GET', '/api/flujos'); } catch { return; }
+  const n = ++pedidas;
+  let leidos;
+  try { leidos = await api('GET', '/api/flujos'); } catch { return; }
+  if (n < puesta) return;         // llega tarde: ya hay en pantalla una lectura posterior y no se deshace
+  puesta = n; flujos = leidos;
   if ($('.confirmar') || $('#dlg').open) return;   // no repintar a mitad de una confirmación
   if ($('#v-editor').hidden) pintarLista();
   else if (actual) pintarEditor();
@@ -709,13 +703,13 @@ async function cargarYo() {
   try { yo = await api('GET', '/api/yo'); } catch { return; }
   $('#quien').textContent = `${yo.email} · ${yo.rol}`;
   document.body.classList.toggle('operador', yo.rol !== 'admin');
-  if (yo.via === 'recorder') { $('#lnk-recorder').href = yo.recorder_url; $('#lnk-recorder').hidden = false; }
 }
 (async () => {
-  await cargarYo(); await cargarCanales(); await refrescar(); sistema();   // canales: nombres de la lista
-  const h = location.hash.slice(1);
-  if (h && flujos.some(f => f.id === h)) abrirFlujo(h);
-  setInterval(refrescar, 2000);
-  setInterval(sistema, 5000);
-  setInterval(() => { if (paso === 'registro' && actual) cargarRegistro(); }, 5000);
+  await cargarYo(); await cargarCanales(); await refrescar();   // canales: nombres de la lista
+  // hub.js y las secciones del hub van después de este guion: se espera a que estén cargados
+  if (document.readyState === 'loading') await new Promise(ok => document.addEventListener('DOMContentLoaded', ok, {once: true}));
+  iniciarHub();                                  // la cabecera, las secciones y el hub de señales
+  // los flujos solo se piden con su sección a la vista (al entrar en ella, hub.js llama a refrescar)
+  setInterval(() => { if (!$('#clasico').hidden) refrescar(); }, 2000);
+  setInterval(() => { if (!$('#clasico').hidden && paso === 'registro' && actual) cargarRegistro(); }, 5000);
 })();
